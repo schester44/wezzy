@@ -53,7 +53,7 @@ fn save_image(format: ImageFormat, bytes: &[u8]) -> anyhow::Result<PathBuf> {
         ImageFormat::Bmp => "bmp",
         ImageFormat::Tiff => "tiff",
     };
-    let dir = std::env::temp_dir().join("dekita-paste");
+    let dir = std::env::temp_dir().join("wezzy-paste");
     std::fs::create_dir_all(&dir)?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?

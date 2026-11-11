@@ -2,7 +2,7 @@
 //! picked from the palette (⌘R, or `r` in the git panel).
 //!
 //! ```lua
-//! require("dekita").setup({
+//! require("wezzy").setup({
 //!   recipes = {
 //!     { name = "Review changes", harness = "claude", prompt = "/code-review" },
 //!     { name = "Tests for file", prompt = "Write tests for {file}" },
@@ -148,7 +148,7 @@ fn prompt_args(harness: &str, prompt: String) -> Vec<String> {
 
 /// Long prompts go into a file; the agent gets a short instruction to read it.
 fn deliverable(prompt: String) -> String {
-    deliverable_in(&std::env::temp_dir().join("dekita-recipes"), prompt)
+    deliverable_in(&std::env::temp_dir().join("wezzy-recipes"), prompt)
 }
 
 fn deliverable_in(dir: &Path, prompt: String) -> String {

@@ -1482,39 +1482,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac6b926516df9c60bfa16e107b21086399f8285a44ca9711344b9e553c5146e2"
 
 [[package]]
-name = "dekita"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "config",
- "dispatch",
- "env-bootstrap",
- "gpui",
- "libc",
- "log",
- "luahelper",
- "mlua",
- "mux",
- "mux-lua",
- "nucleo-matcher",
- "objc",
- "parking_lot",
- "portable-pty",
- "procinfo",
- "promise",
- "regex",
- "serde",
- "serde_json",
- "shell-words",
- "smol",
- "termwiz",
- "wezterm-blob-leases",
- "wezterm-client",
- "wezterm-input-types",
- "wezterm-term",
-]
-
-[[package]]
 name = "deltae"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8122,6 +8089,39 @@ version = "0.1.0"
 source = "git+https://github.com/wezterm/wezterm?rev=e68a8ec27727fbbda15e07f0a0737cd5e16481f6#e68a8ec27727fbbda15e07f0a0737cd5e16481f6"
 dependencies = [
  "git2",
+]
+
+[[package]]
+name = "wezzy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "config",
+ "dispatch",
+ "env-bootstrap",
+ "gpui",
+ "libc",
+ "log",
+ "luahelper",
+ "mlua",
+ "mux",
+ "mux-lua",
+ "nucleo-matcher",
+ "objc",
+ "parking_lot",
+ "portable-pty",
+ "procinfo",
+ "promise",
+ "regex",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "smol",
+ "termwiz",
+ "wezterm-blob-leases",
+ "wezterm-client",
+ "wezterm-input-types",
+ "wezterm-term",
 ]
 
 [[package]]

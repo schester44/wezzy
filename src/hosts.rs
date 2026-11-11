@@ -5,7 +5,7 @@
 //! wildcards, so aliases you already have just show up):
 //!
 //! ```lua
-//! require("dekita").setup({
+//! require("wezzy").setup({
 //!   hosts = {
 //!     { name = "devbox", ssh = "dev@10.0.0.5" },
 //!     { name = "nas", ssh = "-p 2222 admin@nas.local" },  -- anything ssh takes

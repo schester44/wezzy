@@ -157,7 +157,7 @@ impl TermApp {
             }
             Row::ConfigFile => {
                 self.overlay = None;
-                let path = crate::paths::config_dir().join("dekita.lua");
+                let path = crate::paths::config_dir().join("wezzy.lua");
                 self.open_in_editor(&path, None, None, window, cx);
             }
         }

@@ -1,8 +1,8 @@
 //! App settings. Edited in the Settings panel (⌘,) and stored in
-//! ~/.config/dekita/settings.json. The Lua config can also set them, and wins:
+//! ~/.config/wezzy/settings.json. The Lua config can also set them, and wins:
 //!
 //! ```lua
-//! require("dekita").setup({
+//! require("wezzy").setup({
 //!   close_confirmation = "smart",     -- "smart" | "never" | "always"
 //!   default_harness = "claude",       -- what ⌘N launches
 //!   agent_layout = "bsp",             -- "bsp" | "master-stack" (where ⌘N splits)
@@ -343,10 +343,10 @@ pub fn layout_name(l: AgentLayout) -> &'static str {
     }
 }
 
-/// Lua: `dekita.setup{ ... }`
+/// Lua: `wezzy.setup{ ... }`
 pub fn lua_setup(_: &mlua::Lua, opts: mlua::Table) -> mlua::Result<()> {
     let bad = |field: &str, want: &str, got: &str| {
-        mlua::Error::external(format!("dekita.setup: {field} must be {want}, got {got:?}"))
+        mlua::Error::external(format!("wezzy.setup: {field} must be {want}, got {got:?}"))
     };
     // start from settings.json; whatever the config passes overrides it
     let mut s = from_file();

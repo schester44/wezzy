@@ -155,7 +155,7 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Split Right", split(PaneDirection::Right)),
         ("Split Down", split(PaneDirection::Down)),
         ("Settings", App(AppCommand::OpenSettings)),
-        ("Restart Dekita", App(AppCommand::Restart)),
+        ("Restart Wezzy", App(AppCommand::Restart)),
         ("Rebuild & Restart", App(AppCommand::RebuildRestart)),
         ("Open Editor", App(AppCommand::OpenEditor)),
         ("Quick Select", Key(QuickSelect)),

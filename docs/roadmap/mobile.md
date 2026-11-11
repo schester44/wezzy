@@ -10,13 +10,13 @@ Mobile is another client of the same sessions, not a separate product.
 
 ```
             ┌───────────────────────────── home server ─────────────────────────────┐
- Mac app ───┤  wezterm-mux-server  ←→  dekita agentd (status, git, ports, push)    ├─── phone (web app)
+ Mac app ───┤  wezterm-mux-server  ←→  wezzy agentd (status, git, ports, push)    ├─── phone (web app)
             └────────────────────────────────────────────────────────────────────────┘
 ```
 
 - The always-on machine (a home server, see `remote-compute.md`) owns sessions.
   The Mac app and the phone both attach to it, so they always see the same agents.
-- `dekita agentd` is the piece mobile talks to. It already needs to exist for
+- `wezzy agentd` is the piece mobile talks to. It already needs to exist for
   remote compute, so mobile adds an HTTP and WebSocket API to it rather than
   a new service.
 - **Networking:** Tailscale is the default path. The phone reaches the server

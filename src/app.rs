@@ -96,7 +96,7 @@ pub static UI_STATE: Mutex<UiState> = Mutex::new(UiState {
 
 // ---------------------------------------------------------------------------
 
-gpui::actions!(dekita, [Quit, Hide, OpenSettings, ShowPalette]);
+gpui::actions!(wezzy, [Quit, Hide, OpenSettings, ShowPalette]);
 
 /// macOS menu bar. No key equivalents: keys go through the user's bindings.
 fn install_menus(cx: &mut App) {
@@ -104,21 +104,21 @@ fn install_menus(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.set_menus(vec![Menu {
-        name: "Dekita".into(),
+        name: "Wezzy".into(),
         items: vec![
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::action("Command Palette", ShowPalette),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
-            MenuItem::action("Hide Dekita", Hide),
-            MenuItem::action("Quit Dekita", Quit),
+            MenuItem::action("Hide Wezzy", Hide),
+            MenuItem::action("Quit Wezzy", Quit),
         ],
     }]);
 }
 
 /// Dev builds aren't app bundles, so macOS shows a generic exec icon in the
-/// Dock. Give them the real one (Dekita.app gets it from its .icns).
+/// Dock. Give them the real one (Wezzy.app gets it from its .icns).
 fn set_dock_icon() {
     let in_bundle = std::env::current_exe()
         .ok()
@@ -126,7 +126,7 @@ fn set_dock_icon() {
     if in_bundle {
         return;
     }
-    const PNG: &[u8] = include_bytes!("../assets/icon/dekita-1024.png");
+    const PNG: &[u8] = include_bytes!("../assets/icon/wezzy-1024.png");
     #[allow(unexpected_cfgs)]
     unsafe {
         use objc::runtime::Object;
@@ -153,7 +153,7 @@ pub fn open_main_window(cx: &mut App) {
             cx,
         ))),
         titlebar: Some(TitlebarOptions {
-            title: Some("Dekita".into()),
+            title: Some("Wezzy".into()),
             appears_transparent: true,
             // vertically centered in the 40px top bar (CHROME_H)
             traffic_light_position: Some(point(px(16.), px(14.))),

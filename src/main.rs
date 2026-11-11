@@ -1,4 +1,4 @@
-//! dekita: a gpui shell around WezTerm's engine crates.
+//! wezzy: a gpui shell around WezTerm's engine crates.
 //!
 //! WezTerm provides: Lua config loading, the mux (windows/tabs/panes/workspaces),
 //! PTYs, terminal emulation and key encoding.
@@ -39,17 +39,18 @@ use std::ffi::OsString;
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
+    paths::migrate_from_dekita();
     import_login_env();
     // Registers WezTerm's full Lua API (wezterm.mux, wezterm.plugin, wezterm.GLOBAL,
     // wezterm.time, wezterm.format, ...) so a real wezterm.lua can be evaluated.
     env_bootstrap::bootstrap();
-    commands::register_lua(); // require("dekita") in the config
+    commands::register_lua(); // require("wezzy") in the config
     config::designate_this_as_the_main_thread();
     install_schedulers();
 
     // inherited by the session server and every pane: lets agent hooks know
-    // they're running inside Dekita
-    std::env::set_var("DEKITA", "1");
+    // they're running inside Wezzy
+    std::env::set_var("WEZZY", "1");
     settings::load();
     let config_file = config_path();
     log::info!("loading config from {}", config_file.to_string_lossy());
@@ -97,7 +98,7 @@ fn import_login_env() {
                 .into_owned()
         }
     };
-    let marker = "__DEKITA_ENV__";
+    let marker = "__WEZZY_ENV__";
     let script = format!(r#"printf '{marker}%s\n%s\n' "$PATH" "$EDITOR""#);
     let Ok(out) = std::process::Command::new(&shell)
         .args(["-lic", &script])
@@ -120,15 +121,15 @@ fn import_login_env() {
     }
 }
 
-const DEFAULT_CONFIG: &str = include_str!("../config/dekita.lua");
+const DEFAULT_CONFIG: &str = include_str!("../config/wezzy.lua");
 
-/// `$DEKITA_CONFIG`, else ~/.config/dekita/dekita.lua (written from the
+/// `$WEZZY_CONFIG`, else ~/.config/wezzy/wezzy.lua (written from the
 /// built-in default on first run).
 fn config_path() -> OsString {
-    if let Some(p) = std::env::var_os("DEKITA_CONFIG") {
+    if let Some(p) = std::env::var_os("WEZZY_CONFIG") {
         return p;
     }
-    let path = paths::config_dir().join("dekita.lua");
+    let path = paths::config_dir().join("wezzy.lua");
     if !path.exists() {
         std::fs::create_dir_all(paths::config_dir()).ok();
         if let Err(e) = std::fs::write(&path, DEFAULT_CONFIG) {

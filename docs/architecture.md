@@ -1,7 +1,7 @@
 # Architecture
 
 ```
- ┌──────────────────────────── Dekita (gpui app) ─────────────────────────────┐
+ ┌──────────────────────────── Wezzy (gpui app) ─────────────────────────────┐
  │  TermApp (app.rs)                                                          │
  │   ├─ view (ui/)        top bar · sidebar · terminal canvas · panels        │
  │   ├─ input (keys.rs)   gpui keystroke → WezTerm key → binding or pane      │
@@ -21,11 +21,11 @@
 ## Startup (`main.rs`)
 
 1. Import `PATH` and `EDITOR` from the login shell when launched from Finder.
-2. Set `DEKITA=1`. The session server and every pane inherit it, so agent
-   hooks know they're inside Dekita.
-3. Load `settings.json`, register the `dekita` Lua module, then load the
-   WezTerm config (`~/.config/dekita/dekita.lua`; written from
-   `config/dekita.lua` on first run).
+2. Set `WEZZY=1`. The session server and every pane inherit it, so agent
+   hooks know they're inside Wezzy.
+3. Load `settings.json`, register the `wezzy` Lua module, then load the
+   WezTerm config (`~/.config/wezzy/wezzy.lua`; written from
+   `config/wezzy.lua` on first run).
 4. Create the mux and register a client identity: the mux tracks the active
    workspace per client, and `set_active_workspace` is a no-op without one.
 5. Add the session server as the default domain (`session.rs`), then start gpui.
@@ -51,7 +51,7 @@ workspace menu, overlays (palette, settings, prompts), a focused side panel
 
 - Leader and key tables are resolved like WezTerm does (`KeyState::lookup`).
 - A binding produces a `KeyAssignment`, handled by `TermApp::perform()`.
-  `EmitEvent("dekita.*")` names are app commands; other `EmitEvent`s run Lua
+  `EmitEvent("wezzy.*")` names are app commands; other `EmitEvent`s run Lua
   callbacks through `luawin.rs`, which gives them a `window` object whose
   `perform_action` comes back into `perform()`.
 - Unbound keys are encoded by the pane (kitty keyboard protocol when enabled).
@@ -73,7 +73,7 @@ the whole UI follows the WezTerm color scheme.
 ## Sessions (`session.rs`)
 
 - The app is a client of `wezterm-mux-server`, using the bundled binary,
-  `$DEKITA_MUX_SERVER`, or an installed WezTerm, in that order. The socket,
+  `$WEZZY_MUX_SERVER`, or an installed WezTerm, in that order. The socket,
   pid and log are passed as `--config` overrides so the user's config stays
   free of plumbing.
 - Every pane is a `ClientPane`. The protocol doesn't carry process info, so
@@ -89,7 +89,7 @@ the whole UI follows the WezTerm color scheme.
   harness, or a hook record exists.
 - **Status** (`hooks.rs`): `assets/hooks/agent-hook.sh`, registered as a
   Claude Code hook, writes each lifecycle event to
-  `~/.local/state/dekita/agents/<WEZTERM_PANE>.json`. The app polls the
+  `~/.local/state/wezzy/agents/<WEZTERM_PANE>.json`. The app polls the
   directory, maps server pane ids to local ones and derives
   Working / NeedsInput / Done / Idle. Without hooks, status is guessed from
   title spinners, output and bells.
@@ -111,6 +111,6 @@ the whole UI follows the WezTerm color scheme.
 | What | Where |
 |---|---|
 | Shells, agents, layout, scrollback | the session server (lives until killed) |
-| Active workspace | `~/.local/share/dekita/last-workspace` |
-| App settings | `~/.config/dekita/settings.json` |
-| Agent status | `~/.local/state/dekita/agents/` |
+| Active workspace | `~/.local/share/wezzy/last-workspace` |
+| App settings | `~/.config/wezzy/settings.json` |
+| Agent status | `~/.local/state/wezzy/agents/` |

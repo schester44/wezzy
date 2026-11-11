@@ -167,7 +167,7 @@ fn spawn_command(h: &Harness) -> SpawnCommand {
     let shell = login_shell();
     let cmd = shell_words::join(&h.argv);
     let mut env = std::collections::HashMap::new();
-    env.insert("DEKITA_HARNESS".to_string(), h.name.clone());
+    env.insert("WEZZY_HARNESS".to_string(), h.name.clone());
     SpawnCommand {
         label: Some(h.label()),
         args: Some(vec![

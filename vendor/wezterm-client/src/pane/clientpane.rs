@@ -53,7 +53,7 @@ pub struct ClientPane {
 }
 
 impl ClientPane {
-    /// dekita: user vars set before we attached never reach us (they're not
+    /// wezzy: user vars set before we attached never reach us (they're not
     /// part of the initial sync). Lets the app fill in ones it can infer, e.g.
     /// IS_NVIM from the foreground process. Never overwrites a reported value.
     pub fn seed_user_var(&self, name: &str, value: &str) {
@@ -197,7 +197,7 @@ impl ClientPane {
                 match &alert {
                     Alert::SetUserVar { name, value } => {
                         self.user_vars.lock().insert(name.clone(), value.clone());
-                        // dekita: publish like LocalPane does
+                        // wezzy: publish like LocalPane does
                         mux.notify(MuxNotification::Alert {
                             pane_id: self.local_pane_id,
                             alert: alert.clone(),

@@ -1,12 +1,12 @@
 //! App-level commands: things WezTerm's `KeyAssignment` has no variant for
 //! (sidebar, palette, and later browser/markdown/visualizer surfaces).
 //!
-//! They ride on `EmitEvent("dekita.<id>")`, so they bind exactly like any
+//! They ride on `EmitEvent("wezzy.<id>")`, so they bind exactly like any
 //! WezTerm action, including inside leader and key tables:
 //!
 //! ```lua
-//! local dekita = require("dekita")
-//! table.insert(config.keys, { key = "b", mods = "CMD", action = dekita.action.ToggleSidebar })
+//! local wezzy = require("wezzy")
+//! table.insert(config.keys, { key = "b", mods = "CMD", action = wezzy.action.ToggleSidebar })
 //! ```
 
 use config::keyassignment::KeyAssignment;
@@ -76,7 +76,7 @@ impl AppCommand {
         }
     }
 
-    /// Name under `require("dekita").action`.
+    /// Name under `require("wezzy").action`.
     pub fn lua_name(self) -> &'static str {
         match self {
             Self::ToggleSidebar => "ToggleSidebar",
@@ -100,11 +100,11 @@ impl AppCommand {
     }
 
     pub fn event_name(self) -> String {
-        format!("dekita.{}", self.id())
+        format!("wezzy.{}", self.id())
     }
 
     pub fn from_event(name: &str) -> Option<Self> {
-        let id = name.strip_prefix("dekita.")?;
+        let id = name.strip_prefix("wezzy.")?;
         Self::ALL.iter().copied().find(|c| c.id() == id)
     }
 
@@ -113,7 +113,7 @@ impl AppCommand {
     }
 }
 
-/// Exposes `require("dekita")` to the config: `dekita.action.<Name>`.
+/// Exposes `require("wezzy")` to the config: `wezzy.action.<Name>`.
 pub fn register_lua() {
     fn setup(lua: &mlua::Lua) -> anyhow::Result<()> {
         let module = lua.create_table()?;
@@ -127,6 +127,8 @@ pub fn register_lua() {
         module.set("setup", lua.create_function(crate::settings::lua_setup)?)?;
         let package: mlua::Table = lua.globals().get("package")?;
         let loaded: mlua::Table = package.get("loaded")?;
+        loaded.set("wezzy", module.clone())?;
+        // pre-rename configs say require("dekita")
         loaded.set("dekita", module)?;
         Ok(())
     }

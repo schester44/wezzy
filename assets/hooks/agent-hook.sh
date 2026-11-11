@@ -1,15 +1,16 @@
 #!/bin/sh
-# dekita agent hook. Agent harnesses (Claude Code, ...) call this on lifecycle
+# wezzy agent hook. Agent harnesses (Claude Code, ...) call this on lifecycle
 # events with a JSON payload on stdin; we store the latest one per pane so the
-# app can show exact status. Installed by dekita; safe to delete.
+# app can show exact status. Installed by wezzy; safe to delete.
 #
 #   usage: agent-hook <harness>        (payload on stdin)
 #
-# Only active inside dekita panes (DEKITA is set by its session server), so
-# agents running in other terminals are unaffected.
-[ -n "$DEKITA" ] && [ -n "$WEZTERM_PANE" ] || { cat >/dev/null; exit 0; }
+# Only active inside wezzy panes (WEZZY is set by its session server), so
+# agents running in other terminals are unaffected. DEKITA is the pre-rename
+# marker, still set in panes of a session server started before the rename.
+[ -n "$WEZZY$DEKITA" ] && [ -n "$WEZTERM_PANE" ] || { cat >/dev/null; exit 0; }
 
-dir="${XDG_STATE_HOME:-$HOME/.local/state}/dekita/agents"
+dir="${XDG_STATE_HOME:-$HOME/.local/state}/wezzy/agents"
 mkdir -p "$dir" 2>/dev/null || exit 0
 
 payload=$(cat)

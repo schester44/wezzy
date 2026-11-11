@@ -1,4 +1,4 @@
--- Dekita config: full WezTerm config syntax (https://wezterm.org/config/files.html).
+-- Wezzy config: full WezTerm config syntax (https://wezterm.org/config/files.html).
 -- App settings live in ⌘, — this file is for appearance and keys.
 
 local wezterm = require("wezterm")
@@ -13,11 +13,11 @@ config.default_cursor_style = "BlinkingBar"
 config.enable_kitty_keyboard = true
 
 -- App actions bind like any WezTerm action (the session server evaluates this
--- file too, without the dekita module, hence the pcall):
+-- file too, without the wezzy module, hence the pcall):
 --
--- local ok, dekita = pcall(require, "dekita")
+-- local ok, wezzy = pcall(require, "wezzy")
 -- if ok then
---   config.keys = { { key = "b", mods = "CMD", action = dekita.action.ToggleSidebar } }
+--   config.keys = { { key = "b", mods = "CMD", action = wezzy.action.ToggleSidebar } }
 -- end
 
 return config

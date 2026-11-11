@@ -1,10 +1,10 @@
 //! Persistent sessions: shells and agents live in a background
 //! `wezterm-mux-server`; this app is a client that attaches to it.
 //! Quit or kill the app and everything keeps running; the next launch
-//! reattaches. `DEKITA_LOCAL=1` runs an in-process mux instead (old behavior).
+//! reattaches. `WEZZY_LOCAL=1` runs an in-process mux instead (old behavior).
 //!
 //! Both processes evaluate the same Lua config. Its `unix_domains` entry named
-//! "dekita" tells the server where to listen and the app where to connect.
+//! "wezzy" tells the server where to listen and the app where to connect.
 
 use crate::app::{send_event, AppEvent};
 use anyhow::Context as _;
@@ -17,10 +17,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use wezterm_client::domain::{ClientDomain, ClientDomainConfig};
 
-pub const DOMAIN: &str = "dekita";
+pub const DOMAIN: &str = "wezzy";
 
 pub fn persistent() -> bool {
-    std::env::var_os("DEKITA_LOCAL").is_none()
+    std::env::var_os("WEZZY_LOCAL").is_none()
 }
 
 fn data_dir() -> PathBuf {
@@ -36,7 +36,7 @@ pub fn install_domain(config_file: &OsString) -> anyhow::Result<()> {
     let lua_path = |p: PathBuf| format!("[[{}]]", p.display());
 
     // The server evaluates the user's config too; everything session-specific is
-    // passed here so the config stays free of plumbing. Panes inherit DEKITA=1
+    // passed here so the config stays free of plumbing. Panes inherit WEZZY=1
     // from the server's environment (set in main) for the agent hooks.
     let unix = UnixDomain {
         name: DOMAIN.into(),
@@ -70,7 +70,7 @@ pub fn install_domain(config_file: &OsString) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The bundled server (Dekita.app/Contents/MacOS), else $DEKITA_MUX_SERVER,
+/// The bundled server (Wezzy.app/Contents/MacOS), else $WEZZY_MUX_SERVER,
 /// else an installed WezTerm.
 fn mux_server_binary() -> anyhow::Result<String> {
     if let Some(p) = std::env::current_exe()
@@ -80,7 +80,7 @@ fn mux_server_binary() -> anyhow::Result<String> {
     {
         return Ok(p.to_string_lossy().to_string());
     }
-    if let Ok(p) = std::env::var("DEKITA_MUX_SERVER") {
+    if let Ok(p) = std::env::var("WEZZY_MUX_SERVER") {
         return Ok(p);
     }
     let candidates = [
@@ -98,7 +98,7 @@ fn mux_server_binary() -> anyhow::Result<String> {
                 .find(|p| p.exists())
         })
         .map(|p| p.to_string_lossy().to_string())
-        .context("couldn't find wezterm-mux-server; set DEKITA_MUX_SERVER")
+        .context("couldn't find wezterm-mux-server; set WEZZY_MUX_SERVER")
 }
 
 /// Attach to the server (starting it if needed), pick the window to show,

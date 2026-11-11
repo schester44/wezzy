@@ -559,7 +559,7 @@ mod tests {
     /// End to end against a throwaway repo: hunk stage/unstage/discard, file ops, commit.
     #[test]
     fn hunk_ops_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("dekita-diff-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("wezzy-diff-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let sh = |args: &[&str]| git_run(&dir, args, None).unwrap();

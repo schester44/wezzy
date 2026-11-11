@@ -1202,10 +1202,11 @@ fn agent_row(
         Status::NeedsInput => (a.detail.clone(), t.warning),
         Status::Done | Status::Idle => (None, t.fg_subtle),
     };
-    let meta = if a.workspace.is_empty() || a.workspace == "default" {
+    // agents from every workspace are listed, so say which one each lives in
+    let meta = if a.workspace.is_empty() {
         a.project.clone()
     } else {
-        format!("{} · {}", a.project, a.workspace)
+        a.workspace.clone()
     };
     div()
         .id(("agent", pane_id))

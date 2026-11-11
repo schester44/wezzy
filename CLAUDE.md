@@ -1,8 +1,8 @@
-# Dekita: notes for agents
+# Wezzy: notes for agents
 
 A gpui (Zed's UI framework) app wrapped around WezTerm's engine crates. WezTerm
 provides config, the mux (windows/tabs/panes/workspaces), PTYs and terminal
-emulation. Dekita provides rendering, input, and its own UI: sidebar, top bar,
+emulation. Wezzy provides rendering, input, and its own UI: sidebar, top bar,
 palette, git panel, settings, agent tracking.
 
 Read `docs/architecture.md` before structural changes and `docs/design.md`
@@ -16,8 +16,8 @@ cargo test
 ```
 
 - Don't launch the GUI or kill processes to test. Build, then let the user run
-  it. If you're running inside Dekita, the user restarts with ⌘K → Rebuild & Restart.
-- Never kill the session server (`~/.local/share/dekita/pid`): it holds every
+  it. If you're running inside Wezzy, the user restarts with ⌘K → Rebuild & Restart.
+- Never kill the session server (`~/.local/share/wezzy/pid`): it holds every
   shell and agent, including the one you're running in.
 - WezTerm crates are git deps pinned to one commit (`e68a8ec`, matching the
   bundled `wezterm-mux-server`). Bump them all together or not at all; the mux
@@ -35,7 +35,7 @@ cargo test
 | `render.rs` | paints panes/cells/cursor into a gpui canvas |
 | `keys.rs` | gpui keystroke → WezTerm key, leader + key tables, default bindings |
 | `luawin.rs` | Lua `window` object for `action_callback` / `wezterm.on` handlers |
-| `commands.rs` | app commands (`AppCommand`), exposed to Lua as `require("dekita").action.*` |
+| `commands.rs` | app commands (`AppCommand`), exposed to Lua as `require("wezzy").action.*` |
 | `palette.rs`, `settings_ui.rs`, `regions.rs` | command palette, settings overlay, keyboard focus in side panels |
 | `session.rs` | attach to the session server (`wezterm-mux-server`), pane id mapping |
 | `hooks.rs`, `agents.rs`, `procs.rs` | agent hook install/polling, agent detection + status, foreground process lookup |
@@ -44,7 +44,7 @@ cargo test
 | `servers.rs`, `sendout.rs`, `quickselect.rs`, `clipboard.rs` | dev servers, send output to agent, hints + ⌘-click, paste |
 | `settings.rs`, `paths.rs`, `sound.rs`, `restart.rs` | settings.json + Lua `setup()`, file locations, chime, restart |
 | `vendor/wezterm-client` | patched copy; see its `Cargo.toml` for the diff |
-| `config/dekita.lua` | default config written on first run (embedded) |
+| `config/wezzy.lua` | default config written on first run (embedded) |
 | `assets/` | icons (SVG, embedded), app icon, agent hook script |
 
 ## Rules that bite
@@ -62,14 +62,14 @@ cargo test
   `session::local_pane_id` / `remote_pane_id` convert between our ids and
   `$WEZTERM_PANE`.
 - **The config is evaluated twice:** by the app and by the session server. Only
-  the app has the `dekita` Lua module, so config code must `pcall(require, "dekita")`.
+  the app has the `wezzy` Lua module, so config code must `pcall(require, "wezzy")`.
   Session-server settings (socket, pid, log) are passed on its command line in
   `session.rs`, not in the config.
 - **Keys:** user bindings win over `default_bindings()` (`or_insert`). App
-  commands are `EmitEvent("dekita.<id>")` under the hood, intercepted in `perform()`.
+  commands are `EmitEvent("wezzy.<id>")` under the hood, intercepted in `perform()`.
 - **Settings:** `settings.json` is the base and the Lua `setup()` overrides it.
   Change settings from the UI with `settings::update`, which persists.
-- **Builds from inside Dekita:** if the app was started with `cargo run`, its
+- **Builds from inside Wezzy:** if the app was started with `cargo run`, its
   environment carries cargo's `CARGO_PKG_*` vars, which makes cargo rebuild
   `ring`/`gpui` when builds alternate with a normal terminal.
 

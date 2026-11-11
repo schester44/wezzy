@@ -19,7 +19,7 @@ pub struct GuiWin {
 impl UserData for GuiWin {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::ToString, |_, this, _: ()| {
-            Ok(format!("GuiWin(dekita, mux_window_id:{})", this.mux_window_id))
+            Ok(format!("GuiWin(wezzy, mux_window_id:{})", this.mux_window_id))
         });
         methods.add_method("window_id", |_, this, _: ()| Ok(this.mux_window_id));
         methods.add_method("mux_window", |_, this, _: ()| Ok(MuxWindow(this.mux_window_id)));

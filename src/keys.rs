@@ -355,6 +355,7 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
         ((WKey::Char('b'), s), AppCommand::ToggleSidebar.action()),
         ((WKey::Char('k'), s), AppCommand::CommandPalette.action()),
         ((WKey::Char('P'), s), AppCommand::CommandPalette.action()),
+        ((WKey::Char('K'), s), AppCommand::SwitchWorkspace.action()),
         ((WKey::Char('n'), s), AppCommand::NewAgent.action()),
         ((WKey::Char('N'), s), AppCommand::NewAgentTab.action()),
         ((WKey::Char('d'), s), AppCommand::ToggleDiffPanel.action()),

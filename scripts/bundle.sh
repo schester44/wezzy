@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build Dekita.app (and optionally a DMG).
+# Build Wezzy.app (and optionally a DMG).
 #
-#   scripts/bundle.sh                 # release build -> target/release/Dekita.app
-#   scripts/bundle.sh --dmg           # also target/release/Dekita-<version>.dmg
+#   scripts/bundle.sh                 # release build -> target/release/Wezzy.app
+#   scripts/bundle.sh --dmg           # also target/release/Wezzy-<version>.dmg
 #
 # Env:
 #   SIGN_IDENTITY   "Developer ID Application: …" (default: ad-hoc "-", local use only)
@@ -12,14 +12,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP_NAME=Dekita
-BUNDLE_ID=dev.dekita.app
+APP_NAME=Wezzy
+BUNDLE_ID=dev.wezzy.app
 WEZTERM_REV=$(grep -m1 -o 'rev = "[0-9a-f]*"' Cargo.toml | cut -d'"' -f2)
 VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 OUT=target/release/$APP_NAME.app
 MUX_ROOT=target/mux-server/$WEZTERM_REV
 
-echo "==> dekita $VERSION (wezterm $WEZTERM_REV)"
+echo "==> wezzy $VERSION (wezterm $WEZTERM_REV)"
 cargo build --release
 
 if [[ "${MUX_FROM_WEZTERM:-}" == 1 ]]; then
@@ -36,9 +36,9 @@ fi
 echo "==> assembling $OUT"
 rm -rf "$OUT"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
-cp target/release/dekita "$OUT/Contents/MacOS/dekita"
+cp target/release/wezzy "$OUT/Contents/MacOS/wezzy"
 cp "$MUX_BIN" "$OUT/Contents/MacOS/wezterm-mux-server"
-cp assets/icon/dekita.icns "$OUT/Contents/Resources/dekita.icns"
+cp assets/icon/wezzy.icns "$OUT/Contents/Resources/wezzy.icns"
 cat > "$OUT/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -47,8 +47,8 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>$APP_NAME</string>
   <key>CFBundleDisplayName</key><string>$APP_NAME</string>
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
-  <key>CFBundleExecutable</key><string>dekita</string>
-  <key>CFBundleIconFile</key><string>dekita</string>
+  <key>CFBundleExecutable</key><string>wezzy</string>
+  <key>CFBundleIconFile</key><string>wezzy</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>

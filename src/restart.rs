@@ -1,4 +1,4 @@
-//! Restarting Dekita from inside Dekita. Sessions live in the session server,
+//! Restarting Wezzy from inside Wezzy. Sessions live in the session server,
 //! so panes and agents survive; only the window process is replaced.
 
 use crate::app::{send_event, AppEvent, TermApp};
@@ -18,7 +18,7 @@ pub fn source_dir() -> Option<PathBuf> {
 /// Start a fresh instance once this one has exited.
 fn relaunch() -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
-    // inside Dekita.app: relaunch the bundle so it's a proper app instance
+    // inside Wezzy.app: relaunch the bundle so it's a proper app instance
     let bundle = exe
         .ancestors()
         .find(|p| p.extension().is_some_and(|e| e == "app"))

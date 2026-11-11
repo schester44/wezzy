@@ -1,8 +1,8 @@
 //! Exact agent status from harness hooks.
 //!
-//! `assets/hooks/agent-hook.sh` is installed to ~/.local/share/dekita/bin and
+//! `assets/hooks/agent-hook.sh` is installed to ~/.local/share/wezzy/bin and
 //! registered as a Claude Code hook. On every lifecycle event it writes the
-//! payload to ~/.local/state/dekita/agents/<WEZTERM_PANE>.json. We poll that
+//! payload to ~/.local/state/wezzy/agents/<WEZTERM_PANE>.json. We poll that
 //! directory and turn the latest event per pane into a `HookState`.
 //!
 //! WEZTERM_PANE is the session server's pane id, so it's mapped to our local
@@ -70,7 +70,7 @@ fn state_dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| config::HOME_DIR.join(".local/state"))
-        .join("dekita/agents")
+        .join("wezzy/agents")
 }
 
 pub fn script_path() -> PathBuf {
@@ -140,7 +140,7 @@ pub fn install_claude_hooks() -> anyhow::Result<()> {
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
     let mut root: Value = serde_json::from_str(&text)
         .map_err(|e| anyhow::anyhow!("{} isn't valid JSON: {e}", path.display()))?;
-    let backup = path.with_extension("json.dekita-backup");
+    let backup = path.with_extension("json.wezzy-backup");
     if path.exists() && !backup.exists() {
         std::fs::copy(&path, &backup)?;
     }
@@ -179,7 +179,7 @@ pub fn install_claude_hooks() -> anyhow::Result<()> {
         }
     }
     std::fs::create_dir_all(path.parent().unwrap())?;
-    let tmp = path.with_extension("json.dekita-tmp");
+    let tmp = path.with_extension("json.wezzy-tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(&root)? + "\n")?;
     std::fs::rename(&tmp, &path)?;
     Ok(())
@@ -190,6 +190,15 @@ pub fn install_claude_hooks() -> anyhow::Result<()> {
 pub fn start() {
     if let Err(e) = write_script() {
         log::warn!("couldn't write agent hook script: {e:#}");
+    }
+    // hooks registered before the dekita -> wezzy rename point at the old path;
+    // re-register them at the new one (install replaces our old entries)
+    if std::fs::read_to_string(claude_settings_path())
+        .is_ok_and(|t| t.contains("/.local/share/dekita/bin/agent-hook"))
+    {
+        if let Err(e) = install_claude_hooks() {
+            log::warn!("couldn't move agent hooks to the new path: {e:#}");
+        }
     }
     std::thread::spawn(|| loop {
         poll();
