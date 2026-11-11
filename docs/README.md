@@ -4,6 +4,7 @@
 
 | | |
 |---|---|
+| [ssh.md](ssh.md) | SSH hosts: the ⌘⇧S picker, config, `~/.ssh/config` aliases |
 | [workspaces.md](workspaces.md) | Workspaces, switching, saved workspaces |
 
 ## Internals
