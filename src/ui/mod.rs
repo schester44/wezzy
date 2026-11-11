@@ -44,7 +44,8 @@ impl AssetSource for Assets {
             "git-branch",
             "git-commit",
             "sparkles",
-            "message"
+            "message",
+            "server"
         ))
     }
 
@@ -73,6 +74,7 @@ pub enum Icon {
     GitCommit,
     Sparkles,
     Message,
+    Server,
 }
 
 /// A spinning loader, for "working" states.
@@ -110,6 +112,7 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> impl IntoElement {
         Icon::GitCommit => "icons/git-commit.svg",
         Icon::Sparkles => "icons/sparkles.svg",
         Icon::Message => "icons/message.svg",
+        Icon::Server => "icons/server.svg",
     };
     svg()
         .path(path)

@@ -228,6 +228,8 @@ pub struct TermApp {
     /// agents sidebar width (⌃←/⌃→ while it's focused)
     pub(crate) sidebar_width: f32,
     pub(crate) diff_resizing: bool,
+    /// The split divider being dragged (its `PositionedSplit::index`).
+    pub(crate) split_drag: Option<usize>,
     pub(crate) ws_cursor: usize,
     scroll_accum: f32,
     _config_sub: config::ConfigSubscription,
@@ -356,6 +358,7 @@ impl TermApp {
             diff_width: 460.,
             sidebar_width: 248.,
             diff_resizing: false,
+            split_drag: None,
             ws_cursor: 0,
             scroll_accum: 0.0,
             _config_sub: config_sub,
@@ -671,6 +674,15 @@ impl TermApp {
         }
         let (col, row) = (col as usize, row as usize);
         if let Some(tab) = self.active_tab() {
+            // grabbing a divider starts a resize drag
+            if let Some(s) = tab.iter_splits().into_iter().find(|s| match s.direction {
+                SplitDirection::Horizontal => col == s.left && row >= s.top && row < s.top + s.size,
+                SplitDirection::Vertical => row == s.top && col >= s.left && col < s.left + s.size,
+            }) {
+                self.split_drag = Some(s.index);
+                cx.notify();
+                return;
+            }
             if let Some(p) = tab.iter_panes().into_iter().find(|p| {
                 col >= p.left && col < p.left + p.width && row >= p.top && row < p.top + p.height
             }) {
@@ -726,6 +738,41 @@ impl TermApp {
         self.viewports.remove(&pane.pane_id());
         pane.send_paste(&text).ok();
         cx.notify();
+    }
+
+    /// Mouse moved while dragging a divider: move it to the cell under the mouse,
+    /// like WezTerm's drag_split. Returns false when no drag is in progress.
+    pub(crate) fn drag_split(&mut self, ev: &gpui::MouseMoveEvent, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self.split_drag else {
+            return false;
+        };
+        if ev.pressed_button != Some(gpui::MouseButton::Left) {
+            self.split_drag = None;
+            cx.notify();
+            return true;
+        }
+        let g = self.grid.get();
+        let Some(tab) = self.active_tab() else {
+            return true;
+        };
+        if g.cell_w <= px(0.) || g.line_h <= px(0.) {
+            return true;
+        }
+        let Some(split) = tab.iter_splits().into_iter().find(|s| s.index == index) else {
+            self.split_drag = None;
+            return true;
+        };
+        let col = ((ev.position.x - g.origin.x) / g.cell_w).floor() as isize;
+        let row = ((ev.position.y - g.origin.y) / g.line_h).floor() as isize;
+        let delta = match split.direction {
+            SplitDirection::Horizontal => col - split.left as isize,
+            SplitDirection::Vertical => row - split.top as isize,
+        };
+        if delta != 0 {
+            tab.resize_split_by(split.index, delta);
+        }
+        cx.notify();
+        true
     }
 
     pub(crate) fn on_scroll(&mut self, ev: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {

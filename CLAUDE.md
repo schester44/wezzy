@@ -40,6 +40,7 @@ cargo test
 | `session.rs` | attach to the session server (`wezterm-mux-server`), pane id mapping |
 | `hooks.rs`, `agents.rs`, `procs.rs` | agent hook install/polling, agent detection + status, foreground process lookup |
 | `launch.rs`, `recipes.rs` | harness launcher (⌘N), recipes |
+| `hosts.rs` | SSH hosts (⇧⌘S / "ssh …" in ⌘K): config + `~/.ssh/config` aliases |
 | `servers.rs`, `sendout.rs`, `quickselect.rs`, `clipboard.rs` | dev servers, send output to agent, hints + ⌘-click, paste |
 | `settings.rs`, `paths.rs`, `sound.rs`, `restart.rs` | settings.json + Lua `setup()`, file locations, chime, restart |
 | `vendor/wezterm-client` | patched copy; see its `Cargo.toml` for the diff |

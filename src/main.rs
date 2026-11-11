@@ -12,6 +12,7 @@ mod diff;
 mod feedback;
 mod gitpanel;
 mod hooks;
+mod hosts;
 mod keys;
 mod launch;
 mod luawin;

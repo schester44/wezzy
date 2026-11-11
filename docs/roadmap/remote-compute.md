@@ -19,7 +19,9 @@ the mux protocol and need no changes.
 - On the server: install `wezterm-mux-server` from the same WezTerm commit
   Dekita pins (`e68a8ec`, see `Cargo.toml`). The mux protocol has to match.
 - In Dekita: a list of hosts in settings (`name`, `ssh` target), each becoming
-  a WezTerm SSH client domain (`ClientDomainConfig::Ssh`). WezTerm proxies the
+  a WezTerm SSH client domain (`ClientDomainConfig::Ssh`). The list exists
+  already (`hosts.rs`): today each host opens a plain `ssh` session in a local
+  pane; this phase upgrades the same entries to domains. WezTerm proxies the
   connection with `wezterm cli proxy` on the far side.
 - **Choosing where things run:** per workspace by default (a workspace is bound
   to a host), with a per-launch override in the agent launcher (⌘N on a remote

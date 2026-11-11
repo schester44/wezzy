@@ -14,6 +14,9 @@
 //!   recipes = {                       -- palette prompts that open an agent (see recipes.rs)
 //!     { name = "Review changes", harness = "claude", prompt = "/code-review" },
 //!   },
+//!   hosts = {                         -- SSH hosts for the palette (see hosts.rs)
+//!     { name = "devbox", ssh = "dev@10.0.0.5" },
+//!   },
 //! })
 //! ```
 //!
@@ -76,6 +79,9 @@ pub struct Settings {
     pub recipes: Vec<crate::recipes::Recipe>,
     /// the settings.json subset, so saving from the UI doesn't copy Lua ones into the file
     file_recipes: Vec<crate::recipes::Recipe>,
+    /// settings.json hosts, then the Lua config's
+    pub hosts: Vec<crate::hosts::Host>,
+    file_hosts: Vec<crate::hosts::Host>,
 }
 
 impl Settings {
@@ -89,6 +95,8 @@ impl Settings {
         sound: String::new(),
         recipes: Vec::new(),
         file_recipes: Vec::new(),
+        hosts: Vec::new(),
+        file_hosts: Vec::new(),
     };
 
     pub fn sound(&self) -> Option<String> {
@@ -187,6 +195,14 @@ struct Stored {
     show_sidebar: Option<bool>,
     sound: Option<String>,
     recipes: Option<Vec<StoredRecipe>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hosts: Option<Vec<StoredHost>>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct StoredHost {
+    name: String,
+    ssh: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -239,6 +255,13 @@ fn from_file() -> Settings {
             .collect();
         s.recipes = s.file_recipes.clone();
     }
+    if let Some(v) = st.hosts {
+        s.file_hosts = v
+            .into_iter()
+            .map(|h| crate::hosts::Host { name: h.name, ssh: h.ssh })
+            .collect();
+        s.hosts = s.file_hosts.clone();
+    }
     s
 }
 
@@ -265,6 +288,15 @@ pub fn update(f: impl FnOnce(&mut Settings)) {
                     name: r.name.clone(),
                     harness: r.harness.clone(),
                     prompt: r.prompt.clone(),
+                })
+                .collect()
+        }),
+        hosts: (!s.file_hosts.is_empty()).then(|| {
+            s.file_hosts
+                .iter()
+                .map(|h| StoredHost {
+                    name: h.name.clone(),
+                    ssh: h.ssh.clone(),
                 })
                 .collect()
         }),
@@ -363,6 +395,18 @@ pub fn lua_setup(_: &mlua::Lua, opts: mlua::Table) -> mlua::Result<()> {
             // the config wins over a settings.json recipe of the same name
             s.recipes.retain(|x| x.name != recipe.name);
             s.recipes.push(recipe);
+        }
+    }
+    if let Some(t) = opts.get::<_, Option<mlua::Table>>("hosts")? {
+        for (i, h) in t.sequence_values::<mlua::Table>().enumerate() {
+            let h = h?;
+            let name: Option<String> = h.get("name")?;
+            let ssh: Option<String> = h.get("ssh")?;
+            let (Some(name), Some(ssh)) = (name, ssh) else {
+                return Err(bad(&format!("hosts[{}]", i + 1), "a table with name and ssh", "missing field"));
+            };
+            s.hosts.retain(|x| x.name != name);
+            s.hosts.push(crate::hosts::Host { name, ssh });
         }
     }
     *SETTINGS.lock() = s;

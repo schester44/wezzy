@@ -27,6 +27,7 @@ pub enum AppCommand {
     OpenEditor,
     OpenSettings,
     RunRecipe,
+    SshHost,
     Restart,
     RebuildRestart,
 }
@@ -47,6 +48,7 @@ impl AppCommand {
         Self::OpenEditor,
         Self::OpenSettings,
         Self::RunRecipe,
+        Self::SshHost,
         Self::Restart,
         Self::RebuildRestart,
     ];
@@ -68,6 +70,7 @@ impl AppCommand {
             Self::OpenEditor => "open-editor",
             Self::OpenSettings => "open-settings",
             Self::RunRecipe => "run-recipe",
+            Self::SshHost => "ssh-host",
             Self::Restart => "restart",
             Self::RebuildRestart => "rebuild-restart",
         }
@@ -90,6 +93,7 @@ impl AppCommand {
             Self::OpenEditor => "OpenEditor",
             Self::OpenSettings => "OpenSettings",
             Self::RunRecipe => "RunRecipe",
+            Self::SshHost => "SshHost",
             Self::Restart => "Restart",
             Self::RebuildRestart => "RebuildRestart",
         }

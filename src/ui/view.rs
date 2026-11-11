@@ -92,6 +92,9 @@ impl Render for TermApp {
                 this.open_palette(crate::palette::Scope::All, cx)
             }))
             .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
+                if this.drag_split(ev, cx) {
+                    return;
+                }
                 if !this.diff_resizing {
                     return;
                 }
@@ -106,8 +109,9 @@ impl Render for TermApp {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
-                    if this.diff_resizing {
+                    if this.diff_resizing || this.split_drag.is_some() {
                         this.diff_resizing = false;
+                        this.split_drag = None;
                         cx.notify();
                     }
                 }),
@@ -602,7 +606,11 @@ impl TermApp {
         let metrics = render::metrics(window, &config, self.font_scale);
         let viewports = self.viewports.clone();
         let grid = self.grid.clone();
-        let split_color = render::color(palette.split);
+        // dividers: a visible hairline at rest, accent while hovered / dragged
+        let fg = render::color(palette.foreground);
+        let split_idle = gpui::Hsla { a: 0.16, ..fg };
+        let split_hot = render::color(palette.colors.0[4]);
+        let split_drag = self.split_drag;
         let opts = PaintOpts {
             inactive_brightness: config.inactive_pane_hsb.brightness,
             default_cursor_bar: matches!(
@@ -622,10 +630,10 @@ impl TermApp {
             .map(|q| (q.pane_id, q.matches.clone(), q.typed.clone()));
         let hint_color = render::color(palette.colors.0[5]);
 
+        let paint_metrics = metrics.clone();
         canvas(
-            |_, _, _| (),
-            move |bounds, (), window, cx| {
-                let Some(tab) = tab else { return };
+            move |bounds, window, _| {
+                let tab = tab?;
                 let ctx = |max: Pixels, cell: Pixels| DimensionContext {
                     dpi: 72.0,
                     pixel_max: f32::from(max),
@@ -660,33 +668,48 @@ impl TermApp {
                     line_h: metrics.line_h,
                 });
 
+                // each divider owns its one-cell strip between panes: resize cursor,
+                // hover highlight, and the drag target for on_mouse_down
+                let splits: Vec<_> = tab
+                    .iter_splits()
+                    .into_iter()
+                    .map(|s| {
+                        let b = render::split_strip(origin, &s, &metrics);
+                        (s, window.insert_hitbox(b, gpui::HitboxBehavior::Normal))
+                    })
+                    .collect();
+                Some((tab, origin, splits))
+            },
+            move |_, state, window, cx| {
+                let Some((tab, origin, splits)) = state else { return };
                 let panes: Vec<_> = tab
                     .iter_panes()
                     .iter()
                     .map(|p| render::snapshot(p, viewports.get(&p.pane.pane_id()).copied()))
                     .collect();
-                let splits = if panes.len() > 1 {
-                    tab.iter_splits()
-                } else {
-                    vec![]
-                };
-                render::paint_tab(
-                    origin,
-                    &panes,
-                    &splits,
-                    split_color,
-                    &metrics,
-                    &opts,
-                    window,
-                    cx,
-                );
+                let painted: Vec<_> = splits
+                    .iter()
+                    .map(|(s, hitbox)| {
+                        window.set_cursor_style(
+                            match s.direction {
+                                mux::tab::SplitDirection::Horizontal => gpui::CursorStyle::ResizeLeftRight,
+                                mux::tab::SplitDirection::Vertical => gpui::CursorStyle::ResizeUpDown,
+                            },
+                            hitbox,
+                        );
+                        let hot = split_drag == Some(s.index)
+                            || (split_drag.is_none() && hitbox.is_hovered(window));
+                        (*s, if hot { split_hot } else { split_idle }, hot)
+                    })
+                    .collect();
+                render::paint_tab(origin, &panes, &painted, &paint_metrics, &opts, window, cx);
                 if let Some((pane_id, matches, typed)) = &hints {
                     if let Some(p) = tab.iter_panes().iter().find(|p| p.pane.pane_id() == *pane_id) {
                         let o = point(
-                            origin.x + metrics.cell_w * p.left as f32,
-                            origin.y + metrics.line_h * p.top as f32,
+                            origin.x + paint_metrics.cell_w * p.left as f32,
+                            origin.y + paint_metrics.line_h * p.top as f32,
                         );
-                        paint_hints(o, matches, typed, hint_color, &metrics, window, cx);
+                        paint_hints(o, matches, typed, hint_color, &paint_metrics, window, cx);
                     }
                 }
             },
@@ -977,6 +1000,7 @@ impl TermApp {
                         Kind::Workspace => Icon::Layers,
                         Kind::Command => Icon::Bolt,
                         Kind::Recipe => Icon::Sparkles,
+                        Kind::Host => Icon::Server,
                     },
                     14.,
                     if is_sel { t.fg } else { t.fg_subtle },

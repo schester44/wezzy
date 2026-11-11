@@ -26,6 +26,7 @@ pub enum Scope {
     Workspaces,
     Commands,
     Recipes,
+    Hosts,
 }
 
 impl Scope {
@@ -37,6 +38,7 @@ impl Scope {
             Scope::Workspaces => "Workspaces",
             Scope::Commands => "Commands",
             Scope::Recipes => "Recipes",
+            Scope::Hosts => "SSH",
         }
     }
 
@@ -48,6 +50,7 @@ impl Scope {
             Scope::Workspaces => kind == Kind::Workspace,
             Scope::Commands => matches!(kind, Kind::Command | Kind::Launch | Kind::Recipe),
             Scope::Recipes => kind == Kind::Recipe,
+            Scope::Hosts => kind == Kind::Host,
         }
     }
 }
@@ -58,6 +61,7 @@ pub enum Kind {
     Agent,
     Launch,
     Recipe,
+    Host,
     Tab,
     Window,
     Workspace,
@@ -70,6 +74,7 @@ impl Kind {
             Kind::Agent => "Agents",
             Kind::Launch => "New Agent",
             Kind::Recipe => "Recipes",
+            Kind::Host => "SSH",
             Kind::Tab => "Tabs",
             Kind::Window => "Windows",
             Kind::Workspace => "Workspaces",
@@ -90,6 +95,8 @@ pub enum PaletteAction {
     Harness(String),
     /// Run a recipe (by name): ↵ splits, ⌘↵ opens a tab.
     Recipe(String),
+    /// Open an ssh session: ↵ splits, ⌘↵ opens a tab.
+    Ssh(crate::hosts::Host),
 }
 
 #[derive(Clone)]
@@ -154,6 +161,7 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Quick Select", Key(QuickSelect)),
         ("Send Output to Agent", App(AppCommand::SendOutputToAgent)),
         ("Run Recipe…", App(AppCommand::RunRecipe)),
+        ("SSH…", App(AppCommand::SshHost)),
         ("Toggle Diff Panel", App(AppCommand::ToggleDiffPanel)),
         ("Toggle Pane Zoom", Key(TogglePaneZoomState)),
         ("Close Pane", Key(CloseCurrentPane { confirm: true })),
@@ -243,6 +251,20 @@ impl TermApp {
                     .flatten(),
                 status: None,
                 action: PaletteAction::Recipe(r.name),
+            });
+        }
+
+        // ssh hosts
+        for (i, e) in crate::hosts::all().into_iter().enumerate() {
+            items.push(Item {
+                kind: Kind::Host,
+                title: e.host.name.clone(),
+                subtitle: format!("ssh {}", e.target),
+                shortcut: (i == 0)
+                    .then(|| self.keys.shortcut_for(&AppCommand::SshHost.action()))
+                    .flatten(),
+                status: None,
+                action: PaletteAction::Ssh(e.host),
             });
         }
 
@@ -371,7 +393,11 @@ impl TermApp {
             })
             .collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.kind.cmp(&b.1.kind)));
-        scored.into_iter().map(|(_, i)| i).collect()
+        let mut out: Vec<Item> = scored.into_iter().map(|(_, i)| i).collect();
+        if let Some(item) = adhoc_ssh(state.scope, query, &out) {
+            out.push(item);
+        }
+        out
     }
 
     pub(crate) fn palette_key(
@@ -414,6 +440,15 @@ impl TermApp {
                             crate::launch::Placement::Split
                         };
                         self.launch_harness(Some(&name), placement, window, cx);
+                        self.focus.focus(window);
+                    }
+                    Some(PaletteAction::Ssh(host)) => {
+                        let placement = if m.platform {
+                            crate::launch::Placement::Tab
+                        } else {
+                            crate::launch::Placement::Split
+                        };
+                        self.open_ssh(&host, placement, window, cx);
                         self.focus.focus(window);
                     }
                     Some(PaletteAction::Recipe(name)) => {
@@ -537,6 +572,9 @@ impl TermApp {
             PaletteAction::Recipe(name) => {
                 self.run_recipe(&name, crate::launch::Placement::Split, window, cx)
             }
+            PaletteAction::Ssh(host) => {
+                self.open_ssh(&host, crate::launch::Placement::Split, window, cx)
+            }
         }
         self.focus.focus(window);
         cx.notify();
@@ -567,6 +605,7 @@ impl TermApp {
             AppCommand::Restart => self.restart(cx),
             AppCommand::RebuildRestart => self.rebuild_and_restart(cx),
             AppCommand::RunRecipe => self.open_palette(Scope::Recipes, cx),
+            AppCommand::SshHost => self.open_palette(Scope::Hosts, cx),
             AppCommand::CommandPalette => self.open_palette(Scope::All, cx),
             AppCommand::FindAgent => self.open_palette(Scope::Agents, cx),
             AppCommand::FindTab => self.open_palette(Scope::Tabs, cx),
@@ -611,6 +650,35 @@ impl TermApp {
             self.mux_window_id = Some(window_id);
         }
     }
+}
+
+/// "ssh pi@10.0.0.9" (or anything typed in the SSH picker) connects even
+/// when no host matches. Listed last so a configured host always wins.
+fn adhoc_ssh(scope: Scope, query: &str, results: &[Item]) -> Option<Item> {
+    let target = match scope {
+        Scope::Hosts => query.strip_prefix("ssh ").unwrap_or(query),
+        Scope::All => query.strip_prefix("ssh ")?,
+        _ => return None,
+    }
+    .trim();
+    if target.is_empty()
+        || results
+            .iter()
+            .any(|i| matches!(&i.action, PaletteAction::Ssh(h) if h.name == target))
+    {
+        return None;
+    }
+    Some(Item {
+        kind: Kind::Host,
+        title: format!("ssh {target}"),
+        subtitle: String::new(),
+        shortcut: None,
+        status: None,
+        action: PaletteAction::Ssh(crate::hosts::Host {
+            name: target.to_string(),
+            ssh: target.to_string(),
+        }),
+    })
 }
 
 fn state_selected(overlay: &Option<Overlay>) -> usize {

@@ -117,8 +117,7 @@ pub struct PaintOpts {
 pub fn paint_tab(
     origin: Point<Pixels>,
     panes: &[PaneSnap],
-    splits: &[PositionedSplit],
-    split_color: Hsla,
+    splits: &[(PositionedSplit, Hsla, bool)],
     m: &Metrics,
     opts: &PaintOpts,
     window: &mut Window,
@@ -127,25 +126,34 @@ pub fn paint_tab(
     for p in panes {
         paint_pane(origin, p, m, opts, window, cx);
     }
-    for s in splits {
-        // Splits occupy one cell between panes; draw a thin line in its middle.
+    for (s, color, hot) in splits {
+        // Splits occupy one cell between panes; draw a line through its middle,
+        // thicker while hovered / dragged.
+        let w = if *hot { px(2.0) } else { px(1.0) };
+        let strip = split_strip(origin, s, m);
         let b = match s.direction {
             SplitDirection::Horizontal => Bounds::new(
-                point(
-                    origin.x + m.cell_w * s.left as f32 + m.cell_w / 2.0,
-                    origin.y + m.line_h * s.top as f32,
-                ),
-                size(px(1.0), m.line_h * s.size as f32),
+                point(strip.center().x - w / 2.0, strip.origin.y),
+                size(w, strip.size.height),
             ),
             SplitDirection::Vertical => Bounds::new(
-                point(
-                    origin.x + m.cell_w * s.left as f32,
-                    origin.y + m.line_h * s.top as f32 + m.line_h / 2.0,
-                ),
-                size(m.cell_w * s.size as f32, px(1.0)),
+                point(strip.origin.x, strip.center().y - w / 2.0),
+                size(strip.size.width, w),
             ),
         };
-        window.paint_quad(fill(b, split_color));
+        window.paint_quad(fill(b, *color));
+    }
+}
+
+/// The one-cell strip a split occupies, in window coordinates.
+pub fn split_strip(origin: Point<Pixels>, s: &PositionedSplit, m: &Metrics) -> Bounds<Pixels> {
+    let o = point(
+        origin.x + m.cell_w * s.left as f32,
+        origin.y + m.line_h * s.top as f32,
+    );
+    match s.direction {
+        SplitDirection::Horizontal => Bounds::new(o, size(m.cell_w, m.line_h * s.size as f32)),
+        SplitDirection::Vertical => Bounds::new(o, size(m.cell_w * s.size as f32, m.line_h)),
     }
 }
 
