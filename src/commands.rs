@@ -42,6 +42,7 @@ pub enum AppCommand {
     MovePaneToNewWindow,
     BalancePanes,
     CreatePullRequest,
+    AgentOverview,
 }
 
 impl AppCommand {
@@ -75,6 +76,7 @@ impl AppCommand {
         Self::MovePaneToNewWindow,
         Self::BalancePanes,
         Self::CreatePullRequest,
+        Self::AgentOverview,
     ];
 
     /// Stable id, used in the event name.
@@ -109,6 +111,7 @@ impl AppCommand {
             Self::MovePaneToNewWindow => "move-pane-to-new-window",
             Self::BalancePanes => "balance-panes",
             Self::CreatePullRequest => "create-pull-request",
+            Self::AgentOverview => "agent-overview",
         }
     }
 
@@ -144,6 +147,7 @@ impl AppCommand {
             Self::MovePaneToNewWindow => "MovePaneToNewWindow",
             Self::BalancePanes => "BalancePanes",
             Self::CreatePullRequest => "CreatePullRequest",
+            Self::AgentOverview => "AgentOverview",
         }
     }
 
@@ -179,6 +183,7 @@ impl AppCommand {
             Self::MovePaneToNewWindow => "Move pane to new window",
             Self::BalancePanes => "Balance panes",
             Self::CreatePullRequest => "Create pull request",
+            Self::AgentOverview => "Agent overview",
         }
     }
 

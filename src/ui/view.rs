@@ -58,7 +58,8 @@ impl Render for TermApp {
         if let Some(p) = &pane {
             window.set_window_title(&p.get_title());
             // you're looking at it: whatever its agent finished is seen
-            if window.is_window_active() {
+            // (not while the overview covers it)
+            if window.is_window_active() && self.overview.is_none() {
                 crate::agents::mark_seen(p.pane_id());
             }
         }
@@ -144,7 +145,9 @@ impl Render for TermApp {
                     // one left panel, neovim-style: the git panel replaces the agents
                     // sidebar while it's open; closing it brings the sidebar back
                     .map(|d| {
-                        if zoomed {
+                        if self.overview.is_some() {
+                            d.child(self.overview_view(&t, window, cx))
+                        } else if zoomed {
                             d
                         } else if self.diff_open {
                             d.child(self.diff_panel(&t, cx))
@@ -154,18 +157,21 @@ impl Render for TermApp {
                             d
                         }
                     })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .relative()
-                            .bg(t.term_bg)
-                            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-                            .on_scroll_wheel(cx.listener(Self::on_scroll))
-                            .on_drop(cx.listener(Self::on_file_drop))
-                            .child(self.terminal_canvas(&palette, window))
-                            .children(self.pane_views(&t, window, cx)),
-                    ),
+                    // the overview replaces the terminal too: nothing sizes the tab meanwhile
+                    .when(self.overview.is_none(), |d| {
+                        d.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .relative()
+                                .bg(t.term_bg)
+                                .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+                                .on_scroll_wheel(cx.listener(Self::on_scroll))
+                                .on_drop(cx.listener(Self::on_file_drop))
+                                .child(self.terminal_canvas(&palette, window))
+                                .children(self.pane_views(&t, window, cx)),
+                        )
+                    }),
             )
             // toasts and modals sit over the whole window (sidebars included), so
             // they anchor to the window's corner / center rather than the terminal's
@@ -1490,7 +1496,7 @@ fn agent_row(
 
 /// One of an agent's running subagents, nested in its sidebar row: status,
 /// what it was asked to do, and what it's doing now.
-fn subagent_line(s: crate::hooks::Subagent, t: &Theme) -> impl IntoElement {
+pub(super) fn subagent_line(s: crate::hooks::Subagent, t: &Theme) -> impl IntoElement {
     use crate::hooks::HookStatus;
     let needs_you = s.status == HookStatus::NeedsInput;
     let indicator = if needs_you {
@@ -1808,7 +1814,7 @@ fn run_row(r: crate::actions::Run, cursor: bool, t: &Theme, cx: &mut Context<Ter
 
 /// `unseen`: it finished while you were elsewhere and you haven't been back.
 /// Done stays bright until you go to it, then fades to the idle dot.
-fn status_indicator(status: Status, unseen: bool, t: &Theme) -> AnyElement {
+pub(super) fn status_indicator(status: Status, unseen: bool, t: &Theme) -> AnyElement {
     match status {
         Status::Working => spinner(12., t.fg_muted).into_any_element(),
         Status::NeedsInput => icon(Icon::Alert, 13., t.warning).into_any_element(),
@@ -1845,7 +1851,7 @@ pub(super) fn kbd(label: &str, t: &Theme) -> impl IntoElement {
         .child(SharedString::from(label.to_string()))
 }
 
-fn section_header(title: &str, badge: Option<String>, t: &Theme) -> gpui::Div {
+pub(super) fn section_header(title: &str, badge: Option<String>, t: &Theme) -> gpui::Div {
     div()
         .flex_none()
         .h(px(32.))

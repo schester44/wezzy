@@ -50,7 +50,7 @@ pub fn sheet(keys: &KeyState) -> Vec<Vec<Group>> {
     let mut columns = vec![];
     if let Some(lk) = keys.leader_label() {
         // leader + 1–9 jumps to an agent unless the user bound those keys
-        if !leader.iter().any(|(k, _)| k.len() == 1 && k.as_bytes()[0].is_ascii_digit()) {
+        if !leader.iter().any(|(k, _)| k.len() == 1 && (b'1'..=b'9').contains(&k.as_bytes()[0])) {
             leader.push(("1–9".into(), "Go to agent".into()));
         }
         leader.sort_by(|a, b| sort_key(&a.0).cmp(&sort_key(&b.0)).then(a.1.cmp(&b.1)));

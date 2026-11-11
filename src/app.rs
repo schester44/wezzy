@@ -274,6 +274,8 @@ pub struct TermApp {
     pub(crate) ws_cursor: usize,
     /// native views hosted in placeholder panes (`views.rs`)
     pub(crate) views: crate::views::Views,
+    /// The agent overview (⌘O), while it replaces the sidebar and terminal.
+    pub(crate) overview: Option<crate::overview::OverviewState>,
     scroll_accum: f32,
     _config_sub: config::ConfigSubscription,
 }
@@ -410,6 +412,7 @@ impl TermApp {
             split_drag: None,
             ws_cursor: 0,
             views: Default::default(),
+            overview: None,
             scroll_accum: 0.0,
             _config_sub: config_sub,
         };
@@ -534,7 +537,8 @@ impl TermApp {
             } => {
                 use crate::hooks::HookStatus;
                 let looking = self.active_pane().map(|p| p.pane_id()) == Some(pane_id)
-                    && window.is_window_active();
+                    && window.is_window_active()
+                    && self.overview.is_none();
                 let attention = matches!(status, HookStatus::NeedsInput | HookStatus::Done);
                 if status == HookStatus::Working {
                     crate::agents::mark_seen(pane_id);
@@ -560,7 +564,8 @@ impl TermApp {
             }
             AppEvent::AgentAlert(pane_id) => {
                 let focused = self.active_pane().map(|p| p.pane_id()) == Some(pane_id)
-                    && self.focus.is_focused(window);
+                    && self.focus.is_focused(window)
+                    && self.overview.is_none();
                 if focused {
                     clear_alert(pane_id);
                 } else if let Some(a) = crate::agents::collect(None)
@@ -658,6 +663,10 @@ impl TermApp {
         if self.overlay.is_some() {
             self.overlay_key(ev, window, cx);
             cx.notify();
+            return;
+        }
+        if self.overview.is_some() {
+            self.overview_key(ev, window, cx);
             return;
         }
         if self.region != crate::regions::Region::Terminal {
@@ -1530,6 +1539,8 @@ impl TermApp {
         let Some((_, window_id, tab_id)) = mux.resolve_pane_id(pane_id) else {
             return;
         };
+        // going to a pane (Leader 1–9, a toast, a notification) leaves the overview
+        self.overview = None;
         if let Some(ws) = mux.get_window(window_id).map(|w| w.get_workspace().to_string()) {
             if ws != mux.active_workspace() {
                 mux.set_active_workspace(&ws);

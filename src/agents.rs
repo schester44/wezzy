@@ -8,9 +8,9 @@ use crate::hooks::{self, HookStatus};
 use mux::pane::{CachePolicy, PaneId};
 use mux::Mux;
 use parking_lot::Mutex;
-use std::collections::HashSet;
-use std::path::Path;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Agents that finished or asked for you while you were looking elsewhere,
 /// until you go to their pane. Main thread only, but a static like PANE_ALERTS.
@@ -43,6 +43,22 @@ pub fn waiting_count() -> usize {
     };
     s.retain(|id| mux.get_pane(*id).is_some());
     s.len()
+}
+
+/// When each agent entered its current status. Main thread only.
+static SINCE: Mutex<Option<HashMap<PaneId, (Status, Instant)>>> = Mutex::new(None);
+
+fn since(pane_id: PaneId, status: Status) -> Instant {
+    let mut guard = SINCE.lock();
+    let map = guard.get_or_insert_with(HashMap::new);
+    match map.get(&pane_id) {
+        Some((s, at)) if *s == status => *at,
+        _ => {
+            let now = Instant::now();
+            map.insert(pane_id, (status, now));
+            now
+        }
+    }
 }
 
 fn is_unseen(pane_id: PaneId) -> bool {
@@ -93,8 +109,14 @@ pub struct Agent {
     /// Claude subagents it has running (from hooks).
     pub subagents: Vec<hooks::Subagent>,
     pub project: String,
+    /// The agent's directory: its own cwd from hooks, else the pane's.
+    pub cwd: Option<PathBuf>,
     pub workspace: String,
     pub status: Status,
+    /// When it entered `status`.
+    pub since: Instant,
+    /// NeedsInput on a permission prompt its harness's keys can answer.
+    pub permission: bool,
     /// Finished or asked for you since you last went to its pane.
     pub unseen: bool,
     pub focused: bool,
@@ -155,15 +177,14 @@ pub fn collect(focused_pane: Option<PaneId>) -> Vec<Agent> {
             .and_then(|(_, w, _)| mux.get_window(w).map(|w| w.get_workspace().to_string()))
             .unwrap_or_default();
         // the agent's own cwd (from hooks) beats the shell's last OSC 7
-        let project = hook
+        let cwd = hook.as_ref().and_then(|h| h.cwd.clone()).or_else(|| {
+            pane.get_current_working_dir(CachePolicy::AllowStale)
+                .map(|u| PathBuf::from(u.path().trim_end_matches('/')))
+        });
+        let project = cwd
             .as_ref()
-            .and_then(|h| h.cwd.as_ref())
             .and_then(|c| c.file_name())
             .map(|n| n.to_string_lossy().to_string())
-            .or_else(|| {
-                pane.get_current_working_dir(CachePolicy::AllowStale)
-                    .map(|u| basename(u.path().trim_end_matches('/')).to_string())
-            })
             .unwrap_or_default();
         let raw_title = pane.get_title();
         let title = raw_title
@@ -172,6 +193,7 @@ pub fn collect(focused_pane: Option<PaneId>) -> Vec<Agent> {
             .to_string();
 
         let subagents = hook.as_ref().map(|h| h.subagents.clone()).unwrap_or_default();
+        let permission = hook.as_ref().is_some_and(|h| h.permission);
         let (status, detail) = match &hook {
             Some(h) => {
                 let s = match h.status {
@@ -202,13 +224,18 @@ pub fn collect(focused_pane: Option<PaneId>) -> Vec<Agent> {
             detail,
             subagents,
             project,
+            cwd,
             workspace,
             status,
+            since: since(pane_id, status),
+            permission: permission && status == Status::NeedsInput,
             unseen,
             focused: Some(pane_id) == focused_pane,
         });
     }
-    out.sort_by_key(|a| a.pane_id);
+    // workspace order (as the workspace list shows them), then pane id: the
+    // sidebar, Leader 1–9 and the overview all number agents this way
+    out.sort_by(|a, b| a.workspace.cmp(&b.workspace).then(a.pane_id.cmp(&b.pane_id)));
     out
 }
 
