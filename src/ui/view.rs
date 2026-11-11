@@ -1484,22 +1484,23 @@ fn agent_row(
                 .flex()
                 .flex_col()
                 .gap_0p5()
-                .child(match editing {
-                    Some(input) => name_input(input, t, cx).into_any_element(),
-                    None => div()
+                .child(
+                    div()
                         .flex()
                         .items_baseline()
                         .gap_2()
-                        .child(
-                            div()
+                        .child(match editing {
+                            Some(input) => name_input(input, a.kind, t, cx).into_any_element(),
+                            None => div()
                                 .flex_shrink()
                                 .min_w_0()
                                 .font_weight(FontWeight::MEDIUM)
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .child(label),
-                        )
+                                .child(label)
+                                .into_any_element(),
+                        })
                         .child(
                             div()
                                 .flex_1()
@@ -1510,9 +1511,8 @@ fn agent_row(
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .child(meta),
-                        )
-                        .into_any_element(),
-                })
+                        ),
+                )
                 .when_some(task, |d, task| {
                     d.child(
                         div()
@@ -1595,27 +1595,30 @@ fn subagent_line(s: crate::hooks::Subagent, t: &Theme) -> impl IntoElement {
 
 /// The inline name field on an agent row (Rename agent): ↵ saves, esc or a
 /// click elsewhere cancels.
-fn name_input(input: String, t: &Theme, cx: &mut Context<TermApp>) -> impl IntoElement {
-    let caret = || div().w(px(1.5)).h(px(14.)).flex_none().bg(t.accent);
+fn name_input(
+    input: String,
+    fallback: &'static str,
+    t: &Theme,
+    cx: &mut Context<TermApp>,
+) -> impl IntoElement {
+    // the name itself becomes editable: same type, same place, so the row
+    // doesn't move. Empty shows what it falls back to.
+    let caret = div().w(px(1.5)).h(px(14.)).flex_none().bg(t.accent);
+    let empty = input.is_empty();
     div()
         .id("agent-name")
-        .h(px(22.))
-        .px_1p5()
+        .flex_shrink()
+        .min_w_0()
         .flex()
         .items_center()
         .overflow_hidden()
-        .rounded_lg()
-        .bg(gpui::hsla(0., 0., 0., 0.22))
-        .border_1()
+        .border_b_1()
         .border_color(with_alpha(t.accent, 0.6))
-        .map(|d| {
-            if input.is_empty() {
-                d.child(caret())
-                    .child(div().ml_0p5().text_color(t.fg_subtle).child("Name"))
-            } else {
-                d.child(div().whitespace_nowrap().child(input)).child(caret().ml_px())
-            }
-        })
+        .font_weight(FontWeight::MEDIUM)
+        .whitespace_nowrap()
+        .when(!empty, |d| d.child(input))
+        .child(caret)
+        .when(empty, |d| d.child(div().text_color(t.fg_subtle).child(fallback)))
         .on_click(|_, _, cx| cx.stop_propagation())
         .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.finish_agent_rename(false);

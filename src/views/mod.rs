@@ -13,7 +13,7 @@ pub mod sql;
 
 use crate::ui::Theme;
 use config::keyassignment::{SpawnCommand, SpawnTabDomain};
-use gpui::{AnyElement, App, Keystroke, Pixels, Size};
+use gpui::{AnyElement, App, Keystroke, Modifiers, Pixels, Point, Size};
 use mux::pane::{Pane, PaneId};
 use mux::Mux;
 use std::collections::HashMap;
@@ -44,6 +44,10 @@ pub trait PaneView {
     fn claims(&self, _ks: &Keystroke) -> bool {
         false
     }
+    /// A click at `pos`, relative to the view's top-left.
+    fn mouse_down(&mut self, _pos: Point<Pixels>, _mods: &Modifiers, _clicks: usize, _cx: &mut App) {}
+    /// The wheel over the view: `lines` up (positive) or down.
+    fn scroll(&mut self, _pos: Point<Pixels>, _lines: isize) {}
     /// ⌘V
     fn paste(&mut self, _text: &str) {}
     /// ⌘C: the text to copy, if anything is selected.

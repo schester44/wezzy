@@ -174,19 +174,6 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Balance Panes", App(AppCommand::BalancePanes)),
         ("Split Right", split(PaneDirection::Right)),
         ("Split Down", split(PaneDirection::Down)),
-        (
-            "Hello Pane",
-            Key(SpawnCommandInNewTab(crate::views::spawn_command("hello", "", "Hello"))),
-        ),
-        (
-            "Split Right: Hello Pane",
-            Key(SplitPane(config::keyassignment::SplitPane {
-                direction: PaneDirection::Right,
-                size: SplitSize::Percent(50),
-                command: crate::views::spawn_command("hello", "", "Hello"),
-                top_level: false,
-            })),
-        ),
         ("Settings", App(AppCommand::OpenSettings)),
         ("Keyboard Shortcuts", App(AppCommand::ShowShortcuts)),
         ("Restart Wezzy", App(AppCommand::Restart)),
@@ -309,12 +296,24 @@ impl TermApp {
             });
         }
 
-        // databases: configured, then found in the active pane's project
-        let cwd = self
-            .active_pane()
-            .and_then(|p| p.get_current_working_dir(mux::pane::CachePolicy::AllowStale))
-            .map(|u| std::path::PathBuf::from(u.path()));
-        for conn in crate::views::sql::conn::all(cwd.as_deref()) {
+        // databases: configured, then found in the projects you have open (the
+        // active pane's first) and your saved workspaces
+        let pane_cwd = |p: &std::sync::Arc<dyn mux::pane::Pane>| {
+            p.get_current_working_dir(mux::pane::CachePolicy::AllowStale)
+                .map(|u| std::path::PathBuf::from(u.path()))
+        };
+        let mut cwds: Vec<std::path::PathBuf> = self.active_pane().as_ref().and_then(pane_cwd).into_iter().collect();
+        cwds.extend(mux.iter_panes().iter().filter_map(pane_cwd));
+        let home = std::env::var("HOME").unwrap_or_default();
+        cwds.extend(crate::settings::get().workspaces.iter().map(|w| {
+            std::path::PathBuf::from(match w.cwd.strip_prefix('~') {
+                Some(rest) => format!("{home}{rest}"),
+                None => w.cwd.clone(),
+            })
+        }));
+        let mut seen = std::collections::HashSet::new();
+        cwds.retain(|c| seen.insert(c.clone()));
+        for conn in crate::views::sql::conn::all(&cwds) {
             items.push(Item {
                 kind: Kind::Database,
                 title: conn.name.clone(),

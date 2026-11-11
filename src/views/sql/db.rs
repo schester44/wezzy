@@ -44,6 +44,21 @@ pub enum Outcome {
 pub struct Run {
     pub outcome: Outcome,
     pub elapsed: Duration,
+    /// set when the query is read-only and fetched a page at a time
+    pub page: Option<Page>,
+}
+
+/// Rows per page.
+pub const PAGE: usize = 500;
+
+pub struct Page {
+    /// the query as typed, wrapped for each page
+    sql: String,
+    /// index of the first row shown
+    pub offset: usize,
+    pub has_more: bool,
+    /// rows in all, once counted (gives up after a few seconds)
+    pub total: Option<u64>,
 }
 
 pub enum Status {
@@ -65,6 +80,8 @@ pub struct Shared {
 
 enum Job {
     Query(String),
+    /// another page of the last result, from this row
+    Page(usize),
 }
 
 pub struct Db {
@@ -124,6 +141,10 @@ impl Db {
         self.tx.send(Job::Query(sql)).ok();
     }
 
+    pub fn page(&self, offset: usize) {
+        self.tx.send(Job::Page(offset)).ok();
+    }
+
     pub fn cancel(&self) {
         let token = self.shared.lock().cancel.clone();
         if let Some(token) = token {
@@ -165,26 +186,61 @@ fn worker(url: String, verify: bool, shared: Arc<Mutex<Shared>>, rx: mpsc::Recei
     }
     send_event(AppEvent::Redraw);
 
+    let publish = |run: Run| {
+        let mut s = shared.lock();
+        s.running = None;
+        s.seq += 1;
+        s.last = Some(run);
+        drop(s);
+        send_event(AppEvent::Redraw);
+    };
     while let Ok(job) = rx.recv() {
+        let started = Instant::now();
+        shared.lock().running = Some(started);
+        send_event(AppEvent::Redraw);
         match job {
             Job::Query(sql) => {
-                let started = Instant::now();
-                shared.lock().running = Some(started);
-                send_event(AppEvent::Redraw);
+                if let Some(inner) = pageable(&sql) {
+                    let outcome = fetch_page(&mut client, &inner, 0);
+                    // the wrapped query can fail where the plain one wouldn't;
+                    // fall back to running it as typed
+                    if !matches!(outcome, Outcome::Error(_)) {
+                        let (has_more, shown) = match &outcome {
+                            Outcome::Rows(set) => (set.total > PAGE, set.rows.len()),
+                            _ => (false, 0),
+                        };
+                        publish(Run {
+                            outcome,
+                            elapsed: started.elapsed(),
+                            page: Some(Page {
+                                sql: inner.clone(),
+                                offset: 0,
+                                has_more,
+                                total: (!has_more).then_some(shown as u64),
+                            }),
+                        });
+                        if has_more {
+                            let total = count(&mut client, &inner);
+                            if let Some(Some(p)) = shared.lock().last.as_mut().map(|r| r.page.as_mut()) {
+                                if p.sql == inner {
+                                    p.total = total;
+                                }
+                            }
+                            send_event(AppEvent::Redraw);
+                        }
+                        continue;
+                    }
+                }
                 let outcome = run(&mut client, &sql);
                 let schema_changed = matches!(outcome, Outcome::Done(_))
                     && sql.to_lowercase().split_whitespace().any(|w| {
                         matches!(w, "create" | "alter" | "drop")
                     });
-                {
-                    let mut s = shared.lock();
-                    s.running = None;
-                    s.seq += 1;
-                    s.last = Some(Run {
-                        outcome,
-                        elapsed: started.elapsed(),
-                    });
-                }
+                publish(Run {
+                    outcome,
+                    elapsed: started.elapsed(),
+                    page: None,
+                });
                 if schema_changed {
                     if let Ok(schema) = load_schema(&mut client) {
                         shared.lock().schema = Arc::new(schema);
@@ -192,7 +248,73 @@ fn worker(url: String, verify: bool, shared: Arc<Mutex<Shared>>, rx: mpsc::Recei
                 }
                 send_event(AppEvent::Redraw);
             }
+            Job::Page(offset) => {
+                let page = shared
+                    .lock()
+                    .last
+                    .as_ref()
+                    .and_then(|r| r.page.as_ref())
+                    .map(|p| (p.sql.clone(), p.total));
+                let Some((sql, total)) = page else {
+                    shared.lock().running = None;
+                    continue;
+                };
+                let outcome = fetch_page(&mut client, &sql, offset);
+                let has_more = matches!(&outcome, Outcome::Rows(set) if set.total > PAGE);
+                publish(Run {
+                    outcome,
+                    elapsed: started.elapsed(),
+                    page: Some(Page {
+                        sql,
+                        offset,
+                        has_more,
+                        total,
+                    }),
+                });
+            }
         }
+    }
+}
+
+/// The query, ready to wrap in `select * from (…)`, if it only reads and is
+/// one statement.
+fn pageable(sql: &str) -> Option<String> {
+    let q = sql.trim().trim_end_matches(';').trim_end();
+    if q.contains(';') {
+        return None;
+    }
+    let lower = q.to_lowercase();
+    let first = lower.split_whitespace().next()?;
+    let writes = lower.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| {
+        matches!(w, "insert" | "update" | "delete" | "merge" | "into" | "for")
+    });
+    (matches!(first, "select" | "with" | "table" | "values") && !writes).then(|| q.to_string())
+}
+
+/// One page, plus one row to tell whether there's another. `total` on the
+/// result is the rows fetched (so `> PAGE` means more).
+fn fetch_page(client: &mut Client, sql: &str, offset: usize) -> Outcome {
+    let wrapped = format!(
+        "select * from (\n{sql}\n) as _wezzy_page limit {} offset {offset}",
+        PAGE + 1
+    );
+    match run(client, &wrapped) {
+        Outcome::Rows(mut set) => {
+            set.rows.truncate(PAGE);
+            Outcome::Rows(set)
+        }
+        other => other,
+    }
+}
+
+/// How many rows the query returns in all, unless counting takes over 3s.
+fn count(client: &mut Client, sql: &str) -> Option<u64> {
+    let q = format!(
+        "set local statement_timeout = '3s'; select count(*) from (\n{sql}\n) as _wezzy_count"
+    );
+    match run(client, &q) {
+        Outcome::Rows(set) => set.rows.first()?.first()?.as_ref()?.parse().ok(),
+        _ => None,
     }
 }
 

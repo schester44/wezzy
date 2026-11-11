@@ -1,7 +1,8 @@
 //! The SQL view: an editor on top, the last result below.
 //!
 //! ⌘↵ runs the statement under the cursor (or the selection). esc moves to the
-//! result grid (vim keys, `y` copies a cell, `Y` a row); `i`/esc go back.
+//! result grid (`grid.rs`); `i`/esc go back. Read-only queries are fetched a
+//! page at a time (`db.rs`); `[` `]` or the ‹ › buttons turn pages.
 //! Completion pops up while you type a name; tab or ↵ takes it.
 //!
 //! The query text is kept per database in `~/.local/state/wezzy/sql/<name>.sql`.
@@ -9,6 +10,7 @@
 pub mod complete;
 pub mod conn;
 mod db;
+mod grid;
 
 use super::editor::{Editor, Pos};
 use super::{PaneView, ViewCx};
@@ -17,7 +19,8 @@ use crate::ui::{with_alpha, Theme};
 use complete::Candidate;
 use conn::Conn;
 use db::{Db, Outcome, Status};
-use gpui::{div, prelude::*, px, AnyElement, App, ClipboardItem, FontWeight, Hsla, Keystroke, Pixels};
+use gpui::{div, prelude::*, px, AnyElement, App, ClipboardItem, Hsla, Keystroke, Modifiers, Pixels, Point};
+use grid::{Action, Grid};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -46,19 +49,6 @@ struct Menu {
     from: Pos,
 }
 
-#[derive(Default)]
-struct Grid {
-    row: usize,
-    col: usize,
-    top: usize,
-    left: usize,
-    /// rows that fit, from the last draw (paging)
-    page: usize,
-    /// result the widths below belong to
-    seq: u64,
-    widths: Vec<usize>,
-}
-
 pub struct SqlView {
     conn: Option<Conn>,
     /// why `conn` is missing
@@ -70,11 +60,19 @@ pub struct SqlView {
     grid: Grid,
     scratch: Option<PathBuf>,
     saved: u64,
+    /// from the last draw, for mouse hits
+    layout: Option<Layout>,
+}
+
+struct Layout {
+    metrics: Metrics,
+    width: f32,
+    editor_h: f32,
 }
 
 const STATUS_H: f32 = 26.;
-const CELL_PAD: f32 = 8.;
-const MAX_COL_CHARS: usize = 48;
+/// the ‹ › page buttons at the right of the status line
+const PAGE_BTN: f32 = 22.;
 
 impl SqlView {
     pub fn new(args: &str) -> Self {
@@ -100,6 +98,7 @@ impl SqlView {
             grid: Grid::default(),
             scratch,
             saved: 0,
+            layout: None,
         };
         // append the query as its own statement and run it
         if let Some(q) = pending {
@@ -211,6 +210,34 @@ impl SqlView {
 
     // -- result grid ---------------------------------------------------------
 
+    fn act(&mut self, action: Option<Action>, cx: &mut App) {
+        match action {
+            Some(Action::Copy(text, toast)) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                crate::app::send_event(crate::app::AppEvent::Flash(toast));
+            }
+            Some(Action::Page(d)) => self.turn_page(d),
+            Some(Action::Editor) => self.focus = Focus::Editor,
+            None => {}
+        }
+    }
+
+    fn turn_page(&mut self, d: isize) {
+        let Some(db) = &self.db else { return };
+        let s = db.shared.lock();
+        if s.running.is_some() {
+            return;
+        }
+        let Some(page) = s.last.as_ref().and_then(|r| r.page.as_ref()) else { return };
+        let offset = match d {
+            1 if page.has_more => page.offset + db::PAGE,
+            -1 if page.offset > 0 => page.offset.saturating_sub(db::PAGE),
+            _ => return,
+        };
+        drop(s);
+        db.page(offset);
+    }
+
     fn grid_key(&mut self, ks: &Keystroke, cx: &mut App) -> bool {
         let Some(db) = &self.db else { return false };
         let shared = db.shared.lock();
@@ -222,47 +249,19 @@ impl SqlView {
             }
             return false;
         };
-        let rows = set.rows.len();
-        let cols = set.columns.len();
-        let g = &mut self.grid;
-        let half = (g.page / 2).max(1);
-        let m = &ks.modifiers;
-        match (ks.key.as_str(), m.control) {
-            ("j" | "down", false) => g.row = (g.row + 1).min(rows.saturating_sub(1)),
-            ("k" | "up", false) => g.row = g.row.saturating_sub(1),
-            ("l" | "right", false) => g.col = (g.col + 1).min(cols.saturating_sub(1)),
-            ("h" | "left", false) => g.col = g.col.saturating_sub(1),
-            ("d", true) => g.row = (g.row + half).min(rows.saturating_sub(1)),
-            ("u", true) => g.row = g.row.saturating_sub(half),
-            ("f", true) => g.row = (g.row + g.page.max(1)).min(rows.saturating_sub(1)),
-            ("b", true) => g.row = g.row.saturating_sub(g.page.max(1)),
-            ("g", false) if m.shift => g.row = rows.saturating_sub(1),
-            ("g", false) => g.row = 0,
-            ("0" | "^", false) => g.col = 0,
-            ("4", false) if m.shift => g.col = cols.saturating_sub(1),
-            ("$", false) => g.col = cols.saturating_sub(1),
-            ("y", false) => {
-                let text = if m.shift {
-                    set.rows.get(g.row).map(|r| {
-                        r.iter()
-                            .map(|v| v.as_deref().unwrap_or(""))
-                            .collect::<Vec<_>>()
-                            .join("\t")
-                    })
-                } else {
-                    set.rows
-                        .get(g.row)
-                        .and_then(|r| r.get(g.col))
-                        .map(|v| v.clone().unwrap_or_default())
-                };
-                if let Some(text) = text {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                }
-            }
-            ("escape" | "i" | "enter", false) => self.focus = Focus::Editor,
-            _ => return false,
+        if ks.modifiers.platform && ks.key == "a" {
+            self.grid.select_all(set);
+            return true;
         }
-        true
+        let action = self.grid.key(ks, set);
+        drop(shared);
+        match action {
+            Some(a) => {
+                self.act(a, cx);
+                true
+            }
+            None => false,
+        }
     }
 
     fn render_grid(&mut self, m: &Metrics, t: &Theme, focused: bool, size: gpui::Size<Pixels>) -> AnyElement {
@@ -275,107 +274,23 @@ impl SqlView {
             Status::Connecting => return div().into_any_element(),
             Status::Ready => {}
         }
-        let set = match shared.last.as_ref().map(|r| &r.outcome) {
-            None => return div().into_any_element(),
-            Some(Outcome::Error(e)) => return empty_line(e, t.danger, m),
-            Some(Outcome::Done(n)) => {
+        let Some(run) = shared.last.as_ref() else {
+            return div().into_any_element();
+        };
+        let set = match &run.outcome {
+            Outcome::Error(e) => return empty_line(e, t.danger, m),
+            Outcome::Done(n) => {
                 return empty_line(
                     &format!("{n} row{} affected", if *n == 1 { "" } else { "s" }),
                     t.fg_muted,
                     m,
                 )
             }
-            Some(Outcome::Rows(set)) => set,
+            Outcome::Rows(set) => set,
         };
-        let g = &mut self.grid;
-        if g.seq != shared.seq {
-            g.seq = shared.seq;
-            *g = Grid {
-                seq: shared.seq,
-                page: g.page,
-                widths: column_widths(set),
-                ..Default::default()
-            };
-        }
-        let row_h = m.line_h + px(6.);
-        let page = ((f32::from(size.height - row_h) / f32::from(row_h)).floor() as usize).max(1);
-        g.page = page;
-        if g.row < g.top {
-            g.top = g.row;
-        } else if g.row >= g.top + page {
-            g.top = g.row + 1 - page;
-        }
-        let px_w = |chars: usize| m.cell_w * chars as f32 + px(CELL_PAD * 2.);
-        // scroll columns so the cursor's column fits
-        if g.col < g.left {
-            g.left = g.col;
-        }
-        loop {
-            let used: f32 = (g.left..=g.col).map(|c| f32::from(px_w(g.widths[c]))).sum();
-            if used <= f32::from(size.width) || g.left == g.col {
-                break;
-            }
-            g.left += 1;
-        }
-        let mut shown = vec![];
-        let mut x = 0.;
-        for c in g.left..set.columns.len() {
-            shown.push(c);
-            x += f32::from(px_w(g.widths[c]));
-            if x > f32::from(size.width) {
-                break;
-            }
-        }
-        let row_fill = with_alpha(t.fg, 0.04);
-        let cell_fill = with_alpha(t.fg, if focused { 0.09 } else { 0.05 });
-        let bar = if focused { t.accent } else { with_alpha(t.fg_subtle, 0.5) };
-        let cell = |text: String, w: usize, color: Hsla| {
-            div()
-                .w(px_w(w))
-                .flex_none()
-                .px(px(CELL_PAD))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_color(color)
-                .child(text)
-        };
-        let header = div()
-            .h(row_h)
-            .flex()
-            .items_center()
-            .border_b_1()
-            .border_color(t.border)
-            .font_weight(FontWeight::MEDIUM)
-            .children(shown.iter().map(|&c| cell(clip(&set.columns[c], g.widths[c]), g.widths[c], t.fg_muted)));
-        let end = (g.top + page).min(set.rows.len());
-        let rows = (g.top..end).map(|r| {
-            let selected = r == g.row;
-            div()
-                .relative()
-                .h(row_h)
-                .flex()
-                .items_center()
-                .when(selected, |d| d.bg(row_fill))
-                .when(selected, |d| {
-                    d.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(bar))
-                })
-                .children(shown.iter().map(|&c| {
-                    let v = set.rows[r].get(c).cloned().flatten();
-                    let (text, color) = match v {
-                        Some(v) => (clip(&v, g.widths[c]), t.fg),
-                        None => ("NULL".to_string(), t.fg_subtle),
-                    };
-                    cell(text, g.widths[c], color).when(selected && c == g.col, |d| d.h_full().flex().items_center().bg(cell_fill))
-                }))
-        });
-        div()
-            .size_full()
-            .overflow_hidden()
-            .font_family(m.font.family.clone())
-            .text_size(m.font_size)
-            .child(header)
-            .children(rows)
-            .into_any_element()
+        self.grid.sync(shared.seq, set);
+        let first_row = run.page.as_ref().map_or(0, |p| p.offset);
+        self.grid.render(set, first_row, m, t, focused, size)
     }
 
     fn status_line(&self, m: &Metrics, t: &Theme) -> AnyElement {
@@ -385,6 +300,7 @@ impl SqlView {
             .map(|c| format!("{} · {}", c.name, c.target()))
             .unwrap_or_default();
         let mut right = div().flex().items_center().gap_2();
+        let mut pages: Option<(bool, bool)> = None;
         if let Some(db) = &self.db {
             let s = db.shared.lock();
             if let Some(started) = s.running {
@@ -394,27 +310,60 @@ impl SqlView {
             } else if matches!(s.status, Status::Connecting) {
                 right = right.child(crate::ui::spinner(11., t.fg_muted));
             } else if let Some(run) = &s.last {
-                let ms = run.elapsed.as_millis();
-                let what = match &run.outcome {
-                    Outcome::Rows(set) if set.total > set.rows.len() => {
-                        format!("{} of {} rows", set.rows.len(), set.total)
+                let mut parts = vec![];
+                if !self.grid.selected.is_empty() {
+                    parts.push(format!("{} selected", self.grid.selected.len()));
+                }
+                match (&run.outcome, &run.page) {
+                    (Outcome::Rows(set), Some(p)) if !set.rows.is_empty() => {
+                        let (a, b) = (p.offset + 1, p.offset + set.rows.len());
+                        parts.push(match p.total {
+                            Some(n) => format!("{a}–{b} of {n}"),
+                            None if p.has_more => format!("{a}–{b} of many"),
+                            None => format!("{a}–{b}"),
+                        });
+                        pages = Some((p.offset > 0, p.has_more));
                     }
-                    Outcome::Rows(set) => {
-                        format!("{} row{}", set.total, if set.total == 1 { "" } else { "s" })
+                    (Outcome::Rows(set), Some(p)) if p.offset > 0 => {
+                        parts.push(format!("no rows past {}", p.offset));
+                        pages = Some((true, false));
                     }
-                    _ => String::new(),
-                };
-                right = right.child(if what.is_empty() {
-                    format!("{ms} ms")
-                } else {
-                    format!("{what} · {ms} ms")
-                });
+                    (Outcome::Rows(set), _) if set.total > set.rows.len() => {
+                        parts.push(format!("{} of {} rows", set.rows.len(), set.total))
+                    }
+                    (Outcome::Rows(set), _) => {
+                        parts.push(format!("{} row{}", set.total, if set.total == 1 { "" } else { "s" }))
+                    }
+                    _ => {}
+                }
+                parts.push(format!("{} ms", run.elapsed.as_millis()));
+                right = right.child(parts.join(" · "));
             }
+        }
+        let button = |icon: crate::ui::Icon, enabled: bool| {
+            div()
+                .w(px(PAGE_BTN))
+                .h(px(18.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .when(enabled, |d| d.hover(|s| s.bg(t.hover)))
+                .child(crate::ui::icon(icon, 12., if enabled { t.fg_muted } else { with_alpha(t.fg_subtle, 0.4) }))
+        };
+        if let Some((prev, next)) = pages {
+            right = right.child(
+                div()
+                    .flex()
+                    .child(button(crate::ui::Icon::ChevronLeft, prev))
+                    .child(button(crate::ui::Icon::ChevronRight, next)),
+            );
         }
         div()
             .h(px(STATUS_H))
             .flex_none()
-            .px(px(10.))
+            .pl(px(10.))
+            .pr(px(6.))
             .flex()
             .items_center()
             .justify_between()
@@ -489,6 +438,11 @@ impl PaneView for SqlView {
     fn render(&mut self, vcx: &ViewCx, t: &Theme, _cx: &mut App) -> AnyElement {
         let m = &vcx.metrics;
         let editor_h = (vcx.size.height * 0.4).max(m.line_h * 6. + px(10.)).min(vcx.size.height * 0.7);
+        self.layout = Some(Layout {
+            metrics: m.clone(),
+            width: f32::from(vcx.size.width),
+            editor_h: f32::from(editor_h),
+        });
         let grid_h = vcx.size.height - editor_h - px(STATUS_H);
         let editor_focused = vcx.focused && self.focus == Focus::Editor;
         let grid_focused = vcx.focused && self.focus == Focus::Grid;
@@ -512,10 +466,54 @@ impl PaneView for SqlView {
 
     fn claims(&self, ks: &Keystroke) -> bool {
         let m = &ks.modifiers;
-        self.focus == Focus::Editor
-            && m.platform
-            && !m.control
-            && matches!(ks.key.as_str(), "enter" | "a" | "z" | "x")
+        if !m.platform || m.control {
+            return false;
+        }
+        match self.focus {
+            Focus::Editor => matches!(ks.key.as_str(), "enter" | "a" | "z" | "x"),
+            Focus::Grid => ks.key == "a",
+        }
+    }
+
+    fn mouse_down(&mut self, pos: Point<Pixels>, mods: &Modifiers, _clicks: usize, cx: &mut App) {
+        let Some(l) = &self.layout else { return };
+        let y = f32::from(pos.y);
+        if y < l.editor_h {
+            self.focus = Focus::Editor;
+            self.menu = None;
+            let m = l.metrics.clone();
+            self.editor.click(&m, pos, mods.shift);
+            return;
+        }
+        if y < l.editor_h + STATUS_H {
+            // the ‹ › buttons sit at the right end
+            let from_right = l.width - 6. - f32::from(pos.x);
+            if (0. ..PAGE_BTN).contains(&from_right) {
+                self.act(Some(Action::Page(1)), cx);
+            } else if (PAGE_BTN..PAGE_BTN * 2.).contains(&from_right) {
+                self.act(Some(Action::Page(-1)), cx);
+            }
+            return;
+        }
+        let grid_pos = gpui::point(pos.x, pos.y - px(l.editor_h + STATUS_H));
+        let Some(db) = &self.db else { return };
+        let s = db.shared.lock();
+        if let Some(Outcome::Rows(set)) = s.last.as_ref().map(|r| &r.outcome) {
+            self.focus = Focus::Grid;
+            self.grid.click(grid_pos, mods, set);
+        }
+    }
+
+    fn scroll(&mut self, pos: Point<Pixels>, lines: isize) {
+        let Some(l) = &self.layout else { return };
+        if f32::from(pos.y) < l.editor_h + STATUS_H {
+            return;
+        }
+        let Some(db) = &self.db else { return };
+        let s = db.shared.lock();
+        if let Some(Outcome::Rows(set)) = s.last.as_ref().map(|r| &r.outcome) {
+            self.grid.scroll(lines, set);
+        }
     }
 
     fn key(&mut self, ks: &Keystroke, cx: &mut App) -> bool {
@@ -582,11 +580,13 @@ impl PaneView for SqlView {
             Focus::Grid => {
                 let s = self.db.as_ref()?.shared.lock();
                 match s.last.as_ref().map(|r| &r.outcome) {
-                    Some(Outcome::Rows(set)) => set
-                        .rows
-                        .get(self.grid.row)?
-                        .get(self.grid.col)
-                        .map(|v| v.clone().unwrap_or_default()),
+                    Some(Outcome::Rows(set)) => match self.grid.copy(set, false)? {
+                        Action::Copy(text, toast) => {
+                            crate::app::send_event(crate::app::AppEvent::Flash(toast));
+                            Some(text)
+                        }
+                        _ => None,
+                    },
                     _ => None,
                 }
             }
@@ -603,31 +603,6 @@ fn empty_line(text: &str, color: Hsla, m: &Metrics) -> AnyElement {
         .text_color(color)
         .child(text.to_string())
         .into_any_element()
-}
-
-/// One line of a value, cut to `w` chars.
-fn clip(s: &str, w: usize) -> String {
-    let one: String = s.chars().map(|c| if c == '\n' || c == '\t' { ' ' } else { c }).collect();
-    if one.chars().count() > w {
-        one.chars().take(w.saturating_sub(1)).collect::<String>() + "…"
-    } else {
-        one
-    }
-}
-
-fn column_widths(set: &db::ResultSet) -> Vec<usize> {
-    (0..set.columns.len())
-        .map(|c| {
-            let data = set
-                .rows
-                .iter()
-                .take(500)
-                .map(|r| r.get(c).and_then(|v| v.as_deref()).map_or(4, |v| v.chars().count()))
-                .max()
-                .unwrap_or(0);
-            data.max(set.columns[c].chars().count()).clamp(4, MAX_COL_CHARS)
-        })
-        .collect()
 }
 
 /// Keywords muted, comments and strings subtle; names stay `fg`.

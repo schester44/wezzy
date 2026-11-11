@@ -844,6 +844,15 @@ impl TermApp {
                 col >= p.left && col < p.left + p.width && row >= p.top && row < p.top + p.height
             }) {
                 tab.set_active_idx(p.index);
+                if let Some(view) = self.views.get_mut(p.pane.pane_id()) {
+                    let pos = point(
+                        ev.position.x - g.origin.x - g.cell_w * p.left as f32,
+                        ev.position.y - g.origin.y - g.line_h * p.top as f32,
+                    );
+                    view.mouse_down(pos, &ev.modifiers, ev.click_count, cx);
+                    cx.notify();
+                    return;
+                }
                 // ⌘-click opens the URL / file:line under the mouse
                 if ev.modifiers.platform {
                     let pane = p.pane.clone();
@@ -971,6 +980,15 @@ impl TermApp {
                 None => return,
             },
         };
+        if let Some(view) = self.views.get_mut(pane.pane_id()) {
+            let pos = point(
+                g.cell_w * col as f32 + (ev.position.x - g.origin.x) % g.cell_w,
+                g.line_h * row as f32 + (ev.position.y - g.origin.y) % g.line_h,
+            );
+            view.scroll(pos, lines);
+            cx.notify();
+            return;
+        }
         if pane.is_mouse_grabbed() {
             // the app asked for mouse reporting (Claude Code's fullscreen UI, vim
             // with mouse=a, …): send real wheel events, one per line, as WezTerm does

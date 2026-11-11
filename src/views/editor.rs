@@ -4,7 +4,7 @@
 
 use crate::render::Metrics;
 use crate::ui::Theme;
-use gpui::{div, prelude::*, px, AnyElement, Hsla, Keystroke, Pixels};
+use gpui::{div, prelude::*, px, AnyElement, Hsla, Keystroke, Pixels, Point};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct Pos {
@@ -316,6 +316,19 @@ impl Editor {
         }
         self.cur = p;
         self.last = Edit::None;
+    }
+
+    /// Put the cursor where the mouse went down (`pos` relative to the
+    /// editor); `extend` (shift) selects up to it.
+    pub fn click(&mut self, m: &Metrics, pos: Point<Pixels>, extend: bool) {
+        let col = ((f32::from(pos.x) - INSET) / f32::from(m.cell_w)).round().max(0.) as usize;
+        let row = ((f32::from(pos.y) - INSET / 2.) / f32::from(m.line_h)).floor().max(0.) as usize;
+        let p = self.clamp(Pos {
+            row: row + self.scroll_row,
+            col: col + self.scroll_col,
+        });
+        self.goal = None;
+        self.move_to(p, extend);
     }
 
     pub fn select_all(&mut self) {

@@ -39,8 +39,8 @@ impl Conn {
     }
 }
 
-/// Configured databases, then ones found in `cwd`'s project.
-pub fn all(cwd: Option<&Path>) -> Vec<Conn> {
+/// Configured databases, then ones found in the projects of `cwds`, in order.
+pub fn all(cwds: &[PathBuf]) -> Vec<Conn> {
     let mut out: Vec<Conn> = crate::settings::get()
         .databases
         .into_iter()
@@ -50,7 +50,7 @@ pub fn all(cwd: Option<&Path>) -> Vec<Conn> {
             source: None,
         })
         .collect();
-    if let Some(cwd) = cwd {
+    for cwd in cwds {
         for c in discover(cwd) {
             if !out.iter().any(|o| o.url == c.url || o.name == c.name) {
                 out.push(c);
@@ -72,7 +72,7 @@ pub fn resolve(args: &str) -> Option<Conn> {
             url: url_from_env(&path)?,
             source: Some(path),
         }),
-        None => all(None).into_iter().find(|c| c.name == name),
+        None => all(&[]).into_iter().find(|c| c.name == name),
     }
 }
 
@@ -115,19 +115,25 @@ fn env_files(root: &Path) -> Vec<PathBuf> {
 
 /// Found databases per project root, for a few seconds: the palette asks on
 /// every keystroke.
-static CACHE: parking_lot::Mutex<Option<(PathBuf, std::time::Instant, Vec<Conn>)>> =
-    parking_lot::Mutex::new(None);
+type Cache = HashMap<PathBuf, (std::time::Instant, Vec<Conn>)>;
+static CACHE: parking_lot::Mutex<Option<Cache>> = parking_lot::Mutex::new(None);
 
 pub fn discover(cwd: &Path) -> Vec<Conn> {
     let root = project_root(cwd);
+    // a shell in ~ isn't in a project; don't walk the home folder
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if root.parent().is_none() || Some(&root) == home.as_ref() {
+        return vec![];
+    }
     let mut cache = CACHE.lock();
-    if let Some((r, at, conns)) = cache.as_ref() {
-        if *r == root && at.elapsed() < std::time::Duration::from_secs(10) {
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some((at, conns)) = cache.get(&root) {
+        if at.elapsed() < std::time::Duration::from_secs(10) {
             return conns.clone();
         }
     }
     let conns = scan(&root);
-    *cache = Some((root, std::time::Instant::now(), conns.clone()));
+    cache.insert(root, (std::time::Instant::now(), conns.clone()));
     conns
 }
 
