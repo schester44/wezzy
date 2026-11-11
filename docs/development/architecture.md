@@ -107,6 +107,11 @@ the whole UI follows the WezTerm color scheme.
   directory, maps server pane ids to local ones and derives
   Working / NeedsInput / Done / Idle. Without hooks, status is guessed from
   title spinners, output and bells.
+- **Names** (`agents::names`): Rename agent stores a name per server pane id
+  in a state file, since the mux protocol can't store data on a server pane.
+  The file records the server's pid and is ignored under a new server (pane ids
+  restart from 0); `session.rs` prunes ids missing from `ListPanes`.
+  `Agent::display_name()` is the one way to name an agent in the UI.
 - **Transitions:** state changes raise toasts, tab dots and the chime
   (`sound.rs`) when you're not looking at that pane.
 - **Notifications** (`notify.rs`): with the window inactive, a transition also
@@ -168,3 +173,4 @@ the whole UI follows the WezTerm color scheme.
 | Active workspace | `~/.local/share/wezzy/last-workspace` |
 | App settings | `~/.config/wezzy/settings.json` |
 | Agent status | `~/.local/state/wezzy/agents/` |
+| Agent names | `~/.local/state/wezzy/agent-names.json` (keyed by server pane id + server pid) |

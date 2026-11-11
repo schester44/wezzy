@@ -182,6 +182,7 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Previous Tab", Key(ActivateTabRelative(-1))),
         ("Toggle Sidebar", App(AppCommand::ToggleSidebar)),
         ("Find Agent…", App(AppCommand::FindAgent)),
+        ("Rename Agent…", App(AppCommand::RenameAgent)),
         ("Find Tab…", App(AppCommand::FindTab)),
         ("Switch Workspace…", App(AppCommand::SwitchWorkspace)),
         ("Install Claude Code Hooks", App(AppCommand::InstallAgentHooks)),
@@ -209,15 +210,17 @@ impl TermApp {
         for a in agents::collect(self.active_pane().map(|p| p.pane_id())) {
             items.push(Item {
                 kind: Kind::Agent,
-                title: format!("{} · {}", a.kind, a.project),
+                title: format!("{} · {}", a.display_name(), a.project),
                 subtitle: {
                     let pane = crate::session::remote_pane_id(a.pane_id)
                         .map(|id| format!(" · pane {id}"))
                         .unwrap_or_default();
+                    // a named agent still says what it is
+                    let kind = a.name.as_ref().map(|_| format!("{} · ", a.kind)).unwrap_or_default();
                     if a.title.is_empty() {
-                        format!("{}{pane}", a.workspace)
+                        format!("{kind}{}{pane}", a.workspace)
                     } else {
-                        format!("{} — {}{pane}", a.title, a.workspace)
+                        format!("{kind}{} — {}{pane}", a.title, a.workspace)
                     }
                 },
                 shortcut: None,
@@ -653,6 +656,7 @@ impl TermApp {
             AppCommand::SshHost => self.open_palette(Scope::Hosts, cx),
             AppCommand::CommandPalette => self.open_palette(Scope::All, cx),
             AppCommand::FindAgent => self.open_palette(Scope::Agents, cx),
+            AppCommand::RenameAgent => self.start_agent_rename(None, cx),
             AppCommand::FindTab => self.open_palette(Scope::Tabs, cx),
             AppCommand::SwitchWorkspace => self.open_palette(Scope::Workspaces, cx),
             AppCommand::NewWorkspace => self.prompt_new_workspace(cx),
