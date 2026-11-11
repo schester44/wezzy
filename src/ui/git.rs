@@ -62,7 +62,10 @@ impl TermApp {
             .children(self.git_composer(&snap, t, cx))
             .child(body)
             .when(
-                self.git.confirm.is_some() || self.git.committing || self.git.visual.is_some(),
+                self.git.confirm.is_some()
+                    || self.git.committing
+                    || self.git.creating_pr
+                    || self.git.visual.is_some(),
                 |d| {
                 d.child(self.git_footer(t, cx))
                 },
@@ -82,6 +85,7 @@ impl TermApp {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         let (hash, subject) = snap.head.split_once(' ').unwrap_or((&snap.head, ""));
+        let pr = crate::pr::cached(snap);
         div()
             .flex_none()
             .px_4()
@@ -102,9 +106,15 @@ impl TermApp {
                     .child(div().text_color(t.fg_subtle).child("/"))
                     .child(
                         div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
                             .font_weight(FontWeight::MEDIUM)
                             .child(snap.branch.clone()),
                     )
+                    .children(tracking(snap, t))
+                    .children(pr.map(|pr| pr_chip(pr, t, cx)))
                     .child(div().flex_1())
                     .when(adds + dels > 0, |d| d.child(counts(adds, dels, t)))
                     .child(
@@ -173,7 +183,13 @@ impl TermApp {
         lines.drain(..hidden);
         let n = lines.len();
         let caret = || div().ml_px().w(px(1.5)).h(px(15.)).flex_none().bg(t.accent);
-        let context = if c.amend {
+        let context = if let Some(pr) = &c.pr {
+            let base = pr.plan.base.as_deref().unwrap_or("");
+            match pr.plan.commits {
+                Some(n) => format!("{n} commit{} → {base}", if n == 1 { "" } else { "s" }),
+                None => format!("{} → {base}", pr.plan.branch),
+            }
+        } else if c.amend {
             format!("Amending {}", snap.head.split(' ').next().unwrap_or(""))
         } else {
             let k = snap.staged.len();
@@ -205,7 +221,11 @@ impl TermApp {
                                         .flex()
                                         .items_center()
                                         .child(caret())
-                                        .child(div().ml_1().text_color(t.fg_subtle).child("Commit message")),
+                                        .child(div().ml_1().text_color(t.fg_subtle).child(if c.pr.is_some() {
+                                            "Pull request title"
+                                        } else {
+                                            "Commit message"
+                                        })),
                                 )
                             } else {
                                 d.children(lines.into_iter().enumerate().map(|(i, l)| {
@@ -233,7 +253,7 @@ impl TermApp {
                         .text_size(px(12.))
                         .text_color(t.fg_subtle)
                         .child(div().flex_1().child(context))
-                        .when(subject_len > 50, |d| {
+                        .when(subject_len > 50 && c.pr.is_none(), |d| {
                             d.child(
                                 div()
                                     .font_family(term_family())
@@ -242,6 +262,31 @@ impl TermApp {
                                     .child(subject_len.to_string()),
                             )
                         })
+                        .children(c.pr.as_ref().map(|pr| {
+                            let draft = pr.draft;
+                            div()
+                                .id("pr-draft")
+                                .h(px(24.))
+                                .px_2()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .border_1()
+                                .border_color(t.border)
+                                .text_color(if draft { t.fg } else { t.fg_muted })
+                                .hover(|s| s.bg(t.hover))
+                                .when(draft, |d| d.child(icon(Icon::Check, 11., t.fg)))
+                                .child("Draft")
+                                .child(div().text_color(t.fg_subtle).child("^D"))
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    if let Some(pr) = this.git.composer.as_mut().and_then(|c| c.pr.as_mut()) {
+                                        pr.draft = !pr.draft;
+                                    }
+                                    cx.notify();
+                                }))
+                        }))
                         .child(
                             div()
                                 .id("commit-submit")
@@ -258,10 +303,20 @@ impl TermApp {
                                 .text_color(t.fg)
                                 .font_weight(FontWeight::MEDIUM)
                                 .hover(|s| s.bg(with_alpha(t.fg, 0.12)))
-                                .child(if c.amend { "Amend" } else { "Commit" })
+                                .child(if c.pr.is_some() {
+                                    "Create"
+                                } else if c.amend {
+                                    "Amend"
+                                } else {
+                                    "Commit"
+                                })
                                 .child(div().text_color(t.fg_subtle).child("↩"))
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.submit_commit();
+                                    if this.git.composer.as_ref().is_some_and(|c| c.pr.is_some()) {
+                                        this.submit_pull_request();
+                                    } else {
+                                        this.submit_commit();
+                                    }
                                     cx.notify();
                                 })),
                         ),
@@ -337,6 +392,9 @@ impl TermApp {
         }
         if self.git.committing {
             return footer.gap_2().child(spinner(12., t.fg_muted)).child("Committing…");
+        }
+        if self.git.creating_pr {
+            return footer.gap_2().child(spinner(12., t.fg_muted)).child("Creating pull request…");
         }
         if let Some(v) = self.git.visual {
             let (lo, hi) = v.range();
@@ -827,6 +885,59 @@ fn comment_badge(n: usize, t: &Theme) -> impl IntoElement {
         .child(n.to_string())
 }
 
+/// Ahead/behind the upstream (nothing when in step), or a crossed-out cloud
+/// when the branch has no upstream yet.
+fn tracking(snap: &Snapshot, t: &Theme) -> Option<AnyElement> {
+    if !snap.on_branch || !snap.has_head {
+        return None;
+    }
+    let Some(u) = &snap.upstream else {
+        return Some(icon(Icon::CloudOff, 12., t.fg_subtle).into_any_element());
+    };
+    if u.ahead == 0 && u.behind == 0 {
+        return None;
+    }
+    Some(
+        div()
+            .flex_none()
+            .flex()
+            .gap_1()
+            .font_family(term_family())
+            .text_size(px(11.))
+            .text_color(t.fg_subtle)
+            .when(u.ahead > 0, |d| d.child(format!("↑{}", u.ahead)))
+            .when(u.behind > 0, |d| d.child(format!("↓{}", u.behind)))
+            .into_any_element(),
+    )
+}
+
+/// The branch's pull request: state icon + number; click opens it.
+fn pr_chip(pr: crate::pr::PullRequest, t: &Theme, cx: &mut Context<TermApp>) -> impl IntoElement {
+    use crate::pr::PrState;
+    let (ic, color) = match pr.state {
+        PrState::Open => (Icon::PullRequest, t.success),
+        PrState::Draft => (Icon::PullRequestDraft, t.fg_subtle),
+        PrState::Merged => (Icon::GitMerge, t.fg_muted),
+        PrState::Closed => (Icon::PullRequestClosed, t.fg_subtle),
+    };
+    let url = pr.url.clone();
+    div()
+        .id("git-pr")
+        .flex_none()
+        .ml_1()
+        .flex()
+        .items_center()
+        .gap_1()
+        .font_family(term_family())
+        .text_size(px(11.))
+        .text_color(t.fg_muted)
+        .cursor_pointer()
+        .hover(|s| s.text_color(t.fg))
+        .child(icon(ic, 12., color))
+        .child(format!("#{}", pr.number))
+        .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)))
+}
+
 fn counts(adds: u32, dels: u32, t: &Theme) -> impl IntoElement {
     div()
         .flex_none()
@@ -891,6 +1002,7 @@ impl TermApp {
                 &[
                     ("c", "Commit staged"),
                     ("a", "Amend last commit"),
+                    ("p", "Open or create pull request"),
                     ("r", "Run a recipe (review, simplify…)"),
                 ],
             ),

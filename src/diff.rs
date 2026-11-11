@@ -90,10 +90,23 @@ pub struct FileDiff {
     pub note: Option<&'static str>,
 }
 
+/// The branch's upstream and how far apart they are.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Upstream {
+    pub ahead: u32,
+    pub behind: u32,
+    /// upstream commit, so a push is noticed
+    pub sha: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Snapshot {
     pub root: Option<PathBuf>,
+    /// branch name, or the short hash when HEAD is detached
     pub branch: String,
+    pub on_branch: bool,
+    /// `None` on a branch with no upstream (or a detached HEAD)
+    pub upstream: Option<Upstream>,
     /// "abc1234 subject" of HEAD, empty on an unborn branch
     pub head: String,
     pub has_head: bool,
@@ -171,6 +184,7 @@ pub fn start() {
             }
             let snap = compute(&target);
             last = Some((target, Instant::now()));
+            crate::pr::poll(&snap);
             publish(snap);
         }
     });
@@ -187,7 +201,7 @@ fn git_cmd(dir: &Path) -> Command {
     c
 }
 
-fn git(dir: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let out = git_cmd(dir).args(args).stderr(Stdio::null()).output().ok()?;
     out.status
         .success()
@@ -195,7 +209,7 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// Run git for a write op; Err carries git's message.
-fn git_run(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
+pub(crate) fn git_run(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
     let mut child = git_cmd(dir)
         .args(args)
         .env_remove("GIT_OPTIONAL_LOCKS")
@@ -226,7 +240,7 @@ fn git_run(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<String, Str
     }
 }
 
-fn compute(cwd: &Path) -> Snapshot {
+pub(crate) fn compute(cwd: &Path) -> Snapshot {
     let Some(root) = git(cwd, &["rev-parse", "--show-toplevel"]).map(|s| PathBuf::from(s.trim()))
     else {
         return Snapshot::default();
@@ -234,10 +248,13 @@ fn compute(cwd: &Path) -> Snapshot {
     let head = git(&root, &["log", "-1", "--format=%h %s"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    let branch = git(&root, &["symbolic-ref", "--short", "-q", "HEAD"])
+    let symbolic = git(&root, &["symbolic-ref", "--short", "-q", "HEAD"]);
+    let on_branch = symbolic.is_some();
+    let branch = symbolic
         .or_else(|| git(&root, &["rev-parse", "--short", "HEAD"]))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
+    let upstream = on_branch.then(|| upstream(&root)).flatten();
 
     let staged = parse_diff(&git(&root, &["diff", "--cached", "--no-ext-diff"]).unwrap_or_default());
     let unstaged = parse_diff(&git(&root, &["diff", "--no-ext-diff"]).unwrap_or_default());
@@ -251,12 +268,23 @@ fn compute(cwd: &Path) -> Snapshot {
     Snapshot {
         root: Some(root),
         branch,
+        on_branch,
+        upstream,
         has_head: !head.is_empty(),
         head,
         untracked,
         unstaged,
         staged,
     }
+}
+
+fn upstream(root: &Path) -> Option<Upstream> {
+    let sha = git(root, &["rev-parse", "--verify", "-q", "@{upstream}"])?.trim().to_string();
+    let counts = git(root, &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])?;
+    let mut it = counts.split_whitespace().map(|n| n.parse::<u32>().unwrap_or(0));
+    let behind = it.next()?;
+    let ahead = it.next()?;
+    Some(Upstream { ahead, behind, sha })
 }
 
 fn untracked_file(root: &Path, path: &str) -> FileDiff {

@@ -37,6 +37,7 @@ pub enum AppCommand {
     RenameWorkspace,
     MoveTabToWorkspace,
     MovePaneToNewWindow,
+    CreatePullRequest,
 }
 
 impl AppCommand {
@@ -65,6 +66,7 @@ impl AppCommand {
         Self::RenameWorkspace,
         Self::MoveTabToWorkspace,
         Self::MovePaneToNewWindow,
+        Self::CreatePullRequest,
     ];
 
     /// Stable id, used in the event name.
@@ -94,6 +96,7 @@ impl AppCommand {
             Self::RenameWorkspace => "rename-workspace",
             Self::MoveTabToWorkspace => "move-tab-to-workspace",
             Self::MovePaneToNewWindow => "move-pane-to-new-window",
+            Self::CreatePullRequest => "create-pull-request",
         }
     }
 
@@ -124,6 +127,7 @@ impl AppCommand {
             Self::RenameWorkspace => "RenameWorkspace",
             Self::MoveTabToWorkspace => "MoveTabToWorkspace",
             Self::MovePaneToNewWindow => "MovePaneToNewWindow",
+            Self::CreatePullRequest => "CreatePullRequest",
         }
     }
 
@@ -154,6 +158,7 @@ impl AppCommand {
             Self::RenameWorkspace => "Rename workspace",
             Self::MoveTabToWorkspace => "Move tab to workspace",
             Self::MovePaneToNewWindow => "Move pane to new window",
+            Self::CreatePullRequest => "Create pull request",
         }
     }
 

@@ -1,0 +1,142 @@
+# Git panel
+
+Review what your agents changed without leaving the terminal. The git panel
+shows the changes in the repo you're working in, lets you stage, discard and
+commit them hunk by hunk, and sends your line comments back to the agent as
+one review.
+
+When the branch is ready, open a pull request from the same place.
+
+## Opening it
+
+| | |
+|---|---|
+| ⌘D | Open or close the git panel |
+| ⌃h | Move into the panel from the leftmost pane |
+| esc or ⌃l | Back to the terminal |
+| q | Close the panel |
+| ⌘K → **Create Pull Request** | Open the panel and start a pull request |
+
+The panel takes the sidebar's place on the left while it's open.
+
+## What it shows
+
+The panel follows the pane you're in. When that pane runs an agent with
+Wezzy's hooks installed (⌘, → Agent hooks), it shows the repo the agent is
+working in, even if the agent moved into another folder or a git worktree.
+Otherwise it shows the repo of the pane's current folder.
+
+The header has the repo, the branch and the last commit, plus:
+
+- **Ahead / behind:** `↑2 ↓1` when the branch is ahead of or behind its
+  upstream. Nothing when they're in step.
+- **No upstream:** a crossed-out cloud when the branch hasn't been pushed yet.
+- **Pull request:** the branch's pull request number with an icon for its
+  state: open, draft, merged or closed. Click it to open the PR in your browser.
+- **+/− counts** for everything that's changed, and **?** for the shortcut sheet.
+
+Below that, changes are grouped into **Untracked**, **Unstaged** and **Staged**.
+Expand a file to see its hunks.
+
+## Keys
+
+Press `?` in the panel to see these.
+
+| | |
+|---|---|
+| j / k, ↓ / ↑ | Move (through diff lines too) |
+| ] / [ | Next / previous hunk or file |
+| g / G | Top / bottom |
+| ⌃d / ⌃u | Half a page down / up |
+| tab, space | Expand / collapse (`l` expands, `h` collapses) |
+| ↵ | Expand, or open the hunk in your editor |
+| o | Open the file at the cursor line in your editor |
+| s | Stage or unstage the file, hunk or section |
+| S | Stage everything; unstage everything if it's all staged |
+| d | Discard (press `d`, `y` or ↵ again to confirm) |
+| c | Commit what's staged |
+| a | Amend the last commit |
+| p | Open the branch's pull request, or create one |
+| f | Comment on the line, or the whole hunk from its header |
+| V | Select lines from the cursor, then `f` to comment on them |
+| F | Send your comments to an agent |
+| ↵ / d on a comment | Edit / delete it |
+| r | Run a recipe on this repo |
+| R | Refresh |
+| < / > | Narrower / wider |
+
+## Committing
+
+`c` opens a box at the top of the panel. The first line is the subject. ↵
+commits, ⇧↵ adds a line, esc closes the box and keeps what you wrote for next
+time. `a` opens the box with the last commit's message to amend it.
+
+## Comments for the agent
+
+Leave comments with `f` on a line, a selection (`V`) or a hunk header, then
+press `F`. All of them go to the agent as one message, each with its file, line
+numbers and the changed lines, pasted into the agent's prompt so you can add to
+it before pressing ↵. If more than one agent is open in the workspace, you pick
+which one.
+
+## Pull requests
+
+Press `p` on a branch with commits to compose a pull request. The title starts
+as the commit's subject when the branch has one commit, or as the branch name
+in words (`steve/fix-login` becomes "Fix login"). Add a body on the lines below
+it with ⇧↵.
+
+| | |
+|---|---|
+| ↵ | Create the pull request |
+| ⌃D | Toggle draft |
+| esc | Cancel |
+
+Wezzy pushes the branch first (setting its upstream if it doesn't have one),
+then creates the pull request against the repo's default branch. A toast says
+when it's done, and the header shows the new PR. Nothing opens in your
+browser.
+
+If the branch already has an open pull request, `p` opens it in your browser
+instead.
+
+## Setting it up
+
+Pull request info and creation use the [GitHub CLI](https://cli.github.com).
+Install it and log in:
+
+```sh
+brew install gh
+gh auth login
+```
+
+Opening files uses your editor, `$EDITOR` by default. To pick another, set
+`editor` in `~/.config/wezzy/wezzy.lua`:
+
+```lua
+local in_app, wezzy = pcall(require, "wezzy")
+if in_app then
+  wezzy.setup({
+    editor = { "nvim", "+{line}", "{file}" },
+  })
+end
+```
+
+## Details
+
+- The panel refreshes every couple of seconds, and right away after you
+  stage, discard or commit. It never locks the repo, so it won't get in the way
+  of an agent that's committing.
+- The pull request in the header is checked about once a minute, when you
+  switch branches, after a push, and when you press `R`.
+- Without `gh`, or when you're not logged in, the header shows no pull
+  request and `p` shows a toast.
+- `p` won't create a pull request from the default branch, from a detached
+  HEAD, in a repo with no remote, or when the branch has no commits the default
+  branch doesn't have. A toast says which.
+- A merged or closed pull request doesn't stop `p`: it composes a new one.
+- If creating fails, the box opens again with what you wrote, and a toast
+  shows the error.
+- Very large diffs and binary files show up without hunks. You can still
+  stage, discard and open them as whole files.
+- A zoomed pane (⌘↵) hides the panel until you unzoom.

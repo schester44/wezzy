@@ -131,11 +131,21 @@ the whole UI follows the WezTerm color scheme.
   are cached per branch so switching back is instant. ↵ runs `gh run watch` /
   `gh run view --log-failed` / `gh run view` in a split (`run_command_in_split`).
 
-## Git panel (`diff.rs`, `gitpanel.rs`, `ui/git.rs`, `feedback.rs`)
+## Git panel (`diff.rs`, `gitpanel.rs`, `ui/git.rs`, `feedback.rs`, `pr.rs`)
 
-- **Polling:** a background poller snapshots `git status` plus parsed hunks
-  for the active pane's repo every 2s, with `GIT_OPTIONAL_LOCKS=0` so it never
-  takes `index.lock`.
+- **Target:** `gitpanel::git_dir` picks the directory: the `cwd` from the
+  pane's latest hook payload (an agent that moved into a worktree), unless a
+  shell is back in the foreground, else the pane's cwd.
+- **Polling:** a background poller snapshots `git status` plus parsed hunks,
+  branch and upstream ahead/behind for that repo every 2s, with
+  `GIT_OPTIONAL_LOCKS=0` so it never takes `index.lock`.
+- **Pull requests** (`pr.rs`): each snapshot calls `pr::poll`, which runs
+  `gh pr view` on its own thread when the (repo, branch) entry is missing,
+  older than 60s, or the upstream sha moved; failures (no `gh`, no auth, no
+  PR) cache as "no PR". `p` / the palette command run `pr::begin` off the
+  main thread (refresh, checks, default branch from `<remote>/HEAD`) and
+  answer with `AppEvent::PullRequest`; creating pushes, then `gh pr create
+  --base <default>` with `GH_PROMPT_DISABLED=1`.
 - **Mutations:** staging and discarding go through `git apply [--cached] [-R]`
   on single-hunk patches.
 - **Review comments:** comments on hunks or lines are sent to an agent as one

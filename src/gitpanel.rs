@@ -10,6 +10,7 @@
 //!   S         stage everything; if everything's already staged, unstage it all
 //!   d         discard (press d again, y or enter to confirm)
 //!   c         commit        a        amend
+//!   p         open the branch's pull request, or compose one (push + gh pr create)
 //!   f         comment on the hunk     F        send comments to an agent
 //!   enter/d   on a comment: edit / delete
 //!   f on a line comments on just that line; on a hunk header, the whole hunk
@@ -17,14 +18,31 @@
 //!   o         open in editor          r        recipes     R  refresh     q  close
 //!   ?         shortcut sheet
 //!
-//! Commit / comment boxes: enter submits, shift+enter adds a line, esc cancels
-//! (the commit box keeps a draft).
+//! Commit / comment / pull request boxes: enter submits, shift+enter adds a
+//! line, esc cancels (the commit box keeps a draft). ^D toggles a PR's draft.
 
 use crate::app::TermApp;
 use crate::diff::{self, Op, Section, Snapshot};
 use crate::feedback::Comment;
 use gpui::{Context, Keystroke, Window};
+use mux::pane::Pane;
 use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+/// Where the git panel looks for a pane: the directory its agent reports
+/// working in (it may have moved into a worktree), else the pane's cwd. A
+/// hook record outlives a killed agent, so it only counts while something
+/// other than the shell is in the foreground.
+pub fn git_dir(pane: &Arc<dyn Pane>) -> Option<PathBuf> {
+    crate::hooks::state(pane.pane_id())
+        .and_then(|h| h.cwd)
+        .filter(|d| d.is_dir() && !crate::procs::can_close_quietly(pane))
+        .or_else(|| {
+            pane.get_current_working_dir(mux::pane::CachePolicy::AllowStale)
+                .map(|u| PathBuf::from(u.path()))
+        })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
@@ -123,6 +141,13 @@ fn edit_text(text: &mut String, ks: &Keystroke, cx: &mut Context<TermApp>) -> Ed
 pub struct Composer {
     pub text: String,
     pub amend: bool,
+    /// composing a pull request rather than a commit
+    pub pr: Option<PrCompose>,
+}
+
+pub struct PrCompose {
+    pub plan: crate::pr::Plan,
+    pub draft: bool,
 }
 
 /// A discard waiting for y/n.
@@ -147,6 +172,8 @@ pub struct GitPanel {
     /// the `?` shortcut sheet
     pub help: bool,
     pub committing: bool,
+    /// pushing + `gh pr create` in the background
+    pub creating_pr: bool,
     /// review comments waiting to be sent (`F`)
     pub comments: Vec<Comment>,
     pub comment_draft: Option<CommentDraft>,
@@ -170,6 +197,7 @@ impl Default for GitPanel {
             confirm: None,
             help: false,
             committing: false,
+            creating_pr: false,
             comments: vec![],
             comment_draft: None,
             feedback_folded: false,
@@ -496,7 +524,9 @@ impl TermApp {
                 Some(r) => self.ask_discard(&snap, r),
             },
             "c" | "a" => self.open_composer(&snap, key == "a"),
+            "p" => self.pull_request(),
             "r" | "R" if shift || key == "R" => {
+                crate::pr::forget(&snap);
                 std::thread::spawn(diff::refresh);
             }
             // recipes (review / simplify / …) run against this repo; {file} = cursor file
@@ -635,19 +665,27 @@ impl TermApp {
         } else {
             std::mem::take(&mut self.git.draft)
         };
-        self.git.composer = Some(Composer { text, amend });
+        self.git.composer = Some(Composer { text, amend, pr: None });
     }
 
     /// Keys while the commit composer is open. Always consumes the key.
     pub(crate) fn composer_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) {
         let Some(c) = self.git.composer.as_mut() else { return };
+        if let Some(pr) = c.pr.as_mut() {
+            let m = &ks.modifiers;
+            if ks.key == "d" && m.control && !m.platform && !m.alt {
+                pr.draft = !pr.draft;
+                return;
+            }
+        }
         match edit_text(&mut c.text, ks, cx) {
             Edit::Cancel => {
                 let c = self.git.composer.take().expect("open");
-                if !c.amend {
+                if !c.amend && c.pr.is_none() {
                     self.git.draft = c.text;
                 }
             }
+            Edit::Submit if c.pr.is_some() => self.submit_pull_request(),
             Edit::Submit => self.submit_commit(),
             Edit::Changed => {}
         }
@@ -748,10 +786,83 @@ impl TermApp {
             }
             Err((err, text)) => {
                 // reopen with the message so nothing is lost
-                self.git.composer = Some(Composer { text, amend });
+                self.git.composer = Some(Composer { text, amend, pr: None });
                 self.flash(format!("Commit failed: {err}"));
             }
         }
         std::thread::spawn(diff::refresh);
+    }
+}
+
+impl TermApp {
+    /// `p`: open the branch's pull request, or start composing one. The
+    /// checks shell out, so they run in the background (`on_pull_request`).
+    pub(crate) fn pull_request(&mut self) {
+        if self.git.creating_pr {
+            self.flash("Creating pull request…");
+            return;
+        }
+        crate::pr::begin();
+    }
+
+    /// The palette's "Create Pull Request": open the git panel on the active
+    /// pane's repo, then do what `p` does.
+    pub(crate) fn pull_request_command(&mut self) {
+        let Some(dir) = self.active_pane().and_then(|p| git_dir(&p)) else {
+            self.flash("Not a git repository");
+            return;
+        };
+        self.diff_open = true;
+        self.sidebar_open = false;
+        self.region = crate::regions::Region::Diff;
+        // render would set it too; set it now so `begin` refreshes the right repo
+        diff::set_target(Some(dir));
+        self.pull_request();
+    }
+
+    pub(crate) fn on_pull_request(&mut self, ev: crate::pr::PrEvent, cx: &mut Context<Self>) {
+        use crate::pr::PrEvent;
+        match ev {
+            PrEvent::Open(url) => cx.open_url(&url),
+            PrEvent::Error(e) => self.flash(e),
+            PrEvent::Compose(plan) => {
+                if self.git.composer.is_some() {
+                    return;
+                }
+                self.git.composer = Some(Composer {
+                    text: plan.title.clone(),
+                    amend: false,
+                    pr: Some(PrCompose { plan, draft: false }),
+                });
+            }
+            PrEvent::Created { url, draft } => {
+                self.git.creating_pr = false;
+                let n = crate::pr::short_ref(&url);
+                self.flash(if draft { format!("Created draft {n}") } else { format!("Created {n}") });
+                std::thread::spawn(diff::refresh);
+            }
+            PrEvent::Failed { error, plan, text, draft } => {
+                self.git.creating_pr = false;
+                self.git.composer = Some(Composer {
+                    text,
+                    amend: false,
+                    pr: Some(PrCompose { plan, draft }),
+                });
+                self.flash(format!("Pull request failed: {error}"));
+                std::thread::spawn(diff::refresh);
+            }
+        }
+    }
+
+    pub(crate) fn submit_pull_request(&mut self) {
+        let Some(c) = self.git.composer.as_ref() else { return };
+        if crate::pr::split_message(&c.text).0.is_empty() {
+            self.flash("Write a title first");
+            return;
+        }
+        let c = self.git.composer.take().expect("open");
+        let Some(pr) = c.pr else { return };
+        self.git.creating_pr = true;
+        crate::pr::create(pr.plan, c.text, pr.draft);
     }
 }

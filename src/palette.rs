@@ -174,6 +174,7 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Run Recipe…", App(AppCommand::RunRecipe)),
         ("SSH…", App(AppCommand::SshHost)),
         ("Toggle Diff Panel", App(AppCommand::ToggleDiffPanel)),
+        ("Create Pull Request", App(AppCommand::CreatePullRequest)),
         ("Toggle Pane Zoom", Key(TogglePaneZoomState)),
         ("Close Pane", Key(CloseCurrentPane { confirm: true })),
         ("Close Tab", Key(CloseCurrentTab { confirm: true })),
@@ -706,6 +707,7 @@ impl TermApp {
             AppCommand::SendOutputToAgent => self.send_output_to_agent(_window, cx),
             AppCommand::SelectError => self.start_error_select(cx),
             AppCommand::OpenEditor => self.open_editor_here(_window, cx),
+            AppCommand::CreatePullRequest => self.pull_request_command(),
             AppCommand::InstallAgentHooks => match crate::hooks::install_claude_hooks() {
                 Ok(()) => self.flash("Hooks installed"),
                 Err(e) => self.flash(format!("Couldn't install hooks: {e:#}")),

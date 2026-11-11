@@ -75,6 +75,8 @@ pub enum AppEvent {
         status: crate::hooks::HookStatus,
         detail: Option<String>,
     },
+    /// The git panel's pull request flow (`pr.rs`).
+    PullRequest(crate::pr::PrEvent),
 }
 
 static EVENTS: OnceLock<smol::channel::Sender<AppEvent>> = OnceLock::new();
@@ -493,6 +495,7 @@ impl TermApp {
                 }
             }
             AppEvent::Committed { result, amend } => self.on_committed(result, amend),
+            AppEvent::PullRequest(ev) => self.on_pull_request(ev, cx),
             AppEvent::AgentStatusChanged {
                 pane_id,
                 status,
