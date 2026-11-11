@@ -48,6 +48,22 @@ the chime and a toast names it. Click the toast to go to that agent. Its dot
 stays green until you go to its pane, so you can see at a glance which ones
 finished since you last looked.
 
+### When Wezzy is in the background
+
+If you're in another app, you also get a macOS notification. Its title is the
+agent and project, such as **Claude · wezzy**. When the agent asks for you, it
+says what it wants, such as Claude's permission prompt; when it finishes, it
+shows the agent's task. Click it to bring Wezzy to the front on that agent's
+pane.
+
+The Dock icon shows how many agents are waiting on you: ones that asked for
+you or finished since you last went to them. Going to an agent's pane takes
+it off the count and clears its notification from Notification Center.
+
+macOS asks whether Wezzy may send notifications the first time one comes up.
+To change your answer later, or how they appear, open System Settings →
+Notifications → Wezzy.
+
 ## Setting it up
 
 Agents and servers show unless you pick your own lists. To turn on Actions,
@@ -74,10 +90,22 @@ or in `~/.config/wezzy/settings.json`:
 If both set it, `wezzy.lua` wins. Leave a list out to hide it. With servers
 or Actions left out, Wezzy also stops checking for them.
 
+To turn off notifications and the Dock badge, set **Notifications** to
+**Off** in Settings (⌘,), or pass `notifications = false` to `wezzy.setup`, or
+add `"notifications": false` to `settings.json`. The chime and toasts are
+separate: **Sound** controls the chime.
+
 Actions uses the [GitHub CLI](https://cli.github.com), so install it and log in
 once with `gh auth login`.
 
 ## Good to know
+
+- You get one notification each time an agent asks for you or finishes, and
+  a newer one for the same agent replaces the older.
+- Notifications only work in the installed Wezzy app. A build run from
+  source (`cargo run`) shows the Dock badge, the toast and the chime, but no
+  notifications.
+- Notifications left from before you restart Wezzy are cleared when it opens.
 
 - Servers on ports below 1024 aren't listed, and neither are the ports agents
   open for themselves.

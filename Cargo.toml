@@ -35,6 +35,9 @@ shell-words = "1.1.1"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 objc = "0.2"
+# already in the tree via gpui; notify.rs (UserNotifications, Dock badge)
+objc2 = "0.6"
+block2 = "0.6"
 
 [profile.dev]
 opt-level = 1

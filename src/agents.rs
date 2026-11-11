@@ -16,14 +16,33 @@ use std::time::Duration;
 /// until you go to their pane. Main thread only, but a static like PANE_ALERTS.
 static UNSEEN: Mutex<Option<HashSet<PaneId>>> = Mutex::new(None);
 
-pub fn mark_unseen(pane_id: PaneId) {
-    UNSEEN.lock().get_or_insert_with(HashSet::new).insert(pane_id);
+/// True when it wasn't already unseen.
+pub fn mark_unseen(pane_id: PaneId) -> bool {
+    let added = UNSEEN.lock().get_or_insert_with(HashSet::new).insert(pane_id);
+    crate::notify::sync_badge();
+    added
 }
 
 pub fn mark_seen(pane_id: PaneId) {
-    if let Some(s) = UNSEEN.lock().as_mut() {
-        s.remove(&pane_id);
+    let removed = UNSEEN.lock().as_mut().is_some_and(|s| s.remove(&pane_id));
+    if removed {
+        crate::notify::withdraw(pane_id);
+        crate::notify::sync_badge();
     }
+}
+
+/// Agents waiting on you: they asked or finished since you last went to them.
+/// Closed panes are dropped. The Dock badge shows this.
+pub fn waiting_count() -> usize {
+    let Some(mux) = Mux::try_get() else {
+        return 0;
+    };
+    let mut guard = UNSEEN.lock();
+    let Some(s) = guard.as_mut() else {
+        return 0;
+    };
+    s.retain(|id| mux.get_pane(*id).is_some());
+    s.len()
 }
 
 fn is_unseen(pane_id: PaneId) -> bool {

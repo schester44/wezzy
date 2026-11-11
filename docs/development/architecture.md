@@ -109,6 +109,15 @@ the whole UI follows the WezTerm color scheme.
   title spinners, output and bells.
 - **Transitions:** state changes raise toasts, tab dots and the chime
   (`sound.rs`) when you're not looking at that pane.
+- **Notifications** (`notify.rs`): with the window inactive, a transition also
+  posts a `UNUserNotificationCenter` notification with identifier
+  `pane-<server pane id>` (one per pane, replaced on the next transition), and
+  the Dock badge counts `agents::UNSEEN`. Clicks come back through the
+  delegate as `AppEvent::NotificationClicked` and go to `focus_pane`;
+  `mark_seen` withdraws the pane's notification. UserNotifications throws
+  without a bundle id, so `cargo run` builds skip notifications (badge only).
+  Permission is asked on the first post. `notify::tests` checks every message
+  signature against the runtime, since dev builds assert them at the call.
 
 ## Sidebar (`sidebar.rs`)
 
