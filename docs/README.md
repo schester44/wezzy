@@ -6,6 +6,7 @@ How to use Wezzy.
 
 | | |
 |---|---|
+| [Agent overview](features/overview.md) | Every agent as a live card: approve, reply or interrupt without going there |
 | [Git panel](features/git-panel.md) | Review, stage and commit agent changes, comment back, open a pull request |
 | [Keys](features/keys.md) | The leader key, panes and tabs, mouse selection, copy mode, changing keys |
 | [Sidebar](features/sidebar.md) | Agents, dev servers and GitHub Actions runs at a glance |
@@ -28,7 +29,7 @@ How Wezzy is built.
 
 | | |
 |---|---|
-| [Agent overview](roadmap/agent-overview.md) | A full view of every agent: live cards, answer from the card |
+| [Agent overview](roadmap/agent-overview.md) | The overview's next steps: a live stage, diff stats, more harnesses |
 | [Remote compute](roadmap/remote-compute.md) | Agents and shells on other machines |
 | [Mobile](roadmap/mobile.md) | Wezzy from your phone |
 | [Releases from CI](roadmap/ci-releases.md) | Signing, notarizing and drafting releases on GitHub Actions |

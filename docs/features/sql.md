@@ -50,18 +50,37 @@ Tables in your search path are completed bare (`users`), others with their schem
 | g, G | First row, last row |
 | 0, $ | First column, last column |
 | ctrl+d, ctrl+u | Half a page down, up |
-| ctrl+f, ctrl+b | A page down, up |
-| y or ⌘C | Copy the cell |
-| Y | Copy the row, tab-separated |
-| i, esc, ↵ | Back to the editor |
+| ctrl+f, ctrl+b | A screen down, up |
+| [ ] | Previous page, next page |
+| V | Start selecting rows; move to extend, V again to stop |
+| space | Select or unselect the row |
+| ⌘A | Select every row on the page |
+| y or ⌘C | Copy the cell, or the selected rows |
+| Y | Copy the selected rows (or this row) with column names |
+| esc | Clear the selection, or go back to the editor |
+| i, ↵ | Back to the editor |
 
-The line between the editor and the result shows the database, the row count
-and how long the query took. A statement that returns no rows shows how many it
-changed; an error shows Postgres's message.
+With the mouse: click a cell to move there, shift-click to select every row up
+to it, ⌘-click to add or remove a row. The wheel scrolls the rows; click in the
+editor to put the cursor there.
+
+Rows are copied tab-separated, one per line, so they paste into a spreadsheet
+as cells. A cell is copied exactly as it is.
+
+Queries that only read (`select`, `with`, `table`, `values`) come back 500 rows
+at a time. The line between the editor and the result shows where you are
+(`1–500 of 12,345`), how long the page took, and how many rows you've
+selected; ‹ › at its right end turn the page. Counting a large result can take
+a while, so after a few seconds Wezzy stops and says `of many`. Anything else,
+and several statements run together, comes back in one go, up to 10,000 rows.
+
+A statement that returns no rows shows how many it changed; an error shows
+Postgres's message.
 
 ## Setting it up
 
-Wezzy looks for a database in the project of the pane you're in: the `.env`,
+Wezzy looks for databases in the projects you have open in any pane, and in
+your saved workspaces' folders, the one you're in first. In each it reads the `.env`,
 `.env.local` and `.env.development` files at the repository root and up to two
 folders down (`apps/api/.env`). It uses `DATABASE_URL` (or `POSTGRES_URL`,
 `DB_URL`) when it's a `postgres://` URL, and otherwise builds one from `DB_HOST`,
@@ -101,7 +120,8 @@ Databases you name come first, and always show up, whichever project you're in.
   that database, after a restart too. The result isn't kept.
 - When the editor holds several statements and you select them all, they run
   together and you see the last one's result.
-- Up to 10,000 rows are kept; the count says how many there were in all.
+- Each page runs the query again, so a table that's changing can shift rows
+  between pages. Add an `order by` to keep pages stable.
 - Values are shown on one line and cut to fit their column. `y` copies the whole value.
 - Connections use TLS when the server offers it. Certificates are checked only
   with `sslmode=verify-ca` or `verify-full`.

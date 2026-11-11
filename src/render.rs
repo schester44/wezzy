@@ -108,6 +108,46 @@ pub fn snapshot(
     }
 }
 
+/// The last `rows` rows of a bare pane that hold something (text or the
+/// cursor), at most `cols` wide, placed at the origin: an overview card's live
+/// tail. Reads the pane at its own size; never resizes it.
+pub fn bottom_snapshot(pane: &Arc<dyn Pane>, rows: usize, cols: usize) -> PaneSnap {
+    let dims = pane.get_dimensions();
+    let top = dims.physical_top;
+    let (first, mut lines) = pane.get_lines(top..top + dims.viewport_rows as StableRowIndex);
+    let cursor = pane.get_cursor_position();
+    let cursor_row = (cursor.y - first).max(0) as usize;
+    let last = lines
+        .iter()
+        .rposition(|l| !l.is_whitespace())
+        .unwrap_or(0)
+        .max(cursor_row.min(lines.len().saturating_sub(1)));
+    lines.truncate(last + 1);
+    let start = (last + 1).saturating_sub(rows);
+    let mut first_row = first + start as StableRowIndex;
+    lines.drain(..start);
+    // short output: pull in scrollback above the screen to fill the card
+    let missing = rows.saturating_sub(lines.len()) as StableRowIndex;
+    let above = (first_row - dims.scrollback_top).min(missing).max(0);
+    if above > 0 {
+        let (f, mut prev) = pane.get_lines(first_row - above..first_row);
+        prev.append(&mut lines);
+        lines = prev;
+        first_row = f;
+    }
+    PaneSnap {
+        left: 0,
+        top: 0,
+        width: cols.min(dims.cols),
+        height: lines.len(),
+        is_active: true,
+        lines,
+        cursor: (cursor.visibility == CursorVisibility::Visible).then_some(cursor),
+        first_row,
+        palette: pane.palette(),
+    }
+}
+
 pub struct PaintOpts {
     pub inactive_brightness: f32,
     pub default_cursor_bar: bool,
@@ -167,7 +207,7 @@ struct Style {
     strike: bool,
 }
 
-fn paint_pane(
+pub fn paint_pane(
     origin: Point<Pixels>,
     p: &PaneSnap,
     m: &Metrics,

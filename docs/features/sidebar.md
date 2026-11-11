@@ -31,7 +31,7 @@ and `j`/`k` skip their rows.
 
 | List | Shows |
 |---|---|
-| Agents | Agents in every workspace, with their status and the workspace they're in |
+| Agents | Agents in every workspace, grouped by workspace, with their status and the workspace they're in |
 | Servers | Programs listening on a port that you started from a pane in this workspace |
 | Actions | The latest run of each GitHub Actions workflow on the active pane's branch, with how long ago it started. Off unless you turn it on |
 
