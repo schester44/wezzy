@@ -250,6 +250,8 @@ pub struct TermApp {
     pub(crate) ws_menu_open: bool,
     /// Inline "new workspace" name field inside the workspace menu.
     pub(crate) ws_new: Option<String>,
+    /// Inline name field on a sidebar agent row.
+    pub(crate) agent_rename: Option<crate::sidebar::AgentRename>,
     pub(crate) quick_select: Option<crate::quickselect::QuickSelect>,
     pub(crate) pane_select: Option<crate::paneselect::PaneSelect>,
     pub(crate) copy_mode: Option<crate::copymode::CopyMode>,
@@ -387,6 +389,7 @@ impl TermApp {
             sidebar_open: crate::settings::get().show_sidebar,
             ws_menu_open: false,
             ws_new: None,
+            agent_rename: None,
             quick_select: None,
             pane_select: None,
             copy_mode: None,
@@ -439,8 +442,8 @@ impl TermApp {
     /// Title: who; body: what it needs (or its task when it's done).
     fn notify_agent(&self, a: &crate::agents::Agent, detail: Option<String>) {
         let title = match a.project.as_str() {
-            "" => a.kind.to_string(),
-            p => format!("{} · {p}", a.kind),
+            "" => a.display_name().to_string(),
+            p => format!("{} · {p}", a.display_name()),
         };
         let body = detail.unwrap_or_else(|| {
             // agents put their task in the pane title; skip a bare "Claude Code"
@@ -537,8 +540,8 @@ impl TermApp {
                     {
                         let detail = detail.filter(|_| status == HookStatus::NeedsInput);
                         let msg = match &detail {
-                            Some(d) => format!("{} · {d}", a.project),
-                            None => format!("{} · {}", a.kind, a.project),
+                            Some(d) => format!("{} · {d}", a.name.as_ref().unwrap_or(&a.project)),
+                            None => format!("{} · {}", a.display_name(), a.project),
                         };
                         self.flash_agent(msg, pane_id);
                         if !window.is_window_active() {
@@ -557,7 +560,7 @@ impl TermApp {
                     .find(|a| a.pane_id == pane_id)
                 {
                     let fresh = crate::agents::mark_unseen(pane_id);
-                    self.flash_agent(format!("{} · {}", a.kind, a.project), pane_id);
+                    self.flash_agent(format!("{} · {}", a.display_name(), a.project), pane_id);
                     // bells repeat; notify once until you've been back
                     if fresh && !window.is_window_active() {
                         self.notify_agent(&a, None);
@@ -601,6 +604,10 @@ impl TermApp {
         if self.quick_select.is_some() {
             self.quick_select_key(ev, window, cx);
             cx.notify();
+            return;
+        }
+        if self.agent_rename.is_some() {
+            self.agent_rename_key(ev, cx);
             return;
         }
         if self.ws_new.is_some() {

@@ -203,7 +203,12 @@ impl TermApp {
                     match item {
                         Item::Agent(a) => {
                             let num = (leader && i < 9).then(|| i + 1);
-                            agent_row(a, cursor, num, t, cx).into_any_element()
+                            let editing = self
+                                .agent_rename
+                                .as_ref()
+                                .filter(|r| r.pane_id == a.pane_id)
+                                .map(|r| r.input.clone());
+                            agent_row(a, cursor, num, editing, t, cx).into_any_element()
                         }
                         Item::Server(s) => server_row(s, cursor, t, cx).into_any_element(),
                         Item::Run(r) => run_row(r, cursor, t, cx).into_any_element(),
@@ -1306,6 +1311,8 @@ fn agent_row(
     a: Agent,
     cursor: bool,
     num: Option<usize>,
+    // the inline name field's text, while renaming this agent
+    editing: Option<String>,
     t: &Theme,
     cx: &mut Context<TermApp>,
 ) -> impl IntoElement {
@@ -1315,6 +1322,13 @@ fn agent_row(
         && !a.title.eq_ignore_ascii_case(a.kind)
         && a.title != "Claude Code")
         .then(|| a.title.clone());
+    // ...under your name for it, the kind moves down beside the task
+    let task = match (&a.name, task) {
+        (Some(_), Some(task)) => Some(format!("{} · {task}", a.kind)),
+        (Some(_), None) => Some(a.kind.to_string()),
+        (None, task) => task,
+    };
+    let label = a.display_name().to_string();
     // ...and what it's doing / needs right now
     let (status_text, status_color) = match a.status {
         Status::Working => (a.detail.clone(), t.fg_muted),
@@ -1353,12 +1367,22 @@ fn agent_row(
                 .flex()
                 .flex_col()
                 .gap_0p5()
-                .child(
-                    div()
+                .child(match editing {
+                    Some(input) => name_input(input, t, cx).into_any_element(),
+                    None => div()
                         .flex()
                         .items_baseline()
                         .gap_2()
-                        .child(div().font_weight(FontWeight::MEDIUM).child(a.kind))
+                        .child(
+                            div()
+                                .flex_shrink()
+                                .min_w_0()
+                                .font_weight(FontWeight::MEDIUM)
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(label),
+                        )
                         .child(
                             div()
                                 .flex_1()
@@ -1369,8 +1393,9 @@ fn agent_row(
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .child(meta),
-                        ),
-                )
+                        )
+                        .into_any_element(),
+                })
                 .when_some(task, |d, task| {
                     d.child(
                         div()
@@ -1397,6 +1422,36 @@ fn agent_row(
         .when_some(num, |d, n| d.child(div().pt(px(1.)).child(kbd(&n.to_string(), t))))
         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
             this.focus_pane(pane_id, window, cx)
+        }))
+}
+
+/// The inline name field on an agent row (Rename agent): ↵ saves, esc or a
+/// click elsewhere cancels.
+fn name_input(input: String, t: &Theme, cx: &mut Context<TermApp>) -> impl IntoElement {
+    let caret = || div().w(px(1.5)).h(px(14.)).flex_none().bg(t.accent);
+    div()
+        .id("agent-name")
+        .h(px(22.))
+        .px_1p5()
+        .flex()
+        .items_center()
+        .overflow_hidden()
+        .rounded_lg()
+        .bg(gpui::hsla(0., 0., 0., 0.22))
+        .border_1()
+        .border_color(with_alpha(t.accent, 0.6))
+        .map(|d| {
+            if input.is_empty() {
+                d.child(caret())
+                    .child(div().ml_0p5().text_color(t.fg_subtle).child("Name"))
+            } else {
+                d.child(div().whitespace_nowrap().child(input)).child(caret().ml_px())
+            }
+        })
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            this.finish_agent_rename(false);
+            cx.notify();
         }))
 }
 

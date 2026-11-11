@@ -84,6 +84,8 @@ pub enum Status {
 pub struct Agent {
     pub pane_id: PaneId,
     pub kind: &'static str,
+    /// What you named it ("auth refactor"); see `names`.
+    pub name: Option<String>,
     /// Pane title with spinner glyphs trimmed; agents usually put the current task here.
     pub title: String,
     /// What it's doing / needs right now (from hooks), e.g. "Editing app.rs".
@@ -94,6 +96,13 @@ pub struct Agent {
     /// Finished or asked for you since you last went to its pane.
     pub unseen: bool,
     pub focused: bool,
+}
+
+impl Agent {
+    /// How the UI names this agent: your name for it, else its kind ("Claude").
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(self.kind)
+    }
 }
 
 fn basename(s: &str) -> &str {
@@ -185,6 +194,7 @@ pub fn collect(focused_pane: Option<PaneId>) -> Vec<Agent> {
         out.push(Agent {
             pane_id,
             kind,
+            name: names::get(pane_id),
             title,
             detail,
             project,
@@ -213,5 +223,113 @@ fn guess(pane_id: PaneId, kind: &str, raw_title: &str) -> Status {
         Status::NeedsInput
     } else {
         Status::Idle
+    }
+}
+
+/// Names you give agents (Rename agent). A name belongs to the pane, keyed by
+/// the session server's pane id, and is kept in
+/// `~/.local/state/wezzy/agent-names.json` so it outlives an app restart for as
+/// long as the pane lives.
+///
+/// It can't live on the server pane itself: the mux protocol has no request
+/// that stores data there (user vars only flow from the pane's own output to
+/// the client). Server pane ids restart from 0 with a new server, so the file
+/// records which server it belongs to (its pid) and is ignored under another;
+/// `session.rs` prunes ids the server no longer lists.
+pub mod names {
+    use mux::pane::PaneId;
+    use parking_lot::Mutex;
+    use serde::{Deserialize, Serialize};
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    #[derive(Serialize, Deserialize)]
+    struct Stored {
+        /// The session server's pid (or ours, with an in-process mux).
+        server: String,
+        /// Server pane id -> name.
+        names: BTreeMap<PaneId, String>,
+    }
+
+    /// Loaded on first use once the server is known (its pid file exists).
+    static NAMES: Mutex<Option<Stored>> = Mutex::new(None);
+
+    fn file() -> PathBuf {
+        crate::paths::state_dir().join("agent-names.json")
+    }
+
+    fn server_id() -> Option<String> {
+        if !crate::session::persistent() {
+            return Some(std::process::id().to_string());
+        }
+        let pid = std::fs::read_to_string(crate::paths::data_dir().join("pid")).ok()?;
+        let pid = pid.trim();
+        (!pid.is_empty()).then(|| pid.to_string())
+    }
+
+    fn with<R>(f: impl FnOnce(&mut Stored) -> R) -> Option<R> {
+        let mut guard = NAMES.lock();
+        if guard.is_none() {
+            let server = server_id()?;
+            let stored = std::fs::read(file())
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Stored>(&b).ok())
+                .filter(|s| s.server == server)
+                .unwrap_or(Stored {
+                    server,
+                    names: BTreeMap::new(),
+                });
+            *guard = Some(stored);
+        }
+        guard.as_mut().map(f)
+    }
+
+    fn save(s: &Stored) {
+        let path = file();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).ok();
+        }
+        let Ok(json) = serde_json::to_vec_pretty(s) else {
+            return;
+        };
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, json).is_ok() {
+            std::fs::rename(&tmp, &path).ok();
+        }
+    }
+
+    /// The name you gave the agent in this (local) pane.
+    pub fn get(pane_id: PaneId) -> Option<String> {
+        let remote = crate::session::remote_pane_id(pane_id)?;
+        with(|s| s.names.get(&remote).cloned()).flatten()
+    }
+
+    /// Name the agent in this (local) pane; blank clears it.
+    pub fn set(pane_id: PaneId, name: &str) {
+        let Some(remote) = crate::session::remote_pane_id(pane_id) else {
+            return;
+        };
+        let name = name.trim().to_string();
+        with(|s| {
+            let changed = if name.is_empty() {
+                s.names.remove(&remote).is_some()
+            } else {
+                s.names.insert(remote, name.clone()).as_ref() != Some(&name)
+            };
+            if changed {
+                save(s);
+            }
+        });
+    }
+
+    /// Forget names of server panes that no longer exist.
+    pub fn retain(live: impl Fn(PaneId) -> bool) {
+        with(|s| {
+            let before = s.names.len();
+            s.names.retain(|id, _| live(*id));
+            if s.names.len() != before {
+                save(s);
+            }
+        });
     }
 }

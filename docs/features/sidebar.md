@@ -14,6 +14,7 @@ order.
 | Ctrl+h at the terminal's left edge | Move into the sidebar |
 | `j` / `k`, `g` / `G` | Move down / up, to the top / bottom |
 | ↵ on an agent or server | Go to its pane |
+| `r` on an agent | Rename it |
 | ↵ on an Actions run | Open it in a split: follow it live while it runs, the failed steps' log when it failed, the summary otherwise |
 | `o` on a server or run | Open it in your browser |
 | esc, Ctrl+l | Back to the terminal |
@@ -55,12 +56,40 @@ the chime and a toast names it. Click the toast to go to that agent. Its dot
 stays green until you go to its pane, so you can see at a glance which ones
 finished since you last looked.
 
+### Naming an agent
+
+Press `r` on an agent, or run **Rename Agent…** from ⌘K, which renames the
+agent selected in the sidebar or else the one in the pane you're in. Type a
+name like "auth refactor" and press ↵. esc or a click elsewhere leaves the
+name as it was. Clear the field and press ↵ to go back to the default.
+
+The name takes the place of the agent's kind ("Claude") in the sidebar, in ⌘K,
+in toasts and in notifications. The kind and the task it's on show on the line
+below.
+
+A name belongs to the pane, not the program: it stays while the pane is open,
+including when you quit and reopen Wezzy, and goes with the pane when it
+closes. Start another agent in the same pane and it keeps the name. If the
+session server restarts (after a reboot, say), the names are gone.
+
+Renaming opens the sidebar if it's hidden (closing the git panel if that's
+open) and hides it again when you're done. To give **Rename Agent** a key,
+bind `wezzy.action.RenameAgent`:
+
+```lua
+local ok, wezzy = pcall(require, "wezzy")
+if ok then
+  table.insert(config.keys, { key = "r", mods = "CMD|ALT", action = wezzy.action.RenameAgent })
+end
+```
+
 ### When Wezzy is in the background
 
 If you're in another app, you also get a macOS notification. Its title is the
-agent and project, such as **Claude · wezzy**. When the agent asks for you, it
-says what it wants, such as Claude's permission prompt; when it finishes, it
-shows the agent's task. Click it to bring Wezzy to the front on that agent's
+agent and project, such as **Claude · wezzy**, or the agent's name if you gave
+it one (**auth refactor · wezzy**). When the agent asks for you, it says what
+it wants, such as Claude's permission prompt; when it finishes, it shows the
+agent's task. Click it to bring Wezzy to the front on that agent's
 pane.
 
 The Dock icon shows how many agents are waiting on you: ones that asked for
