@@ -61,7 +61,7 @@ macOS only for now. Download `Wezzy.dmg` from the
 
 ## Setup
 
-Agent status needs the Claude Code hook: ⌘, → Agent hooks → Install.
+Exact agent status (Claude Code, Codex, pi, OpenCode) needs hooks: ⌘, → Agent hooks.
 
 Config lives in `~/.config/wezzy/` (`wezzy.lua` is WezTerm config, `settings.json` is the rest). Bind app actions like any WezTerm action:
 

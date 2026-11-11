@@ -86,10 +86,17 @@ impl Row {
             Row::Sound => s.sound().unwrap_or_else(|| "Off".into()),
             Row::Updates => if s.auto_update { "Automatic" } else { "Off" }.into(),
             Row::AgentHooks => {
-                if crate::hooks::claude_hooks_installed() {
-                    "Installed".into()
+                // the agents still missing hooks, else the ones that have them
+                let hs = crate::hooks::harness_hooks();
+                let names = |f: fn(&crate::hooks::HarnessHooks) -> bool| {
+                    hs.iter().filter(|h| f(h)).map(|h| h.harness.label()).collect::<Vec<_>>()
+                };
+                let missing = names(|h| h.available && !h.installed);
+                let installed = names(|h| h.installed);
+                if !missing.is_empty() || installed.is_empty() {
+                    format!("Install {}", missing.join(", ")).trim_end().into()
                 } else {
-                    "Install".into()
+                    installed.join(" · ")
                 }
             }
             Row::ConfigFile => "Open".into(),
@@ -170,7 +177,13 @@ impl TermApp {
                 }
             }
             Row::AgentHooks => {
-                self.run_app_command(crate::commands::AppCommand::InstallAgentHooks, window, cx)
+                use crate::commands::AppCommand;
+                let cmd = if crate::hooks::all_installed() {
+                    AppCommand::UninstallAgentHooks
+                } else {
+                    AppCommand::InstallAgentHooks
+                };
+                self.run_app_command(cmd, window, cx)
             }
             Row::ConfigFile => {
                 self.overlay = None;

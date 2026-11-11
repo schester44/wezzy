@@ -124,9 +124,16 @@ pub fn collect(focused_pane: Option<PaneId>) -> Vec<Agent> {
             .resolve_pane_id(pane_id)
             .and_then(|(_, w, _)| mux.get_window(w).map(|w| w.get_workspace().to_string()))
             .unwrap_or_default();
-        let project = pane
-            .get_current_working_dir(CachePolicy::AllowStale)
-            .map(|u| basename(u.path().trim_end_matches('/')).to_string())
+        // the agent's own cwd (from hooks) beats the shell's last OSC 7
+        let project = hook
+            .as_ref()
+            .and_then(|h| h.cwd.as_ref())
+            .and_then(|c| c.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .or_else(|| {
+                pane.get_current_working_dir(CachePolicy::AllowStale)
+                    .map(|u| basename(u.path().trim_end_matches('/')).to_string())
+            })
             .unwrap_or_default();
         let raw_title = pane.get_title();
         let title = raw_title
