@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 log = "0.4"
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 dispatch = "0.2"
@@ -35,6 +36,9 @@ shell-words = "1.1.1"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 objc = "0.2"
+postgres = "0.19"
+postgres-native-tls = "0.5"
+native-tls = "0.2"
 
 [profile.dev]
 opt-level = 1

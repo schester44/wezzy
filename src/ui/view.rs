@@ -41,6 +41,7 @@ struct TabInfo {
 impl Render for TermApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let config = config::configuration();
+        self.views.sync();
         let tab = self.active_tab();
         let pane = tab.as_ref().and_then(|t| t.get_active_pane());
         // a zoomed pane (⌘↵) takes the whole window: side panels hide while it lasts
@@ -109,7 +110,7 @@ impl Render for TermApp {
                 this.open_palette(crate::palette::Scope::All, cx)
             }))
             .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
-                if this.drag_split(ev, cx) {
+                if this.drag_split(ev, cx) || this.drag_selection(ev, cx) {
                     return;
                 }
                 let Some(panel) = this.panel_drag else {
@@ -126,6 +127,10 @@ impl Render for TermApp {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                    if this.selection.as_ref().is_some_and(|s| s.dragging) {
+                        this.end_selection();
+                        cx.notify();
+                    }
                     if this.panel_drag.is_some() || this.split_drag.is_some() {
                         this.panel_drag = None;
                         this.split_drag = None;
@@ -162,7 +167,8 @@ impl Render for TermApp {
                             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                             .on_scroll_wheel(cx.listener(Self::on_scroll))
                             .on_drop(cx.listener(Self::on_file_drop))
-                            .child(self.terminal_canvas(&palette, window)),
+                            .child(self.terminal_canvas(&palette, window))
+                            .children(self.pane_views(&t, window, cx)),
                     ),
             )
             // toasts and modals sit over the whole window (sidebars included), so
@@ -611,6 +617,46 @@ impl TermApp {
 
     // -- terminal ------------------------------------------------------------
 
+    /// Native views, each placed over its placeholder pane's cells. Uses the
+    /// grid geometry the canvas recorded last frame.
+    fn pane_views(&mut self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(tab) = self.active_tab() else {
+            return Vec::new();
+        };
+        let g = self.grid.get();
+        let metrics = render::metrics(window, &config::configuration(), self.font_scale);
+        let focused = self.focus.is_focused(window)
+            && self.overlay.is_none()
+            && self.region == crate::regions::Region::Terminal;
+        tab.iter_panes()
+            .into_iter()
+            .filter_map(|p| {
+                let pane_id = p.pane.pane_id();
+                let view = self.views.get_mut(pane_id)?;
+                let size = gpui::size(g.cell_w * p.width as f32, g.line_h * p.height as f32);
+                let vcx = crate::views::ViewCx {
+                    pane_id,
+                    cols: p.width,
+                    rows: p.height,
+                    size,
+                    focused: focused && p.is_active,
+                    metrics: metrics.clone(),
+                };
+                Some(
+                    div()
+                        .absolute()
+                        .left(g.pad.x + g.cell_w * p.left as f32)
+                        .top(g.pad.y + g.line_h * p.top as f32)
+                        .w(size.width)
+                        .h(size.height)
+                        .overflow_hidden()
+                        .child(view.render(&vcx, t, cx))
+                        .into_any_element(),
+                )
+            })
+            .collect()
+    }
+
     fn terminal_canvas(
         &self,
         palette: &wezterm_term::color::ColorPalette,
@@ -663,7 +709,11 @@ impl TermApp {
         let copy = self
             .copy_mode
             .as_ref()
-            .map(|c| (c.pane_id, c.cursor, c.selection()));
+            .map(|c| (c.pane_id, Some(c.cursor), c.selection()))
+            .or_else(|| {
+                let s = self.selection.as_ref()?;
+                Some((s.pane_id, None, Some(s.range()?)))
+            });
         let copy_colors = (render::color(palette.selection_bg), render::color(palette.cursor_bg));
 
         let paint_metrics = metrics.clone();
@@ -700,6 +750,7 @@ impl TermApp {
                 }
                 grid.set(GridGeom {
                     origin,
+                    pad: point(pl, pt),
                     cell_w: metrics.cell_w,
                     line_h: metrics.line_h,
                 });
@@ -721,6 +772,7 @@ impl TermApp {
                 let panes: Vec<_> = tab
                     .iter_panes()
                     .iter()
+                    .filter(|p| !crate::views::is_view(&p.pane))
                     .map(|p| render::snapshot(p, viewports.get(&p.pane.pane_id()).copied()))
                     .collect();
                 let painted: Vec<_> = splits
@@ -1118,6 +1170,7 @@ impl TermApp {
                         Kind::Command => Icon::Bolt,
                         Kind::Recipe => Icon::Sparkles,
                         Kind::Host => Icon::Server,
+                        Kind::Database => Icon::Database,
                     },
                     14.,
                     if is_sel { t.fg } else { t.fg_subtle },
@@ -1396,56 +1449,6 @@ fn agent_row(
                             .text_ellipsis()
                             .child(text),
                     )
-                }),
-        )
-        .when_some(num, |d, n| d.child(div().pt(px(1.)).child(kbd(&n.to_string(), t))))
-        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-            this.focus_pane(pane_id, window, cx)
-        }))
-}
-
-/// QuickSelect overlay: tint each match, label at its start.
-/// Copy mode: the selection and the copy cursor over one pane.
-#[allow(clippy::too_many_arguments)]
-fn paint_copy_mode(
-    origin: gpui::Point<Pixels>,
-    (width, height): (usize, usize),
-    top: wezterm_term::StableRowIndex,
-    cursor: crate::copymode::Pos,
-    sel: Option<(crate::copymode::Pos, crate::copymode::Pos)>,
-    (sel_color, cursor_color): (Hsla, Hsla),
-    m: &render::Metrics,
-    window: &mut Window,
-) {
-    use gpui::{fill, size, Bounds};
-    let cell = |row: wezterm_term::StableRowIndex, col: usize, cells: usize| {
-        Bounds::new(
-            point(origin.x + m.cell_w * col as f32, origin.y + m.line_h * (row - top) as f32),
-            size(m.cell_w * cells as f32, m.line_h),
-        )
-    };
-    let bottom = top + height as wezterm_term::StableRowIndex - 1;
-    if let Some((s, e)) = sel {
-        for row in s.0.max(top)..=e.0.min(bottom) {
-            let from = if row == s.0 { s.1 } else { 0 };
-            let to = if row == e.0 { e.1.min(width - 1) } else { width - 1 };
-            if from <= to {
-                window.paint_quad(fill(cell(row, from, to - from + 1), with_alpha(sel_color, 0.45)));
-            }
-        }
-    }
-    if (top..=bottom).contains(&cursor.0) {
-        window.paint_quad(fill(cell(cursor.0, cursor.1.min(width - 1), 1), with_alpha(cursor_color, 0.6)));
-    }
-}
-
-/// PaneSelect: a large label in the middle of a pane.
-fn paint_pane_label(
-    rect: gpui::Bounds<Pixels>,
-    label: &str,
-    accent: Hsla,
-    m: &render::Metrics,
-    window: &mut Window,
                 })
                 .when(!a.subagents.is_empty(), |d| {
                     d.child(
@@ -1456,14 +1459,14 @@ fn paint_pane_label(
                             .gap_1()
                             .children(a.subagents.into_iter().map(|s| subagent_line(s, t))),
                     )
-    cx: &mut gpui::App,
-) {
-    use gpui::{fill, size, Bounds, TextRun};
-    let font_size = m.font_size * 2.;
-    let mut font = m.font.clone();
-    font.weight = FontWeight::BOLD;
-    let text: SharedString = label.to_string().into();
-    let run = TextRun {
+                }),
+        )
+        .when_some(num, |d, n| d.child(div().pt(px(1.)).child(kbd(&n.to_string(), t))))
+        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            this.focus_pane(pane_id, window, cx)
+        }))
+}
+
 /// One of an agent's running subagents, nested in its sidebar row: status,
 /// what it was asked to do, and what it's doing now.
 fn subagent_line(s: crate::hooks::Subagent, t: &Theme) -> impl IntoElement {
@@ -1505,6 +1508,56 @@ fn subagent_line(s: crate::hooks::Subagent, t: &Theme) -> impl IntoElement {
         })
 }
 
+/// QuickSelect overlay: tint each match, label at its start.
+/// Copy mode / mouse selection: the selection, and copy mode's cursor, over one pane.
+#[allow(clippy::too_many_arguments)]
+fn paint_copy_mode(
+    origin: gpui::Point<Pixels>,
+    (width, height): (usize, usize),
+    top: wezterm_term::StableRowIndex,
+    cursor: Option<crate::copymode::Pos>,
+    sel: Option<(crate::copymode::Pos, crate::copymode::Pos)>,
+    (sel_color, cursor_color): (Hsla, Hsla),
+    m: &render::Metrics,
+    window: &mut Window,
+) {
+    use gpui::{fill, size, Bounds};
+    let cell = |row: wezterm_term::StableRowIndex, col: usize, cells: usize| {
+        Bounds::new(
+            point(origin.x + m.cell_w * col as f32, origin.y + m.line_h * (row - top) as f32),
+            size(m.cell_w * cells as f32, m.line_h),
+        )
+    };
+    let bottom = top + height as wezterm_term::StableRowIndex - 1;
+    if let Some((s, e)) = sel {
+        for row in s.0.max(top)..=e.0.min(bottom) {
+            let from = if row == s.0 { s.1 } else { 0 };
+            let to = if row == e.0 { e.1.min(width - 1) } else { width - 1 };
+            if from <= to {
+                window.paint_quad(fill(cell(row, from, to - from + 1), with_alpha(sel_color, 0.45)));
+            }
+        }
+    }
+    if let Some(cursor) = cursor.filter(|c| (top..=bottom).contains(&c.0)) {
+        window.paint_quad(fill(cell(cursor.0, cursor.1.min(width - 1), 1), with_alpha(cursor_color, 0.6)));
+    }
+}
+
+/// PaneSelect: a large label in the middle of a pane.
+fn paint_pane_label(
+    rect: gpui::Bounds<Pixels>,
+    label: &str,
+    accent: Hsla,
+    m: &render::Metrics,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    use gpui::{fill, size, Bounds, TextRun};
+    let font_size = m.font_size * 2.;
+    let mut font = m.font.clone();
+    font.weight = FontWeight::BOLD;
+    let text: SharedString = label.to_string().into();
+    let run = TextRun {
         len: text.len(),
         font,
         color: gpui::black(),
@@ -1869,12 +1922,12 @@ fn pill(label: &str, color: Hsla) -> impl IntoElement {
         .child(SharedString::from(label.to_string()))
 }
 
-pub(super) fn with_alpha(mut c: Hsla, a: f32) -> Hsla {
+pub(crate) fn with_alpha(mut c: Hsla, a: f32) -> Hsla {
     c.a = a;
     c
 }
 
-pub(super) fn term_family() -> SharedString {
+pub(crate) fn term_family() -> SharedString {
     config::configuration()
         .font
         .font

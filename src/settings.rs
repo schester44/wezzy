@@ -67,6 +67,13 @@ impl Harness {
     }
 }
 
+/// A database for the SQL view: a name and a `postgres://` URL.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Database {
+    pub name: String,
+    pub url: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub close_confirmation: CloseConfirmation,
@@ -93,6 +100,9 @@ pub struct Settings {
     /// settings.json hosts, then the Lua config's
     pub hosts: Vec<crate::hosts::Host>,
     file_hosts: Vec<crate::hosts::Host>,
+    /// settings.json databases, then the Lua config's
+    pub databases: Vec<Database>,
+    file_databases: Vec<Database>,
     /// settings.json saved workspaces, then the Lua config's
     pub workspaces: Vec<crate::workspaces::Saved>,
     file_workspaces: Vec<crate::workspaces::Saved>,
@@ -114,6 +124,8 @@ impl Settings {
         file_recipes: Vec::new(),
         hosts: Vec::new(),
         file_hosts: Vec::new(),
+        databases: Vec::new(),
+        file_databases: Vec::new(),
         workspaces: Vec::new(),
         file_workspaces: Vec::new(),
     };
@@ -255,6 +267,8 @@ struct Stored {
     #[serde(skip_serializing_if = "Option::is_none")]
     hosts: Option<Vec<StoredHost>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    databases: Option<Vec<Database>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     workspaces: Option<Vec<StoredWorkspace>>,
 }
 
@@ -349,6 +363,10 @@ fn from_file() -> Settings {
             .collect();
         s.hosts = s.file_hosts.clone();
     }
+    if let Some(v) = st.databases {
+        s.file_databases = v;
+        s.databases = s.file_databases.clone();
+    }
     if let Some(v) = st.workspaces {
         s.file_workspaces = v
             .into_iter()
@@ -401,6 +419,7 @@ pub fn update(f: impl FnOnce(&mut Settings)) {
                 })
                 .collect()
         }),
+        databases: (!s.file_databases.is_empty()).then(|| s.file_databases.clone()),
         workspaces: (!s.file_workspaces.is_empty()).then(|| {
             s.file_workspaces
                 .iter()
@@ -529,6 +548,18 @@ pub fn lua_setup(_: &mlua::Lua, opts: mlua::Table) -> mlua::Result<()> {
             };
             s.hosts.retain(|x| x.name != name);
             s.hosts.push(crate::hosts::Host { name, ssh });
+        }
+    }
+    if let Some(t) = opts.get::<_, Option<mlua::Table>>("databases")? {
+        for (i, d) in t.sequence_values::<mlua::Table>().enumerate() {
+            let d = d?;
+            let name: Option<String> = d.get("name")?;
+            let url: Option<String> = d.get("url")?;
+            let (Some(name), Some(url)) = (name, url) else {
+                return Err(bad(&format!("databases[{}]", i + 1), "a table with name and url", "missing field"));
+            };
+            s.databases.retain(|x| x.name != name);
+            s.databases.push(Database { name, url });
         }
     }
     if let Some(t) = opts.get::<_, Option<mlua::Table>>("workspaces")? {

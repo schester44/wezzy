@@ -97,6 +97,25 @@ the whole UI follows the WezTerm color scheme.
   The client drops a local tab once the server has removed it and its panes
   live elsewhere, so a moved pane isn't shown twice.
 
+## View panes (`views/`)
+
+Native gpui views (not terminals) that live in the normal tab/split layout.
+
+- **A placeholder holds the slot.** The server owns the layout and the client
+  rebuilds it from `ListPanes`, so a view still occupies a real server pane.
+  `views::spawn_command` runs `sh` with `stty -echo`, which sets the pane title
+  (OSC 2) and the `WEZZY_VIEW` user var (`"<kind> <args>"`), then `exec cat`.
+  Splits, zoom, swaps, moving tabs and workspaces all treat it as an ordinary
+  pane, and it survives app restarts with the session.
+- **The app draws over it.** `Views::sync` (each frame) creates a `PaneView`
+  for every pane announcing one and drops those whose pane is gone. The canvas
+  skips painting their cells, and `pane_views` in `ui/view.rs` places each
+  view absolutely over its pane's rectangle, using the grid geometry from the
+  previous paint.
+- **Keys:** the keymap still runs first (⌘ chords, leader, Ctrl+h/j/k/l);
+  only `Lookup::Unbound` keys go to `PaneView::key` instead of the pane.
+- Closing a view pane never asks for confirmation.
+
 ## Agents
 
 - **Detection** (`agents.rs`): foreground process name/argv matches a known
@@ -107,6 +126,15 @@ the whole UI follows the WezTerm color scheme.
   directory, maps server pane ids to local ones and derives
   Working / NeedsInput / Done / Idle. Without hooks, status is guessed from
   title spinners, output and bells.
+- **Subagents:** events fired inside a Claude subagent carry `agent_id`; the
+  script writes them to `<WEZTERM_PANE>.<agent_id>.json` so they don't
+  overwrite the main agent's status, and `HookState::subagents` collects them
+  per pane. Labels and the finished flag come from Claude's undocumented
+  `<session>/subagents/agent-<id>.meta.json`, read best-effort. A record goes
+  on `SubagentStop`, when the meta says finished, when the main session ends
+  or changes, or after 30 minutes without events. A subagent waiting on you
+  makes its agent NeedsInput. `hooks::start` re-registers hooks installed by a
+  build that subscribed to fewer events.
 - **Transitions:** state changes raise toasts, tab dots and the chime
   (`sound.rs`) when you're not looking at that pane.
 
@@ -126,15 +154,6 @@ the whole UI follows the WezTerm color scheme.
   hosts apply. The view sets the target (active pane's cwd) only while the
   sidebar is open with Actions on; the poller resolves repo root + branch
   (or commit when detached), `owner/repo` via `gh repo view` (cached;
-- **Subagents:** events fired inside a Claude subagent carry `agent_id`; the
-  script writes them to `<WEZTERM_PANE>.<agent_id>.json` so they don't
-  overwrite the main agent's status, and `HookState::subagents` collects them
-  per pane. Labels and the finished flag come from Claude's undocumented
-  `<session>/subagents/agent-<id>.meta.json`, read best-effort. A record goes
-  on `SubagentStop`, when the meta says finished, when the main session ends
-  or changes, or after 30 minutes without events. A subagent waiting on you
-  makes its agent NeedsInput. `hooks::start` re-registers hooks installed by a
-  build that subscribed to fewer events.
   unresolvable repos retried every 5 min), then `gh run list`, keeping each
   workflow's newest run. 10s while a run is active, 60s otherwise; results
   are cached per branch so switching back is instant. ↵ runs `gh run watch` /

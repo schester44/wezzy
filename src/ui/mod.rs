@@ -4,6 +4,7 @@ mod git;
 mod help;
 mod panel;
 pub use panel::SidePanel;
+pub(crate) use view::{term_family, with_alpha};
 mod view;
 
 use gpui::{px, svg, AssetSource, Hsla, IntoElement, Rgba, SharedString, Styled};
@@ -48,7 +49,8 @@ impl AssetSource for Assets {
             "git-commit",
             "sparkles",
             "message",
-            "server"
+            "server",
+            "database"
         ))
     }
 
@@ -78,6 +80,7 @@ pub enum Icon {
     Sparkles,
     Message,
     Server,
+    Database,
 }
 
 /// A spinning loader, for "working" states.
@@ -116,6 +119,7 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> impl IntoElement {
         Icon::Sparkles => "icons/sparkles.svg",
         Icon::Message => "icons/message.svg",
         Icon::Server => "icons/server.svg",
+        Icon::Database => "icons/database.svg",
     };
     svg()
         .path(path)

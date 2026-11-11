@@ -225,6 +225,8 @@ pub(crate) enum Overlay {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct GridGeom {
     pub origin: Point<Pixels>,
+    /// `origin` relative to the terminal area (the window padding)
+    pub pad: Point<Pixels>,
     pub cell_w: Pixels,
     pub line_h: Pixels,
 }
@@ -249,6 +251,8 @@ pub struct TermApp {
     pub(crate) quick_select: Option<crate::quickselect::QuickSelect>,
     pub(crate) pane_select: Option<crate::paneselect::PaneSelect>,
     pub(crate) copy_mode: Option<crate::copymode::CopyMode>,
+    /// mouse selection (selection.rs)
+    pub(crate) selection: Option<crate::selection::MouseSelection>,
     pub(crate) diff_open: bool,
     /// Which part of the window has keyboard focus.
     pub(crate) region: crate::regions::Region,
@@ -262,6 +266,8 @@ pub struct TermApp {
     /// The split divider being dragged (its `PositionedSplit::index`).
     pub(crate) split_drag: Option<usize>,
     pub(crate) ws_cursor: usize,
+    /// native views hosted in placeholder panes (`views.rs`)
+    pub(crate) views: crate::views::Views,
     scroll_accum: f32,
     _config_sub: config::ConfigSubscription,
 }
@@ -386,6 +392,7 @@ impl TermApp {
             quick_select: None,
             pane_select: None,
             copy_mode: None,
+            selection: None,
             diff_open: false,
             region: crate::regions::Region::Terminal,
             sidebar_cursor: 0,
@@ -395,6 +402,7 @@ impl TermApp {
             panel_drag: None,
             split_drag: None,
             ws_cursor: 0,
+            views: Default::default(),
             scroll_accum: 0.0,
             _config_sub: config_sub,
         };
@@ -619,6 +627,16 @@ impl TermApp {
             self.region_key(ev, window, cx);
             return;
         }
+        if !self.keys.leader_active() {
+            let pane = self.active_pane();
+            if let Some(view) = pane.and_then(|p| self.views.get_mut(p.pane_id())) {
+                if view.claims(&ev.keystroke) {
+                    view.key(&ev.keystroke, cx);
+                    cx.notify();
+                    return;
+                }
+            }
+        }
         if self.edge_nav(&ev.keystroke, cx) {
             return;
         }
@@ -648,9 +666,17 @@ impl TermApp {
                 None => self.flash(&format!("No agent {}", i + 1)),
             },
             Lookup::Unbound => {
-                if let (Some(pane), Some(tk)) = (self.active_pane(), input.term_key) {
+                let view = self
+                    .active_pane()
+                    .and_then(|p| self.views.get_mut(p.pane_id()));
+                if let Some(view) = view {
+                    view.key(&ev.keystroke, cx);
+                } else if let (Some(pane), Some(tk)) = (self.active_pane(), input.term_key) {
                     self.viewports.remove(&pane.pane_id());
                     clear_alert(pane.pane_id());
+                    if self.selection.as_ref().is_some_and(|s| s.pane_id == pane.pane_id()) {
+                        self.selection = None;
+                    }
                     if let Err(e) = pane.key_down(tk, input.term_mods) {
                         log::error!("key_down: {e:#}");
                     }
@@ -768,8 +794,13 @@ impl TermApp {
                 if ev.modifiers.platform {
                     let pane = p.pane.clone();
                     self.open_link_at(&pane, row - p.top, col - p.left, window, cx);
+                    cx.notify();
+                    return;
                 }
             }
+        }
+        if self.copy_mode.is_none() {
+            self.start_selection(ev.position, ev.click_count, ev.modifiers.shift);
         }
         cx.notify();
     }
@@ -919,7 +950,7 @@ impl TermApp {
         cx.notify();
     }
 
-    fn scroll_by(&mut self, pane: &Arc<dyn Pane>, delta: isize) {
+    pub(crate) fn scroll_by(&mut self, pane: &Arc<dyn Pane>, delta: isize) {
         let dims = pane.get_dimensions();
         let id = pane.pane_id();
         let cur = self.viewports.get(&id).copied().unwrap_or(dims.physical_top);
@@ -1097,6 +1128,20 @@ impl TermApp {
                     }
                 }
             }
+            PasteFrom(_) if pane.as_ref().is_some_and(crate::views::is_view) => {
+                let id = pane.as_ref().map(|p| p.pane_id()).unwrap();
+                if let (Some(view), Some(text)) =
+                    (self.views.get_mut(id), cx.read_from_clipboard().and_then(|c| c.text()))
+                {
+                    view.paste(&text);
+                }
+            }
+            CopyTo(_) if pane.as_ref().is_some_and(crate::views::is_view) => {
+                let id = pane.as_ref().map(|p| p.pane_id()).unwrap();
+                if let Some(text) = self.views.get_mut(id).and_then(|v| v.copy()) {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }
             PasteFrom(_) => {
                 if let (Some(p), Some(text)) = (&pane, crate::clipboard::paste_text(cx)) {
                     self.viewports.remove(&p.pane_id());
@@ -1104,7 +1149,11 @@ impl TermApp {
                 }
             }
             CopyTextTo { text, .. } => cx.write_to_clipboard(ClipboardItem::new_string(text)),
-            CopyTo(_) => self.flash("selection isn't implemented yet"),
+            CopyTo(_) => {
+                if self.copy_selection(cx) {
+                    self.flash("Copied");
+                }
+            }
 
             // key tables
             ActivateKeyTable {
@@ -1692,6 +1741,7 @@ fn needs_confirmation(can_close_quietly: impl FnOnce() -> bool) -> bool {
 fn running_detail(panes: &[Arc<dyn Pane>]) -> String {
     let mut names: Vec<String> = panes
         .iter()
+        .filter(|p| !crate::views::is_view(p))
         .filter_map(crate::procs::foreground_name)
         .map(|n| {
             std::path::Path::new(&n)
@@ -1714,3 +1764,81 @@ fn running_detail(panes: &[Arc<dyn Pane>]) -> String {
     }
 }
 
+
+/// Evens out every split in `tab`: panes laid side by side get equal widths,
+/// panes stacked get equal heights, however the splits are nested.
+///
+/// Splits are visited parent first (the preorder `resize_split_by` indexes
+/// by), re-reading the tree each time since resizing a split rescales the
+/// splits inside it. The resizes reach the server the same way `AdjustPaneSize`
+/// does, as pane resizes.
+pub(crate) fn balance_panes(tab: &Tab) {
+    // how many panes a subtree lays out along `dir`
+    fn span(node: &PaneNode, dir: SplitDirection) -> usize {
+        match node {
+            PaneNode::Split { left, right, node } if node.direction == dir => {
+                span(left, dir) + span(right, dir)
+            }
+            PaneNode::Split { left, right, .. } => span(left, dir).max(span(right, dir)),
+            _ => 1,
+        }
+    }
+    // (total cells, first side's cells, first side's span, second side's span), preorder
+    fn splits(node: &PaneNode, out: &mut Vec<(usize, usize, usize, usize)>) {
+        if let PaneNode::Split { left, right, node } = node {
+            let (total, first) = match node.direction {
+                SplitDirection::Horizontal => (node.width(), node.first.cols),
+                SplitDirection::Vertical => (node.height(), node.first.rows),
+            };
+            out.push((total, first, span(left, node.direction), span(right, node.direction)));
+            splits(left, out);
+            splits(right, out);
+        }
+    }
+    let list = |tab: &Tab| {
+        let mut v = vec![];
+        splits(&tab.codec_pane_tree(), &mut v);
+        v
+    };
+    for i in 0..list(tab).len() {
+        let Some(&(total, first, a, b)) = list(tab).get(i) else {
+            break;
+        };
+        let delta = even_first(total, a, b) as isize - first as isize;
+        if delta != 0 {
+            tab.resize_split_by(i, delta);
+        }
+    }
+}
+
+/// Size of a split's first side so that `a + b` panes (with a one-cell divider
+/// between each) share `total` cells evenly, `a` of them on the first side.
+fn even_first(total: usize, a: usize, b: usize) -> usize {
+    let n = (a + b).max(1);
+    ((total + 1) * a + n / 2) / n - 1
+}
+
+#[cfg(test)]
+mod balance_tests {
+    use super::even_first;
+
+    #[test]
+    fn halves() {
+        // 50 | 50
+        assert_eq!(even_first(101, 1, 1), 50);
+    }
+
+    #[test]
+    fn one_and_two() {
+        // 33 | 33 | 33: the first side holds one of three
+        assert_eq!(even_first(101, 1, 2), 33);
+        // and the second split, inside the 67-cell right side
+        assert_eq!(even_first(67, 1, 1), 33);
+    }
+
+    #[test]
+    fn two_and_one() {
+        // 33 | 33 | 33: first side holds two panes and a divider
+        assert_eq!(even_first(101, 2, 1), 67);
+    }
+}

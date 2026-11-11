@@ -19,6 +19,7 @@ pub enum AppCommand {
     FindTab,
     SwitchWorkspace,
     NewWorkspace,
+    NewTerminal,
     NewAgent,
     NewAgentTab,
     InstallAgentHooks,
@@ -37,6 +38,7 @@ pub enum AppCommand {
     RenameWorkspace,
     MoveTabToWorkspace,
     MovePaneToNewWindow,
+    BalancePanes,
 }
 
 impl AppCommand {
@@ -47,6 +49,7 @@ impl AppCommand {
         Self::FindTab,
         Self::SwitchWorkspace,
         Self::NewWorkspace,
+        Self::NewTerminal,
         Self::NewAgent,
         Self::NewAgentTab,
         Self::InstallAgentHooks,
@@ -65,6 +68,7 @@ impl AppCommand {
         Self::RenameWorkspace,
         Self::MoveTabToWorkspace,
         Self::MovePaneToNewWindow,
+        Self::BalancePanes,
     ];
 
     /// Stable id, used in the event name.
@@ -76,6 +80,7 @@ impl AppCommand {
             Self::FindTab => "find-tab",
             Self::SwitchWorkspace => "switch-workspace",
             Self::NewWorkspace => "new-workspace",
+            Self::NewTerminal => "new-terminal",
             Self::NewAgent => "new-agent",
             Self::NewAgentTab => "new-agent-tab",
             Self::InstallAgentHooks => "install-agent-hooks",
@@ -94,6 +99,7 @@ impl AppCommand {
             Self::RenameWorkspace => "rename-workspace",
             Self::MoveTabToWorkspace => "move-tab-to-workspace",
             Self::MovePaneToNewWindow => "move-pane-to-new-window",
+            Self::BalancePanes => "balance-panes",
         }
     }
 
@@ -106,6 +112,7 @@ impl AppCommand {
             Self::FindTab => "FindTab",
             Self::SwitchWorkspace => "SwitchWorkspace",
             Self::NewWorkspace => "NewWorkspace",
+            Self::NewTerminal => "NewTerminal",
             Self::NewAgent => "NewAgent",
             Self::NewAgentTab => "NewAgentTab",
             Self::InstallAgentHooks => "InstallAgentHooks",
@@ -124,6 +131,7 @@ impl AppCommand {
             Self::RenameWorkspace => "RenameWorkspace",
             Self::MoveTabToWorkspace => "MoveTabToWorkspace",
             Self::MovePaneToNewWindow => "MovePaneToNewWindow",
+            Self::BalancePanes => "BalancePanes",
         }
     }
 
@@ -136,6 +144,7 @@ impl AppCommand {
             Self::FindTab => "Find tab",
             Self::SwitchWorkspace => "Switch workspace",
             Self::NewWorkspace => "New workspace",
+            Self::NewTerminal => "New terminal",
             Self::NewAgent => "New agent",
             Self::NewAgentTab => "New agent in a tab",
             Self::InstallAgentHooks => "Install agent hooks",
@@ -154,6 +163,7 @@ impl AppCommand {
             Self::RenameWorkspace => "Rename workspace",
             Self::MoveTabToWorkspace => "Move tab to workspace",
             Self::MovePaneToNewWindow => "Move pane to new window",
+            Self::BalancePanes => "Balance panes",
         }
     }
 

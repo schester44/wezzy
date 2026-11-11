@@ -32,11 +32,13 @@ mod sound;
 mod servers;
 mod session;
 mod settings;
+mod selection;
 mod settings_ui;
 mod sidebar;
 mod shortcuts;
 mod ui;
 mod update;
+mod views;
 mod workspaces;
 
 use anyhow::Context as _;

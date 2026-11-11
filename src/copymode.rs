@@ -45,7 +45,7 @@ impl CopyMode {
 }
 
 /// Rows of a pane as cells, fetched once per keystroke.
-struct Text<'a> {
+pub(crate) struct Text<'a> {
     pane: &'a Arc<dyn Pane>,
     cols: usize,
     top: StableRowIndex,
@@ -54,7 +54,7 @@ struct Text<'a> {
 }
 
 impl<'a> Text<'a> {
-    fn new(pane: &'a Arc<dyn Pane>) -> Self {
+    pub(crate) fn new(pane: &'a Arc<dyn Pane>) -> Self {
         let d = pane.get_dimensions();
         Self {
             pane,
@@ -66,7 +66,7 @@ impl<'a> Text<'a> {
     }
 
     /// (cells, wrapped onto the next row)
-    fn row(&mut self, row: StableRowIndex) -> &(Vec<String>, bool) {
+    pub(crate) fn row(&mut self, row: StableRowIndex) -> &(Vec<String>, bool) {
         let (pane, cols) = (self.pane, self.cols);
         self.rows.entry(row).or_insert_with(|| {
             let mut cells = vec![" ".to_string(); cols];
@@ -185,7 +185,7 @@ impl<'a> Text<'a> {
 
     /// The selected text: rows joined by newlines except where a row wrapped,
     /// trailing blanks trimmed.
-    fn text(&mut self, (s, e): (Pos, Pos)) -> String {
+    pub(crate) fn text(&mut self, (s, e): (Pos, Pos)) -> String {
         let mut out = String::new();
         for row in s.0..=e.0 {
             let (cells, wrapped) = self.row(row).clone();
@@ -235,6 +235,7 @@ impl<'a> Text<'a> {
 
 impl TermApp {
     pub(crate) fn start_copy_mode(&mut self, cx: &mut Context<Self>) {
+        self.selection = None;
         let Some(pane) = self.active_pane() else {
             return;
         };

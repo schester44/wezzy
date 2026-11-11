@@ -409,7 +409,7 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
         ((WKey::Char('k'), s), AppCommand::CommandPalette.action()),
         ((WKey::Char('P'), s), AppCommand::CommandPalette.action()),
         ((WKey::Char('K'), s), AppCommand::SwitchWorkspace.action()),
-        ((WKey::Char('n'), s), SpawnWindow),
+        ((WKey::Char('n'), s), AppCommand::NewTerminal.action()),
         ((WKey::Char('a'), s), AppCommand::NewAgent.action()),
         ((WKey::Char('A'), s), AppCommand::NewAgentTab.action()),
         ((WKey::Char('d'), s), AppCommand::ToggleDiffPanel.action()),
@@ -483,6 +483,7 @@ fn default_key_tables() -> Vec<(&'static str, config::keyassignment::KeyTable)> 
         ((WKey::Char('j'), Mods::NONE), entry(AdjustPaneSize(Down, 2))),
         ((WKey::Char('k'), Mods::NONE), entry(AdjustPaneSize(Up, 2))),
         ((WKey::Char('l'), Mods::NONE), entry(AdjustPaneSize(Right, 2))),
+        ((WKey::Char('='), Mods::NONE), entry(AppCommand::BalancePanes.action())),
         ((WKey::Char('\u{1b}'), Mods::NONE), entry(PopKeyTable)),
     ];
     vec![(RESIZE_TABLE, resize.into_iter().collect())]

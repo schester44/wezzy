@@ -81,6 +81,9 @@ pub fn is_vim(pane: &Arc<dyn Pane>) -> bool {
 /// WezTerm's rule: closing is quiet when the foreground process is a shell
 /// (`skip_close_confirmation_for_processes_named`).
 pub fn can_close_quietly(pane: &Arc<dyn Pane>) -> bool {
+    if crate::views::is_view(pane) {
+        return true;
+    }
     let Some(name) = foreground_name(pane) else {
         // Unknown. Local panes know better than we do; remote ones: be careful.
         return pane.can_close_without_prompting(mux::pane::CloseReason::Pane);

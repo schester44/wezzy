@@ -12,11 +12,12 @@ seconds.
 | | |
 |---|---|
 | ⌘T | New tab |
+| ⌘N | New terminal: a split in the current tab, placed like a new agent |
 | ⌘W | Close pane |
 | Leader s / Leader v | Split down / right |
 | Leader ⇧S / Leader ⇧V | Split up / left |
 | Leader ↵ or ⌘↵ | Zoom the pane |
-| Leader r | Resize mode: `hjkl` resize, esc to finish |
+| Leader r | Resize mode: `hjkl` resize, `=` makes the panes in the tab equal size, esc to finish |
 | Leader m | Swap the pane with another |
 | Leader [ / Leader ] | Previous / next tab |
 | ⌘1–9 | Go to tab |
@@ -24,6 +25,11 @@ seconds.
 | Leader , | Rename the tab |
 | Leader q | Close tab |
 | ⌃h/j/k/l | Move between panes and into the side panels |
+
+Making panes equal size counts the panes along each side: with one pane on the
+left and two stacked on the right, the left and right halves are the same
+width and the two on the right are the same height. **Balance Panes** in ⌘K
+does the same, and `wezzy.action.BalancePanes` binds it to any key.
 
 Closing a tab with more than one pane always asks first. Otherwise, Wezzy asks
 when something other than a shell is still running, as set in Settings (⌘,).
@@ -40,6 +46,23 @@ and the Wezzy menu ask too. Your shells and agents keep running after you quit.
 | Leader $ | Rename the workspace |
 
 More in [Workspaces](workspaces.md).
+
+## Selecting with the mouse
+
+Drag over a pane to select text, then press **⌘C** to copy it.
+
+| | |
+|---|---|
+| Drag | Select characters |
+| Double-click | Select a word; drag to add words |
+| Triple-click | Select a line; drag to add lines |
+| ⇧-click | Extend the selection to the mouse |
+| ⌘C | Copy the selection |
+
+Dragging past the top or bottom of the pane scrolls it. A selection stays inside
+the pane it started in. Typing into the pane or clicking without dragging clears
+it. Words end at spaces, brackets and quotes, so a path or URL selects whole.
+⌘-click still opens the link under the mouse.
 
 ## Copy mode
 

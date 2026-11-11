@@ -62,6 +62,7 @@ pub enum Kind {
     Launch,
     Recipe,
     Host,
+    Database,
     Tab,
     Window,
     Workspace,
@@ -75,6 +76,7 @@ impl Kind {
             Kind::Launch => "New Agent",
             Kind::Recipe => "Recipes",
             Kind::Host => "SSH",
+            Kind::Database => "Databases",
             Kind::Tab => "Tabs",
             Kind::Window => "Windows",
             Kind::Workspace => "Workspaces",
@@ -97,6 +99,11 @@ pub enum PaletteAction {
     Recipe(String),
     /// Open an ssh session: ↵ splits, ⌘↵ opens a tab.
     Ssh(crate::hosts::Host),
+    /// Open the SQL view on a database (and run `query`): ↵ opens a tab, ⌘↵ splits.
+    Sql {
+        conn: crate::views::sql::conn::Conn,
+        query: Option<String>,
+    },
 }
 
 #[derive(Clone)]
@@ -155,13 +162,28 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
     };
     vec![
         ("New Tab", Key(SpawnTab(SpawnTabDomain::CurrentPaneDomain))),
+        ("New Terminal", App(AppCommand::NewTerminal)),
         ("New Workspace…", App(AppCommand::NewWorkspace)),
         ("Rename Tab…", App(AppCommand::RenameTab)),
         ("Rename Workspace…", App(AppCommand::RenameWorkspace)),
         ("Move Tab to Workspace…", App(AppCommand::MoveTabToWorkspace)),
         ("Move Pane to New Window", App(AppCommand::MovePaneToNewWindow)),
+        ("Balance Panes", App(AppCommand::BalancePanes)),
         ("Split Right", split(PaneDirection::Right)),
         ("Split Down", split(PaneDirection::Down)),
+        (
+            "Hello Pane",
+            Key(SpawnCommandInNewTab(crate::views::spawn_command("hello", "", "Hello"))),
+        ),
+        (
+            "Split Right: Hello Pane",
+            Key(SplitPane(config::keyassignment::SplitPane {
+                direction: PaneDirection::Right,
+                size: SplitSize::Percent(50),
+                command: crate::views::spawn_command("hello", "", "Hello"),
+                top_level: false,
+            })),
+        ),
         ("Settings", App(AppCommand::OpenSettings)),
         ("Keyboard Shortcuts", App(AppCommand::ShowShortcuts)),
         ("Restart Wezzy", App(AppCommand::Restart)),
@@ -276,6 +298,22 @@ impl TermApp {
                     .flatten(),
                 status: None,
                 action: PaletteAction::Ssh(e.host),
+            });
+        }
+
+        // databases: configured, then found in the active pane's project
+        let cwd = self
+            .active_pane()
+            .and_then(|p| p.get_current_working_dir(mux::pane::CachePolicy::AllowStale))
+            .map(|u| std::path::PathBuf::from(u.path()));
+        for conn in crate::views::sql::conn::all(cwd.as_deref()) {
+            items.push(Item {
+                kind: Kind::Database,
+                title: conn.name.clone(),
+                subtitle: format!("sql {}", conn.target()),
+                shortcut: None,
+                status: None,
+                action: PaletteAction::Sql { conn, query: None },
             });
         }
 
@@ -400,6 +438,8 @@ impl TermApp {
             items.sort_by_key(|i| i.kind); // stable: keeps provider order within a section
             return items;
         }
+        // before fuzzy filtering, which would drop the database row itself
+        let sql_item = sql_query(state.scope, query, &items);
         let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
         let mut matcher = Matcher::new(Config::DEFAULT);
         let mut buf = vec![];
@@ -421,6 +461,9 @@ impl TermApp {
         let mut out: Vec<Item> = scored.into_iter().map(|(_, i)| i).collect();
         if let Some(item) = adhoc_ssh(state.scope, query, &out) {
             out.push(item);
+        }
+        if let Some(item) = sql_item {
+            out.insert(0, item);
         }
         out
     }
@@ -479,6 +522,10 @@ impl TermApp {
                             crate::launch::Placement::Split
                         };
                         self.open_ssh(&host, placement, window, cx);
+                        self.focus.focus(window);
+                    }
+                    Some(PaletteAction::Sql { conn, query }) => {
+                        self.open_sql(&conn, query, m.platform, window, cx);
                         self.focus.focus(window);
                     }
                     Some(PaletteAction::Recipe(name)) => {
@@ -612,6 +659,7 @@ impl TermApp {
             PaletteAction::Ssh(host) => {
                 self.open_ssh(&host, crate::launch::Placement::Split, window, cx)
             }
+            PaletteAction::Sql { conn, query } => self.open_sql(&conn, query, false, window, cx),
         }
         self.focus.focus(window);
         cx.notify();
@@ -665,6 +713,12 @@ impl TermApp {
                     }
                 }
             }
+            AppCommand::BalancePanes => {
+                if let Some(tab) = self.active_tab() {
+                    crate::app::balance_panes(&tab);
+                }
+                cx.notify();
+            }
             AppCommand::MovePaneToNewWindow => {
                 if let Some(pane) = self.active_pane().map(|p| p.pane_id()) {
                     // a new window still belongs to this workspace
@@ -686,6 +740,7 @@ impl TermApp {
                     .detach();
                 }
             }
+            AppCommand::NewTerminal => self.new_terminal(cx),
             AppCommand::NewAgent => {
                 self.launch_harness(None, crate::launch::Placement::Split, _window, cx)
             }
@@ -712,6 +767,32 @@ impl TermApp {
             },
         }
         cx.notify();
+    }
+
+    /// The SQL view on `conn`, in a new tab (or a split to the right).
+    pub(crate) fn open_sql(
+        &mut self,
+        conn: &crate::views::sql::conn::Conn,
+        query: Option<String>,
+        split: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(q) = query {
+            crate::views::sql::run_on_open(&conn.name, q);
+        }
+        let command = crate::views::spawn_command("sql", &conn.spec_args(), &conn.name);
+        let action = if split {
+            KeyAssignment::SplitPane(config::keyassignment::SplitPane {
+                direction: PaneDirection::Right,
+                size: SplitSize::Percent(50),
+                command,
+                top_level: false,
+            })
+        } else {
+            KeyAssignment::SpawnCommandInNewTab(command)
+        };
+        self.perform(action, None, window, cx);
     }
 
     fn focus_window(&mut self, window_id: WindowId) {
@@ -754,6 +835,34 @@ fn adhoc_ssh(scope: Scope, query: &str, results: &[Item]) -> Option<Item> {
             name: target.to_string(),
             ssh: target.to_string(),
         }),
+    })
+}
+
+/// "sql neverwait select * from users": open that database and run the query.
+fn sql_query(scope: Scope, query: &str, results: &[Item]) -> Option<Item> {
+    if scope != Scope::All {
+        return None;
+    }
+    let rest = query.strip_prefix("sql ")?.trim_start();
+    let (name, sql) = rest.split_once(char::is_whitespace)?;
+    let sql = sql.trim();
+    if sql.is_empty() {
+        return None;
+    }
+    let conn = results.iter().find_map(|i| match &i.action {
+        PaletteAction::Sql { conn, query: None } if conn.name == name => Some(conn.clone()),
+        _ => None,
+    })?;
+    Some(Item {
+        kind: Kind::Database,
+        title: sql.to_string(),
+        subtitle: conn.name.clone(),
+        shortcut: None,
+        status: None,
+        action: PaletteAction::Sql {
+            conn,
+            query: Some(sql.to_string()),
+        },
     })
 }
 

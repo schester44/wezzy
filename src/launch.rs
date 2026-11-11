@@ -97,6 +97,33 @@ impl TermApp {
         self.run_in_split(harness, window, cx)
     }
 
+    /// ⌘N: a shell in a split of the current tab, laid out like agents.
+    pub(crate) fn new_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some((target, request)) = self.agent_split(settings::get().agent_layout) else {
+            self.spawn_tab(SpawnTabDomain::CurrentPaneDomain, None, None);
+            return;
+        };
+        promise::spawn::spawn(async move {
+            match Mux::get()
+                .split_pane(
+                    target,
+                    request,
+                    mux::domain::SplitSource::Spawn {
+                        command: None,
+                        command_dir: None,
+                    },
+                    SpawnTabDomain::CurrentPaneDomain,
+                )
+                .await
+            {
+                Ok((pane, _)) => pane.set_config(std::sync::Arc::new(config::TermConfig::new())),
+                Err(e) => send_event(AppEvent::Flash(format!("split failed: {e:#}"))),
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn run_in_split(&mut self, harness: &Harness, _window: &mut Window, cx: &mut Context<Self>) {
         let spawn = spawn_command(harness);
         let Some((target, request)) = self.agent_split(settings::get().agent_layout) else {
