@@ -150,6 +150,11 @@ impl Grid {
         Some(Action::Copy(lines.join("\n"), format!("Copied {}", plural(rows.len(), "row"))))
     }
 
+    /// Leaving the grid closes the "Copy as" menu.
+    pub fn close_menu(&mut self) {
+        self.copy_menu = None;
+    }
+
     /// The target rows in `f`, as `Action::Copy`.
     pub fn copy_as(&self, set: &ResultSet, f: Format, edit: Option<&Editable>) -> Option<Action> {
         let targets: Vec<usize> = self.target_rows().into_iter().filter(|r| *r < set.rows.len()).collect();

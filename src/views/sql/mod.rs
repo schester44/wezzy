@@ -695,6 +695,7 @@ impl PaneView for SqlView {
             return self.grid_key(ks, cx);
         }
         if self.focus == Focus::Grid && ks.key_char.as_deref() == Some("?") {
+            self.grid.close_menu();
             crate::app::send_event(crate::app::AppEvent::ViewShortcuts);
             return true;
         }
@@ -706,6 +707,7 @@ impl PaneView for SqlView {
                 return true;
             }
             (Focus::Grid, "k") if ctrl => {
+                self.grid.close_menu();
                 self.focus = Focus::Editor;
                 return true;
             }
