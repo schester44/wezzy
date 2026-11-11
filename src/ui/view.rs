@@ -99,6 +99,14 @@ impl Render for TermApp {
             .text_color(t.fg)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .on_modifiers_changed(cx.listener(|this, ev: &gpui::ModifiersChangedEvent, _, cx| {
+                let m = &ev.modifiers;
+                let held = m.platform && m.alt && !m.control && !m.shift;
+                if held != this.agent_keys_held {
+                    this.agent_keys_held = held;
+                    cx.notify();
+                }
+            }))
             .on_action(cx.listener(|this, _: &crate::app::OpenSettings, _, cx| {
                 this.open_settings(cx)
             }))
@@ -186,8 +194,8 @@ impl TermApp {
         let sidebar_cur = (self.region == crate::regions::Region::Sidebar)
             .then_some(self.sidebar_cursor);
         let lua_status = strip_escapes(&UI_STATE.lock().left_status);
-        // leader armed: number the first nine agents for leader + 1–9
-        let leader = self.keys.leader_active();
+        // ⌥⌘ held: number the first nine agents for ⌥⌘1–9
+        let numbered = self.agent_keys_held;
         let term_font = term_family();
 
         // rows are numbered across sections, matching the keyboard cursor
@@ -208,7 +216,7 @@ impl TermApp {
                     row += 1;
                     match item {
                         Item::Agent(a) => {
-                            let num = (leader && i < 9).then(|| i + 1);
+                            let num = (numbered && i < 9).then(|| i + 1);
                             let editing = self
                                 .agent_rename
                                 .as_ref()
@@ -504,6 +512,7 @@ impl TermApp {
                 }
             })
             .child(self.workspace_switcher(t, cx))
+            .children(self.window_switcher(&statuses, t, cx))
             .child(div().flex_none().w(px(1.)).h(px(14.)).mx_1().bg(t.border))
             .children(tabs.into_iter().map(|tab| self.tab(tab, t, cx)))
             .child(
@@ -528,6 +537,61 @@ impl TermApp {
                     .when(leader, |d| d.child(pill("Leader", t.accent)))
                     .when_some(table, |d, name| d.child(pill(&name, t.warning))),
             )
+    }
+
+    /// One numbered chip per window in the workspace; absent with a single
+    /// window. A dot marks a window with an agent waiting on you.
+    fn window_switcher(
+        &self,
+        statuses: &std::collections::HashMap<mux::pane::PaneId, Status>,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let mux = Mux::get();
+        let wins = mux.iter_windows_in_workspace(&mux.active_workspace());
+        if wins.len() < 2 {
+            return None;
+        }
+        let chips = wins.into_iter().enumerate().map(|(i, id)| {
+            let active = self.mux_window_id == Some(id);
+            let waiting = mux.get_window(id).is_some_and(|w| {
+                w.iter_tabs().any(|tab| {
+                    tab.iter_panes_ignoring_zoom()
+                        .iter()
+                        .any(|p| statuses.get(&p.pane.pane_id()) == Some(&Status::NeedsInput))
+                })
+            });
+            div()
+                .id(("window", i))
+                .h(px(20.))
+                .min_w(px(20.))
+                .px_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap_1()
+                .rounded_md()
+                .cursor_pointer()
+                .font_family(term_family())
+                .text_size(px(11.))
+                .map(|d| {
+                    if active {
+                        d.bg(t.tab_active).text_color(t.fg)
+                    } else {
+                        d.text_color(t.fg_subtle)
+                            .hover(|s| s.bg(t.hover).text_color(t.fg))
+                    }
+                })
+                .child((i + 1).to_string())
+                .when(waiting && !active, |d| {
+                    d.child(div().size(px(5.)).flex_none().rounded_full().bg(t.warning))
+                })
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.perform(KeyAssignment::ActivateWindow(i), None, window, cx);
+                    this.focus.focus(window);
+                }))
+        });
+        Some(div().flex().items_center().gap_0p5().children(chips).into_any_element())
     }
 
     fn tab(&self, tab: TabInfo, t: &Theme, cx: &mut Context<Self>) -> AnyElement {

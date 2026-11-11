@@ -18,7 +18,7 @@ order.
 | ↵ on an Actions run | Open it in a split: follow it live while it runs, the failed steps' log when it failed, the summary otherwise |
 | `o` on a server or run | Open it in your browser |
 | esc, Ctrl+l | Back to the terminal |
-| Leader 1–9 | Jump to agent 1–9 (numbers show next to agents while the leader is armed) |
+| ⌥⌘1–9 | Jump to agent 1–9 (numbers show next to agents while you hold ⌥⌘) |
 
 Click a row to do what ↵ does. Hover a server or run and click the arrow to
 open it in your browser.

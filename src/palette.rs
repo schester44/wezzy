@@ -163,11 +163,14 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
     vec![
         ("New Tab", Key(SpawnTab(SpawnTabDomain::CurrentPaneDomain))),
         ("New Terminal", App(AppCommand::NewTerminal)),
+        ("New Window", Key(SpawnWindow)),
+        ("Next Window", Key(ActivateWindowRelative(1))),
+        ("Previous Window", Key(ActivateWindowRelative(-1))),
         ("New Workspace…", App(AppCommand::NewWorkspace)),
         ("Rename Tab…", App(AppCommand::RenameTab)),
         ("Rename Workspace…", App(AppCommand::RenameWorkspace)),
         ("Move Tab to Workspace…", App(AppCommand::MoveTabToWorkspace)),
-        ("Move Pane to New Window", App(AppCommand::MovePaneToNewWindow)),
+        ("Move Pane to New Tab", App(AppCommand::MovePaneToNewTab)),
         ("Balance Panes", App(AppCommand::BalancePanes)),
         ("Split Right", split(PaneDirection::Right)),
         ("Split Down", split(PaneDirection::Down)),
@@ -730,12 +733,11 @@ impl TermApp {
                 }
                 cx.notify();
             }
-            AppCommand::MovePaneToNewWindow => {
+            AppCommand::MovePaneToNewTab => {
                 if let Some(pane) = self.active_pane().map(|p| p.pane_id()) {
-                    // a new window still belongs to this workspace
-                    let workspace = Some(Mux::get().active_workspace());
+                    let window = self.mux_window_id;
                     promise::spawn::spawn(async move {
-                        match Mux::get().move_pane_to_new_tab(pane, None, workspace).await {
+                        match Mux::get().move_pane_to_new_tab(pane, window, None).await {
                             Ok((tab, window)) => crate::app::send_event(
                                 crate::app::AppEvent::TabMoved {
                                     window,

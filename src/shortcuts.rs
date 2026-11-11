@@ -49,10 +49,6 @@ pub fn sheet(keys: &KeyState) -> Vec<Vec<Group>> {
 
     let mut columns = vec![];
     if let Some(lk) = keys.leader_label() {
-        // leader + 1–9 jumps to an agent unless the user bound those keys
-        if !leader.iter().any(|(k, _)| k.len() == 1 && k.as_bytes()[0].is_ascii_digit()) {
-            leader.push(("1–9".into(), "Go to agent".into()));
-        }
         leader.sort_by(|a, b| sort_key(&a.0).cmp(&sort_key(&b.0)).then(a.1.cmp(&b.1)));
         let rows = merge(leader.into_iter().map(|(k, l)| (l, k)).collect(), false);
         columns.push(vec![Group {
@@ -61,6 +57,10 @@ pub fn sheet(keys: &KeyState) -> Vec<Vec<Group>> {
         }]);
     }
 
+    // ⌥⌘1–9 jumps to an agent unless the user bound those keys
+    if !other.iter().any(|(_, _, k)| k.starts_with("⌥⌘") && k.chars().last().is_some_and(|c| c.is_ascii_digit())) {
+        other.push((Section::App, "Go to agent".into(), "⌥⌘1–9".into()));
+    }
     other.sort();
     let mut groups: Vec<Group> = vec![];
     for section in [Section::App, Section::Panes, Section::Terminal] {
@@ -197,6 +197,12 @@ fn describe(action: &KeyAssignment) -> Option<(Section, String)> {
         ActivateTabRelative(_) => s(Panes, "Next tab"),
         ActivateLastTab => s(Panes, "Last tab"),
         ShowTabNavigator => s(Panes, "Find tab"),
+        SpawnWindow => s(Panes, "New window"),
+        ActivateWindow(_) => s(Panes, "Go to window"),
+        ActivateWindowRelative(n) | ActivateWindowRelativeNoWrap(n) if *n < 0 => {
+            s(Panes, "Previous window")
+        }
+        ActivateWindowRelative(_) | ActivateWindowRelativeNoWrap(_) => s(Panes, "Next window"),
         MoveTab(_) => s(Panes, "Move tab to"),
         MoveTabRelative(n) if *n < 0 => s(Panes, "Move tab left"),
         MoveTabRelative(_) => s(Panes, "Move tab right"),

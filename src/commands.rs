@@ -39,7 +39,7 @@ pub enum AppCommand {
     RenameTab,
     RenameWorkspace,
     MoveTabToWorkspace,
-    MovePaneToNewWindow,
+    MovePaneToNewTab,
     BalancePanes,
     CreatePullRequest,
 }
@@ -72,7 +72,7 @@ impl AppCommand {
         Self::RenameTab,
         Self::RenameWorkspace,
         Self::MoveTabToWorkspace,
-        Self::MovePaneToNewWindow,
+        Self::MovePaneToNewTab,
         Self::BalancePanes,
         Self::CreatePullRequest,
     ];
@@ -106,7 +106,7 @@ impl AppCommand {
             Self::RenameTab => "rename-tab",
             Self::RenameWorkspace => "rename-workspace",
             Self::MoveTabToWorkspace => "move-tab-to-workspace",
-            Self::MovePaneToNewWindow => "move-pane-to-new-window",
+            Self::MovePaneToNewTab => "move-pane-to-new-tab",
             Self::BalancePanes => "balance-panes",
             Self::CreatePullRequest => "create-pull-request",
         }
@@ -141,7 +141,7 @@ impl AppCommand {
             Self::RenameTab => "RenameTab",
             Self::RenameWorkspace => "RenameWorkspace",
             Self::MoveTabToWorkspace => "MoveTabToWorkspace",
-            Self::MovePaneToNewWindow => "MovePaneToNewWindow",
+            Self::MovePaneToNewTab => "MovePaneToNewTab",
             Self::BalancePanes => "BalancePanes",
             Self::CreatePullRequest => "CreatePullRequest",
         }
@@ -176,7 +176,7 @@ impl AppCommand {
             Self::RenameTab => "Rename tab",
             Self::RenameWorkspace => "Rename workspace",
             Self::MoveTabToWorkspace => "Move tab to workspace",
-            Self::MovePaneToNewWindow => "Move pane to new window",
+            Self::MovePaneToNewTab => "Move pane to new tab",
             Self::BalancePanes => "Balance panes",
             Self::CreatePullRequest => "Create pull request",
         }

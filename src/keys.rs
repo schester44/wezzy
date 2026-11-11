@@ -122,7 +122,7 @@ pub enum Lookup {
     LeaderArmed,
     /// Swallow the key (unbound key after leader, or prevent_fallback table).
     Swallow,
-    /// Leader + 1–9 with nothing bound to it: jump to that agent (0-based,
+    /// ⌥⌘1–9 with nothing bound to it: jump to that agent (0-based,
     /// sidebar order).
     Agent(usize),
     /// Not bound: send it to the pane.
@@ -315,14 +315,13 @@ impl KeyState {
             return Lookup::Action(action);
         }
         if leader_was_active {
-            match key {
-                WKey::Char(c @ '1'..='9') if mods == Mods::LEADER => {
-                    Lookup::Agent(*c as usize - '1' as usize)
-                }
-                _ => Lookup::Swallow,
+            return Lookup::Swallow;
+        }
+        match key {
+            WKey::Char(c @ '1'..='9') if mods == AGENT_MODS => {
+                Lookup::Agent(*c as usize - '1' as usize)
             }
-        } else {
-            Lookup::Unbound
+            _ => Lookup::Unbound,
         }
     }
 }
@@ -339,6 +338,9 @@ fn candidates(key: &WKey, mods: Mods) -> Vec<(WKey, Mods)> {
     }
     v
 }
+
+/// Held with 1–9 to jump to an agent; the sidebar numbers agents while they're down.
+pub const AGENT_MODS: Mods = Mods::SUPER.union(Mods::ALT);
 
 const DEFAULT_LEADER_TIMEOUT: Duration = Duration::from_millis(3000);
 
@@ -389,6 +391,8 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
             SpawnTab(SpawnTabDomain::CurrentPaneDomain),
         ),
         ((WKey::Char('{'), s), ActivateTabRelative(-1)),
+        ((WKey::Char('`'), s), ActivateWindowRelative(1)),
+        ((WKey::Char('~'), s), ActivateWindowRelative(-1)),
         ((WKey::Char('}'), s), ActivateTabRelative(1)),
         ((WKey::Char('='), s), IncreaseFontSize),
         ((WKey::Char('-'), s), DecreaseFontSize),
@@ -409,7 +413,8 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
         ((WKey::Char('k'), s), AppCommand::CommandPalette.action()),
         ((WKey::Char('P'), s), AppCommand::CommandPalette.action()),
         ((WKey::Char('K'), s), AppCommand::SwitchWorkspace.action()),
-        ((WKey::Char('n'), s), AppCommand::NewTerminal.action()),
+        ((WKey::Char('n'), s), SpawnWindow),
+        ((WKey::Char('\\'), s), AppCommand::NewTerminal.action()),
         ((WKey::Char('a'), s), AppCommand::NewAgent.action()),
         ((WKey::Char('A'), s), AppCommand::NewAgentTab.action()),
         ((WKey::Char('d'), s), AppCommand::ToggleDiffPanel.action()),
@@ -466,6 +471,7 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
     for i in 1..=9u8 {
         let c = (b'0' + i) as char;
         v.push(((WKey::Char(c), s), ActivateTab(i as isize - 1)));
+        v.push(((WKey::Char(c), l), ActivateWindow(i as usize - 1)));
         if i <= 8 {
             v.push(((WKey::Char(c), s | Mods::CTRL), MoveTab(i as usize - 1)));
         }

@@ -97,7 +97,7 @@ impl TermApp {
         self.run_in_split(harness, window, cx)
     }
 
-    /// ⌘N: a shell in a split of the current tab, laid out like agents.
+    /// ⌘\: a shell in a split of the current tab, placed like a new agent.
     pub(crate) fn new_terminal(&mut self, cx: &mut Context<Self>) {
         let Some((target, request)) = self.agent_split(settings::get().agent_layout) else {
             self.spawn_tab(SpawnTabDomain::CurrentPaneDomain, None, None);

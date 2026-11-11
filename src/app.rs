@@ -243,6 +243,8 @@ pub struct TermApp {
     pub(crate) font_scale: f32,
     /// top-bar tab under the mouse; shows its close button
     pub(crate) hovered_tab: Option<usize>,
+    /// ⌥⌘ held: the sidebar numbers agents for ⌥⌘1–9.
+    pub(crate) agent_keys_held: bool,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) flash: Option<(String, Instant)>,
     /// The agent pane a toast is about; clicking the toast goes there.
@@ -388,6 +390,7 @@ impl TermApp {
             viewports: HashMap::new(),
             font_scale: 1.0,
             hovered_tab: None,
+            agent_keys_held: false,
             overlay: None,
             flash: None,
             flash_pane: None,
@@ -1142,6 +1145,26 @@ impl TermApp {
                     idx = if wrap { idx.rem_euclid(n) } else { idx.clamp(0, n - 1) };
                     w.remember_and_set_active_tab_idx(idx as usize);
                 })
+            }
+            // windows (within the active workspace)
+            ActivateWindow(i) => {
+                let wins = mux.iter_windows_in_workspace(&mux.active_workspace());
+                if let Some(w) = wins.get(i) {
+                    self.mux_window_id = Some(*w);
+                }
+            }
+            ActivateWindowRelative(d) | ActivateWindowRelativeNoWrap(d) => {
+                let wrap = matches!(action, ActivateWindowRelative(_));
+                let wins = mux.iter_windows_in_workspace(&mux.active_workspace());
+                let n = wins.len() as isize;
+                if n > 1 {
+                    let cur = self
+                        .mux_window_id
+                        .and_then(|id| wins.iter().position(|w| *w == id))
+                        .unwrap_or(0) as isize;
+                    let idx = if wrap { (cur + d).rem_euclid(n) } else { (cur + d).clamp(0, n - 1) };
+                    self.mux_window_id = Some(wins[idx as usize]);
+                }
             }
             ActivateLastTab => self.with_window(|w| {
                 if let Some(idx) = w.get_last_active_tab_idx() {

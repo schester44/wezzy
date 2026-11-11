@@ -12,7 +12,8 @@ seconds.
 | | |
 |---|---|
 | ⌘T | New tab |
-| ⌘N | New terminal: a split in the current tab, placed like a new agent |
+| ⌘N | New window |
+| ⌘\\ | New terminal: a split in the current tab, placed like a new agent |
 | ⌘W | Close pane |
 | Leader s / Leader v | Split down / right |
 | Leader ⇧S / Leader ⇧V | Split up / left |
@@ -22,6 +23,9 @@ seconds.
 | Leader [ / Leader ] | Previous / next tab |
 | ⌘1–9 | Go to tab |
 | ⌃⌘1–8 | Move the tab to that position |
+| ⌘\` / ⌘~ | Next / previous window |
+| Leader 1–9 | Go to window |
+| ⌥⌘1–9 | Go to agent; numbers show in the sidebar while you hold ⌥⌘ |
 | Leader , | Rename the tab |
 | Leader q | Close tab |
 | ⌃h/j/k/l | Move between panes and into the side panels |

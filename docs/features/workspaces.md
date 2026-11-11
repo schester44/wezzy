@@ -101,7 +101,31 @@ These only see the workspace you're in:
 The agents sidebar and ⌘K show agents and tabs from every workspace, so you can
 jump straight to one anywhere.
 
-## Moving a pane to a new window
+## Windows
 
-Choose **Move Pane to New Window** in ⌘K to move the active pane into a window
-of its own in the current workspace. The pane keeps running, and you follow it.
+Most of the time a workspace is one set of tabs. When you want a second set
+in the same project, open another window with ⌘N (or **New Window** in ⌘K). Each
+window has its own tabs, and the top bar shows the tabs of the window you're
+in.
+
+With more than one window, numbered chips appear next to the workspace name.
+The window you're in is highlighted, and a dot marks a window where an agent
+is waiting on you.
+
+| | |
+|---|---|
+| ⌘N | New window |
+| ⌘\` / ⌘~ | Next / previous window |
+| Leader 1–9 | Go to that window |
+| Click a number | Go to that window |
+| ⌘K, **Next Window** / **Previous Window** | Same, from the palette |
+| **Find Tab…** in ⌘K | Lists every window and its tabs |
+
+A window closes with its last tab. When you close the last one in the
+workspace, the workspace goes too.
+
+## Moving a pane to a new tab
+
+Choose **Move Pane to New Tab** in ⌘K to move the active pane out of its split
+and into a tab of its own, in the same window. The pane keeps running, and you
+follow it.
