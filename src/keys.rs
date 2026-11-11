@@ -147,15 +147,25 @@ impl KeyState {
                     .entry(k)
                     .or_insert(KeyTableEntry { action });
             }
+            for (name, table) in default_key_tables() {
+                tables.by_name.entry(name.into()).or_insert(table);
+            }
         }
-        let leader = config.leader.as_ref().map(|l| {
-            let (k, m) = l
-                .key
-                .key
-                .resolve(config.key_map_preference)
-                .normalize_shift(l.key.mods);
-            (k, m, Duration::from_millis(l.timeout_milliseconds))
-        });
+        let leader = match &config.leader {
+            Some(l) => {
+                let (k, m) = l
+                    .key
+                    .key
+                    .resolve(config.key_map_preference)
+                    .normalize_shift(l.key.mods);
+                Some((k, m, Duration::from_millis(l.timeout_milliseconds)))
+            }
+            // the default bindings lean on a leader; ⌃A like tmux unless the config picks one
+            None if !config.disable_default_key_bindings => {
+                Some((WKey::Char('a'), Mods::CTRL, DEFAULT_LEADER_TIMEOUT))
+            }
+            None => None,
+        };
         Self {
             tables,
             leader,
@@ -330,12 +340,41 @@ fn candidates(key: &WKey, mods: Mods) -> Vec<(WKey, Mods)> {
     v
 }
 
-/// The subset of WezTerm's built-in macOS defaults that this shell implements.
-/// Anything in the user's config takes precedence.
+const DEFAULT_LEADER_TIMEOUT: Duration = Duration::from_millis(3000);
+
+/// Name of the default pane-resize key table (Leader r).
+const RESIZE_TABLE: &str = "resize_pane";
+
+/// What the top bar's pill says while a key table is active: "Resize" for
+/// ours, and a user table's name in words ("activate_pane" → "Activate pane").
+pub fn table_label(name: &str) -> String {
+    match name {
+        RESIZE_TABLE => "Resize".into(),
+        _ => {
+            let words = name.replace(['_', '-'], " ");
+            let mut c = words.trim().chars();
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
+        }
+    }
+}
+
+/// WezTerm's macOS defaults that this shell implements, plus Wezzy's own.
+/// Anything in the user's config takes precedence, key by key.
 fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
-    use config::keyassignment::PaneDirection;
+    use config::keyassignment::{PaneDirection, SplitPane, SplitSize};
     use KeyAssignment::*;
     let s = Mods::SUPER;
+    let l = Mods::LEADER;
+    let split = |direction| {
+        SplitPane(SplitPane {
+            direction,
+            size: SplitSize::Percent(50),
+            command: Default::default(),
+            top_level: false,
+        })
+    };
     let mut v = vec![
         (
             (WKey::Char('c'), s),
@@ -356,8 +395,8 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
         ((WKey::Char('0'), s), ResetFontSize),
         ((WKey::Char('r'), s | Mods::SHIFT), ReloadConfiguration),
         ((WKey::Char('m'), s), Hide),
+        // asks first (see QuitApplication in app.rs)
         ((WKey::Char('q'), s), QuitApplication),
-        ((WKey::Char(' '), Mods::CTRL | Mods::SHIFT), QuickSelect),
         // panes
         ((WKey::Char('w'), s), CloseCurrentPane { confirm: true }),
         ((WKey::Char('\r'), s), TogglePaneZoomState),
@@ -370,8 +409,9 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
         ((WKey::Char('k'), s), AppCommand::CommandPalette.action()),
         ((WKey::Char('P'), s), AppCommand::CommandPalette.action()),
         ((WKey::Char('K'), s), AppCommand::SwitchWorkspace.action()),
-        ((WKey::Char('n'), s), AppCommand::NewAgent.action()),
-        ((WKey::Char('N'), s), AppCommand::NewAgentTab.action()),
+        ((WKey::Char('n'), s), SpawnWindow),
+        ((WKey::Char('a'), s), AppCommand::NewAgent.action()),
+        ((WKey::Char('A'), s), AppCommand::NewAgentTab.action()),
         ((WKey::Char('d'), s), AppCommand::ToggleDiffPanel.action()),
         ((WKey::Char('r'), s), AppCommand::RunRecipe.action()),
         ((WKey::Char('S'), s), AppCommand::SshHost.action()),
@@ -380,13 +420,72 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
         ((WKey::Char('E'), s), AppCommand::SelectError.action()),
         ((WKey::Char(','), s), AppCommand::OpenSettings.action()),
         ((WKey::Char('\r'), s | Mods::SHIFT), AppCommand::SendOutputToAgent.action()),
-        ((WKey::Char('?'), Mods::LEADER), AppCommand::ShowShortcuts.action()),
+        // leader
+        ((WKey::Char('?'), l), AppCommand::ShowShortcuts.action()),
+        ((WKey::Char('s'), l), split(PaneDirection::Down)),
+        ((WKey::Char('v'), l), split(PaneDirection::Right)),
+        ((WKey::Char('S'), l), split(PaneDirection::Up)),
+        ((WKey::Char('V'), l), split(PaneDirection::Left)),
+        ((WKey::Char('\r'), l), TogglePaneZoomState),
+        ((WKey::Char('['), l), ActivateTabRelative(-1)),
+        ((WKey::Char(']'), l), ActivateTabRelative(1)),
+        ((WKey::Char('q'), l), CloseCurrentTab { confirm: true }),
+        ((WKey::Char(','), l), AppCommand::RenameTab.action()),
+        ((WKey::Char('$'), l), AppCommand::RenameWorkspace.action()),
+        ((WKey::Char('n'), l), AppCommand::NewWorkspace.action()),
+        ((WKey::Char('k'), l), AppCommand::SwitchWorkspace.action()),
+        (
+            (WKey::Char('m'), l),
+            PaneSelect(config::keyassignment::PaneSelectArguments {
+                mode: config::keyassignment::PaneSelectMode::SwapWithActiveKeepFocus,
+                ..Default::default()
+            }),
+        ),
+        ((WKey::Char('y'), l), ActivateCopyMode),
+        ((WKey::Char('f'), l), QuickSelect),
+        (
+            (WKey::Char('r'), l),
+            ActivateKeyTable {
+                name: RESIZE_TABLE.into(),
+                timeout_milliseconds: None,
+                replace_current: false,
+                one_shot: false,
+                until_unknown: false,
+                prevent_fallback: false,
+            },
+        ),
+        // leader twice: send the leader key itself (⌃A is readline's start-of-line)
+        (
+            (WKey::Char('a'), l | Mods::CTRL),
+            SendKey(config::KeyNoAction {
+                key: config::DeferredKeyCode::KeyCode(WKey::Char('a')),
+                mods: Mods::CTRL,
+            }),
+        ),
     ];
     for i in 1..=9u8 {
         let c = (b'0' + i) as char;
         v.push(((WKey::Char(c), s), ActivateTab(i as isize - 1)));
+        if i <= 8 {
+            v.push(((WKey::Char(c), s | Mods::CTRL), MoveTab(i as usize - 1)));
+        }
     }
     v
+}
+
+/// Key tables the default bindings activate.
+fn default_key_tables() -> Vec<(&'static str, config::keyassignment::KeyTable)> {
+    use config::keyassignment::PaneDirection::*;
+    use KeyAssignment::*;
+    let entry = |action| KeyTableEntry { action };
+    let resize = [
+        ((WKey::Char('h'), Mods::NONE), entry(AdjustPaneSize(Left, 2))),
+        ((WKey::Char('j'), Mods::NONE), entry(AdjustPaneSize(Down, 2))),
+        ((WKey::Char('k'), Mods::NONE), entry(AdjustPaneSize(Up, 2))),
+        ((WKey::Char('l'), Mods::NONE), entry(AdjustPaneSize(Right, 2))),
+        ((WKey::Char('\u{1b}'), Mods::NONE), entry(PopKeyTable)),
+    ];
+    vec![(RESIZE_TABLE, resize.into_iter().collect())]
 }
 
 fn format_combo(key: &WKey, mut mods: Mods) -> String {
@@ -421,4 +520,17 @@ fn format_combo(key: &WKey, mut mods: Mods) -> String {
     };
     out.push_str(&k);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::table_label;
+
+    #[test]
+    fn table_labels_read_as_words() {
+        assert_eq!(table_label("resize_pane"), "Resize");
+        assert_eq!(table_label("activate_pane"), "Activate pane");
+        assert_eq!(table_label("font-size"), "Font size");
+        assert_eq!(table_label(""), "");
+    }
 }

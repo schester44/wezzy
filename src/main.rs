@@ -4,10 +4,12 @@
 //! PTYs, terminal emulation and key encoding.
 //! We provide: rendering, input dispatch, and our own UI (sidebar, overlays).
 
+mod actions;
 mod agents;
 mod app;
 mod clipboard;
 mod commands;
+mod copymode;
 mod diff;
 mod feedback;
 mod gitpanel;
@@ -17,6 +19,7 @@ mod keys;
 mod launch;
 mod luawin;
 mod palette;
+mod paneselect;
 mod paths;
 mod quickselect;
 mod recipes;
@@ -30,8 +33,10 @@ mod servers;
 mod session;
 mod settings;
 mod settings_ui;
+mod sidebar;
 mod shortcuts;
 mod ui;
+mod update;
 mod workspaces;
 
 use anyhow::Context as _;

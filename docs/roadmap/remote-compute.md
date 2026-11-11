@@ -24,7 +24,7 @@ the mux protocol and need no changes.
   pane; this phase upgrades the same entries to domains. WezTerm proxies the
   connection with `wezterm cli proxy` on the far side.
 - **Choosing where things run:** per workspace by default (a workspace is bound
-  to a host), with a per-launch override in the agent launcher (⌘N on a remote
+  to a host), with a per-launch override in the agent launcher (⌘A on a remote
   workspace starts the harness there; the palette lists "New Claude agent on devbox").
 - **Visible location:** the workspace switcher and agent cards show the host
   when it isn't local. No other chrome.

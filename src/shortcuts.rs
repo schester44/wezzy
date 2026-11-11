@@ -3,7 +3,7 @@
 
 use crate::commands::AppCommand;
 use crate::keys::KeyState;
-use config::keyassignment::{KeyAssignment, LauncherFlags, PaneDirection};
+use config::keyassignment::{KeyAssignment, LauncherFlags, PaneDirection, PaneSelectMode};
 
 pub struct Row {
     /// Key caps shown side by side: alternatives, or a shared modifier followed
@@ -209,10 +209,23 @@ fn describe(action: &KeyAssignment) -> Option<(Section, String)> {
         AdjustPaneSize(..) => s(Panes, "Resize pane"),
         TogglePaneZoomState | SetPaneZoomState(_) => s(Panes, "Zoom pane"),
         RotatePanes(_) => s(Panes, "Rotate panes"),
+        PaneSelect(a) => s(
+            Panes,
+            match a.mode {
+                PaneSelectMode::Activate => "Pick a pane",
+                PaneSelectMode::SwapWithActive | PaneSelectMode::SwapWithActiveKeepFocus => {
+                    "Swap panes"
+                }
+                PaneSelectMode::MoveToNewTab => "Move pane to a tab",
+                PaneSelectMode::MoveToNewWindow => "Move pane to a window",
+            },
+        ),
 
         CopyTo(_) | CopyTextTo { .. } => s(Terminal, "Copy"),
         PasteFrom(_) => s(Terminal, "Paste"),
         QuickSelect | QuickSelectArgs(_) => s(Terminal, "Quick select"),
+        ActivateCopyMode => s(Terminal, "Copy mode"),
+        SendKey(_) => s(Terminal, "Send key"),
         ScrollByPage(n) if n.into_inner() < 0. => s(Terminal, "Scroll up"),
         ScrollByPage(_) => s(Terminal, "Scroll down"),
         ScrollByLine(n) if *n < 0 => s(Terminal, "Scroll up a line"),

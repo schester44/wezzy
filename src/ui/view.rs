@@ -56,6 +56,10 @@ impl Render for TermApp {
 
         if let Some(p) = &pane {
             window.set_window_title(&p.get_title());
+            // you're looking at it: whatever its agent finished is seen
+            if window.is_window_active() {
+                crate::agents::mark_seen(p.pane_id());
+            }
         }
         // point the diff panel at the active pane's repo
         crate::diff::set_target(
@@ -67,12 +71,25 @@ impl Render for TermApp {
                 })
                 .flatten(),
         );
+        // and the Actions source at its branch, while it's on screen
+        crate::actions::set_target(
+            (self.sidebar_open
+                && !zoomed
+                && crate::settings::get().sidebar_enabled(crate::sidebar::Source::Actions))
+            .then(|| {
+                pane.as_ref()
+                    .and_then(|p| p.get_current_working_dir(mux::pane::CachePolicy::AllowStale))
+                    .map(|u| std::path::PathBuf::from(u.path()))
+            })
+            .flatten(),
+        );
         if self
             .flash
             .as_ref()
             .is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(3))
         {
             self.flash = None;
+            self.flash_pane = None;
         }
 
         div()
@@ -150,7 +167,8 @@ impl Render for TermApp {
             )
             // toasts and modals sit over the whole window (sidebars included), so
             // they anchor to the window's corner / center rather than the terminal's
-            .children(self.toast(&t))
+            .children(self.toast(&t, cx))
+            .children(self.copy_search(&t))
             .children(self.modal(&t, cx))
             .children(self.git_help_modal(&t, cx))
             .children(self.shortcuts_modal(&t, cx))
@@ -161,9 +179,8 @@ impl TermApp {
     // -- sidebar -------------------------------------------------------------
 
     fn sidebar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let agents = agents::collect(self.active_pane().map(|p| p.pane_id()));
-        let servers = self.workspace_servers();
-        let n_agents = agents.len();
+        use crate::sidebar::{Item, Source};
+        let sections = self.sidebar_sections();
         let sidebar_cur = (self.region == crate::regions::Region::Sidebar)
             .then_some(self.sidebar_cursor);
         let lua_status = strip_escapes(&UI_STATE.lock().left_status);
@@ -171,38 +188,44 @@ impl TermApp {
         let leader = self.keys.leader_active();
         let term_font = term_family();
 
-        self.side_panel(super::panel::SidePanel::Sidebar, t, cx)
-            .pt_1()
-            .when(!agents.is_empty(), |d| {
-                d.child(section_header("Agents", Some(agents.len().to_string()), t))
-            })
-            .child(
+        // rows are numbered across sections, matching the keyboard cursor
+        let mut row = 0;
+        let mut panel = self.side_panel(super::panel::SidePanel::Sidebar, t, cx).pt_1();
+        for section in sections {
+            let source = section.source;
+            panel = panel.child(sidebar_section_header(source, section.items.len(), section.collapsed, t, cx));
+            if section.collapsed {
+                continue;
+            }
+            let rows: Vec<AnyElement> = section
+                .items
+                .into_iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    let cursor = sidebar_cur == Some(row);
+                    row += 1;
+                    match item {
+                        Item::Agent(a) => {
+                            let num = (leader && i < 9).then(|| i + 1);
+                            agent_row(a, cursor, num, t, cx).into_any_element()
+                        }
+                        Item::Server(s) => server_row(s, cursor, t, cx).into_any_element(),
+                        Item::Run(r) => run_row(r, cursor, t, cx).into_any_element(),
+                    }
+                })
+                .collect();
+            panel = panel.child(
                 div()
-                    .id("agents")
+                    .id(source.id())
                     .flex()
                     .flex_col()
-                    .overflow_y_scroll()
-                    .children(
-                        agents
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, a)| {
-                                let num = (leader && i < 9).then(|| i + 1);
-                                agent_row(a, sidebar_cur == Some(i), num, t, cx)
-                            }),
-                    ),
-            )
-            .when(!servers.is_empty(), |d| {
-                d.child(section_header("Servers", Some(servers.len().to_string()), t))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .children(servers.into_iter().enumerate().map(|(j, s)| {
-                                server_row(s, sidebar_cur == Some(n_agents + j), t, cx)
-                            })),
-                    )
-            })
+                    // agents can run long; the sections below stay put
+                    .when(source == Source::Agents, |d| d.overflow_y_scroll())
+                    .children(rows),
+            );
+        }
+
+        panel
             .child(div().flex_1())
             .when(!lua_status.is_empty(), |d| {
                 d.child(
@@ -221,19 +244,6 @@ impl TermApp {
                         .child(lua_status),
                 )
             })
-    }
-
-    /// Dev servers started from panes in the active workspace.
-    pub(crate) fn workspace_servers(&self) -> Vec<crate::servers::Server> {
-        let mux = Mux::get();
-        let panes: Vec<_> = mux
-            .iter_windows_in_workspace(&mux.active_workspace())
-            .into_iter()
-            .filter_map(|w| mux.get_window(w).map(|w| w.iter_tabs().cloned().collect::<Vec<_>>()))
-            .flatten()
-            .flat_map(|tab| tab.iter_panes_ignoring_zoom().into_iter().map(|p| p.pane))
-            .collect();
-        crate::servers::for_panes(&panes)
     }
 
     fn workspace_switcher(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -469,7 +479,7 @@ impl TermApp {
             .unwrap_or_default();
 
         let leader = self.keys.leader_active();
-        let table = self.keys.active_table().map(str::to_string);
+        let table = self.keys.active_table().map(crate::keys::table_label);
 
         div()
             .h(px(CHROME_H))
@@ -508,17 +518,15 @@ impl TermApp {
                     .flex()
                     .gap_1()
                     .mr_1()
-                    .when(leader, |d| d.child(pill("LEADER", t.accent)))
+                    .when(leader, |d| d.child(pill("Leader", t.accent)))
                     .when_some(table, |d, name| d.child(pill(&name, t.warning))),
             )
     }
 
     fn tab(&self, tab: TabInfo, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let idx = tab.idx;
-        let group: SharedString = format!("tab-{idx}").into();
         div()
             .id(("tab", idx))
-            .group(group.clone())
             .h(px(24.))
             .max_w(px(220.))
             .flex_shrink()
@@ -564,27 +572,36 @@ impl TermApp {
                     }),
             )
             .when(tab.zoomed, |d| d.child(pill("ZOOM", t.warning)))
-            // close button: takes no space until the tab is hovered
-            .child(
-                div()
-                    .id(("tab-close", idx))
-                    .flex_none()
-                    .w(px(0.))
-                    .h(px(14.))
-                    .overflow_hidden()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_md()
-                    .group_hover(group, |s| s.w(px(14.)))
-                    .hover(|s| s.bg(t.selected))
-                    .child(icon(Icon::X, 9., t.fg_muted))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        this.close_tab_at(idx, window, cx);
-                        this.focus.focus(window);
-                    })),
-            )
+            // close button: only on the hovered tab. gpui applies hover styles
+            // after layout, so the hover has to live in state to take up space.
+            .when(self.hovered_tab == Some(idx), |d| {
+                d.child(
+                    div()
+                        .id(("tab-close", idx))
+                        .flex_none()
+                        .size(px(14.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .hover(|s| s.bg(t.selected))
+                        .child(icon(Icon::X, 9., t.fg_muted))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.hovered_tab = None;
+                            this.close_tab_at(idx, window, cx);
+                            this.focus.focus(window);
+                        })),
+                )
+            })
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.hovered_tab = Some(idx);
+                } else if this.hovered_tab == Some(idx) {
+                    this.hovered_tab = None;
+                }
+                cx.notify();
+            }))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.perform(KeyAssignment::ActivateTab(idx as isize), None, window, cx);
                 this.focus.focus(window);
@@ -626,6 +643,28 @@ impl TermApp {
             .as_ref()
             .map(|q| (q.pane_id, q.matches.clone(), q.typed.clone()));
         let hint_color = render::color(palette.colors.0[5]);
+        let pane_labels = self.pane_select.as_ref().map(|ps| {
+            let labels: Vec<(mux::pane::PaneId, String)> = ps
+                .labels
+                .iter()
+                .filter(|(_, l)| l.starts_with(&ps.typed))
+                .map(|(id, l)| {
+                    let mut l = l.to_uppercase();
+                    if ps.show_ids {
+                        if let Some(remote) = crate::session::remote_pane_id(*id) {
+                            l = format!("{l} {remote}");
+                        }
+                    }
+                    (*id, l)
+                })
+                .collect();
+            labels
+        });
+        let copy = self
+            .copy_mode
+            .as_ref()
+            .map(|c| (c.pane_id, c.cursor, c.selection()));
+        let copy_colors = (render::color(palette.selection_bg), render::color(palette.cursor_bg));
 
         let paint_metrics = metrics.clone();
         canvas(
@@ -709,6 +748,45 @@ impl TermApp {
                         paint_hints(o, matches, typed, hint_color, &paint_metrics, window, cx);
                     }
                 }
+                if let Some(labels) = &pane_labels {
+                    for p in tab.iter_panes() {
+                        if let Some((_, label)) = labels.iter().find(|(id, _)| *id == p.pane.pane_id()) {
+                            let rect = gpui::Bounds::new(
+                                point(
+                                    origin.x + paint_metrics.cell_w * p.left as f32,
+                                    origin.y + paint_metrics.line_h * p.top as f32,
+                                ),
+                                gpui::size(
+                                    paint_metrics.cell_w * p.width as f32,
+                                    paint_metrics.line_h * p.height as f32,
+                                ),
+                            );
+                            paint_pane_label(rect, label, hint_color, &paint_metrics, window, cx);
+                        }
+                    }
+                }
+                if let Some((pane_id, cursor, sel)) = copy {
+                    if let Some(p) = tab.iter_panes().iter().find(|p| p.pane.pane_id() == pane_id) {
+                        let top = viewports
+                            .get(&pane_id)
+                            .copied()
+                            .unwrap_or(p.pane.get_dimensions().physical_top);
+                        let o = point(
+                            origin.x + paint_metrics.cell_w * p.left as f32,
+                            origin.y + paint_metrics.line_h * p.top as f32,
+                        );
+                        paint_copy_mode(
+                            o,
+                            (p.width, p.height),
+                            top,
+                            cursor,
+                            sel,
+                            copy_colors,
+                            &paint_metrics,
+                            window,
+                        );
+                    }
+                }
             },
         )
         .size_full()
@@ -716,10 +794,37 @@ impl TermApp {
 
     // -- floating ------------------------------------------------------------
 
-    fn toast(&self, t: &Theme) -> Option<impl IntoElement> {
-        let (msg, _) = self.flash.as_ref()?;
+    /// Copy mode's search field, while typing after / or ?.
+    fn copy_search(&self, t: &Theme) -> Option<impl IntoElement> {
+        let (query, forward) = self.copy_mode.as_ref()?.search.as_ref()?;
         Some(
             div()
+                .absolute()
+                .bottom_4()
+                .left_4()
+                .min_w(px(240.))
+                .h(px(32.))
+                .px_3()
+                .flex()
+                .items_center()
+                .rounded_lg()
+                .bg(t.elevated)
+                .border_1()
+                .border_color(with_alpha(t.accent, 0.6))
+                .shadow_lg()
+                .font_family(term_family())
+                .child(div().text_color(t.fg_subtle).mr_1().child(if *forward { "/" } else { "?" }))
+                .child(query.clone())
+                .child(div().ml_px().w(px(1.5)).h(px(15.)).bg(t.accent)),
+        )
+    }
+
+    fn toast(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let (msg, _) = self.flash.as_ref()?;
+        let target = self.flash_pane;
+        Some(
+            div()
+                .id("toast")
                 .absolute()
                 .bottom_4()
                 .right_4()
@@ -735,7 +840,16 @@ impl TermApp {
                 .border_color(t.border)
                 .shadow_lg()
                 .child(div().size(px(6.)).flex_none().rounded_full().bg(t.accent))
-                .child(msg.clone()),
+                .child(msg.clone())
+                .when_some(target, |d, pane_id| {
+                    d.cursor_pointer().on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.flash = None;
+                        this.flash_pane = None;
+                        this.region = crate::regions::Region::Terminal;
+                        this.focus_pane(pane_id, window, cx);
+                    }))
+                }),
         )
     }
 
@@ -794,7 +908,10 @@ impl TermApp {
                     .into_any_element(),
             ),
             Overlay::Confirm {
-                message, detail, ..
+                message,
+                detail,
+                verb,
+                ..
             } => (
                 96.,
                 card(380.)
@@ -816,7 +933,7 @@ impl TermApp {
                                     this.answer_confirm(false, window, cx)
                                 }),
                             ))
-                            .child(button("confirm-yes", "Close", t, true).on_click(
+                            .child(button("confirm-yes", verb, t, true).on_click(
                                 cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.answer_confirm(true, window, cx)
                                 }),
@@ -848,6 +965,8 @@ impl TermApp {
                 // offsets are measured below the top bar
                 .pt(px(top + CHROME_H))
                 .bg(gpui::hsla(0., 0., 0., 0.28))
+                // keep wheel and hover from reaching the terminal underneath
+                .occlude()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, window, cx| {
@@ -989,7 +1108,7 @@ impl TermApp {
             }
             let is_sel = i == selected;
             let leading: AnyElement = match (item.kind, item.status) {
-                (Kind::Agent, Some(status)) => status_indicator(status, t).into_any_element(),
+                (Kind::Agent, Some((status, unseen))) => status_indicator(status, unseen, t).into_any_element(),
                 (kind, _) => icon(
                     match kind {
                         Kind::Agent | Kind::Launch => Icon::Bot,
@@ -1108,7 +1227,11 @@ impl TermApp {
                                 .text_color(t.fg_muted)
                                 .text_size(px(11.))
                                 .font_weight(FontWeight::MEDIUM)
-                                .child(state.scope.label()),
+                                .child(if state.move_tab.is_some() {
+                                    "Move tab to"
+                                } else {
+                                    state.scope.label()
+                                }),
                         )
                     })
                     .child(
@@ -1159,7 +1282,7 @@ impl TermApp {
             )
     }
 
-    fn answer_confirm(&mut self, yes: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn answer_confirm(&mut self, yes: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(Overlay::Confirm {
             action,
             cancel,
@@ -1167,7 +1290,9 @@ impl TermApp {
             ..
         }) = self.overlay.take()
         {
-            if yes {
+            if yes && matches!(action, KeyAssignment::QuitApplication) {
+                cx.quit();
+            } else if yes {
                 self.perform(action, Some(pane_id), window, cx);
             } else if let Some(c) = cancel {
                 self.perform(c, Some(pane_id), window, cx);
@@ -1223,7 +1348,7 @@ fn agent_row(
                 .flex_none()
                 .flex()
                 .justify_center()
-                .child(status_indicator(a.status, t)),
+                .child(status_indicator(a.status, a.unseen, t)),
         )
         .child(
             div()
@@ -1280,6 +1405,73 @@ fn agent_row(
 }
 
 /// QuickSelect overlay: tint each match, label at its start.
+/// Copy mode: the selection and the copy cursor over one pane.
+#[allow(clippy::too_many_arguments)]
+fn paint_copy_mode(
+    origin: gpui::Point<Pixels>,
+    (width, height): (usize, usize),
+    top: wezterm_term::StableRowIndex,
+    cursor: crate::copymode::Pos,
+    sel: Option<(crate::copymode::Pos, crate::copymode::Pos)>,
+    (sel_color, cursor_color): (Hsla, Hsla),
+    m: &render::Metrics,
+    window: &mut Window,
+) {
+    use gpui::{fill, size, Bounds};
+    let cell = |row: wezterm_term::StableRowIndex, col: usize, cells: usize| {
+        Bounds::new(
+            point(origin.x + m.cell_w * col as f32, origin.y + m.line_h * (row - top) as f32),
+            size(m.cell_w * cells as f32, m.line_h),
+        )
+    };
+    let bottom = top + height as wezterm_term::StableRowIndex - 1;
+    if let Some((s, e)) = sel {
+        for row in s.0.max(top)..=e.0.min(bottom) {
+            let from = if row == s.0 { s.1 } else { 0 };
+            let to = if row == e.0 { e.1.min(width - 1) } else { width - 1 };
+            if from <= to {
+                window.paint_quad(fill(cell(row, from, to - from + 1), with_alpha(sel_color, 0.45)));
+            }
+        }
+    }
+    if (top..=bottom).contains(&cursor.0) {
+        window.paint_quad(fill(cell(cursor.0, cursor.1.min(width - 1), 1), with_alpha(cursor_color, 0.6)));
+    }
+}
+
+/// PaneSelect: a large label in the middle of a pane.
+fn paint_pane_label(
+    rect: gpui::Bounds<Pixels>,
+    label: &str,
+    accent: Hsla,
+    m: &render::Metrics,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    use gpui::{fill, size, Bounds, TextRun};
+    let font_size = m.font_size * 2.;
+    let mut font = m.font.clone();
+    font.weight = FontWeight::BOLD;
+    let text: SharedString = label.to_string().into();
+    let run = TextRun {
+        len: text.len(),
+        font,
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window.text_system().shape_line(text, font_size, &[run], None);
+    let line_h = m.line_h * 2.;
+    let badge = size(line.width + px(20.), line_h + px(8.));
+    let at = point(
+        rect.origin.x + (rect.size.width - badge.width) / 2.,
+        rect.origin.y + (rect.size.height - badge.height) / 2.,
+    );
+    window.paint_quad(fill(Bounds::new(at, badge), accent).corner_radii(px(6.)));
+    line.paint(point(at.x + px(10.), at.y + px(4.)), line_h, window, cx).ok();
+}
+
 fn paint_hints(
     origin: gpui::Point<Pixels>,
     matches: &[crate::quickselect::Match],
@@ -1389,16 +1581,88 @@ fn server_row(
         }))
 }
 
-fn status_indicator(status: Status, t: &Theme) -> AnyElement {
+fn run_row(r: crate::actions::Run, cursor: bool, t: &Theme, cx: &mut Context<TermApp>) -> impl IntoElement {
+    use crate::actions::State;
+    let group: SharedString = format!("run-{}", r.id).into();
+    let url = r.url.clone();
+    let dot = |c| div().size(px(6.)).rounded_full().bg(c).into_any_element();
+    let indicator = match r.state {
+        State::Running => spinner(12., t.fg_muted).into_any_element(),
+        State::Queued | State::Other => dot(t.fg_subtle),
+        State::Waiting => icon(Icon::Alert, 13., t.warning).into_any_element(),
+        State::Success => dot(t.success),
+        State::Failure => icon(Icon::X, 12., t.danger).into_any_element(),
+    };
+    let age = crate::actions::age(r.created);
+    div()
+        .id(("run", r.id as usize))
+        .group(group.clone())
+        .relative()
+        .h(px(30.))
+        .pl(px(14.))
+        .pr_4()
+        .flex()
+        .items_center()
+        .gap_2p5()
+        .cursor_pointer()
+        .map(|d| row_selection(d, cursor, false, t))
+        .child(
+            div()
+                .w(px(14.))
+                .flex_none()
+                .flex()
+                .justify_center()
+                .child(indicator),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(r.workflow.clone()),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_xs()
+                .text_color(t.fg_subtle)
+                .child(age),
+        )
+        .child(
+            div()
+                .id(("run-web", r.id as usize))
+                .size(px(20.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .opacity(0.)
+                .group_hover(group, |st| st.opacity(1.))
+                .hover(|st| st.bg(t.selected))
+                .child(icon(Icon::External, 12., t.fg_muted))
+                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    cx.open_url(&url);
+                })),
+        )
+        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_run(&r, window, cx)))
+}
+
+/// `unseen`: it finished while you were elsewhere and you haven't been back.
+/// Done stays bright until you go to it, then fades to the idle dot.
+fn status_indicator(status: Status, unseen: bool, t: &Theme) -> AnyElement {
     match status {
         Status::Working => spinner(12., t.fg_muted).into_any_element(),
         Status::NeedsInput => icon(Icon::Alert, 13., t.warning).into_any_element(),
-        Status::Done => div()
+        Status::Done if unseen => div()
             .size(px(6.))
             .rounded_full()
             .bg(t.success)
             .into_any_element(),
-        Status::Idle => div()
+        Status::Done | Status::Idle => div()
             .size(px(6.))
             .rounded_full()
             .bg(t.fg_subtle)
@@ -1426,7 +1690,7 @@ pub(super) fn kbd(label: &str, t: &Theme) -> impl IntoElement {
         .child(SharedString::from(label.to_string()))
 }
 
-fn section_header(title: &str, badge: Option<String>, t: &Theme) -> impl IntoElement {
+fn section_header(title: &str, badge: Option<String>, t: &Theme) -> gpui::Div {
     div()
         .flex_none()
         .h(px(32.))
@@ -1447,6 +1711,35 @@ fn section_header(title: &str, badge: Option<String>, t: &Theme) -> impl IntoEle
                 .text_color(t.fg_subtle)
                 .child(b)
         }))
+}
+
+/// A sidebar section label that folds its rows: click to toggle. The chevron
+/// shows on hover, and stays while folded so the state is visible.
+fn sidebar_section_header(
+    source: crate::sidebar::Source,
+    count: usize,
+    collapsed: bool,
+    t: &Theme,
+    cx: &mut Context<TermApp>,
+) -> impl IntoElement {
+    let group: SharedString = format!("section-{}", source.id()).into();
+    div()
+        .id(SharedString::from(format!("section-{}", source.id())))
+        .group(group.clone())
+        .cursor_pointer()
+        .child(
+            section_header(source.title(), Some(count.to_string()), t).child(
+                div()
+                    .flex_none()
+                    .when(!collapsed, |d| d.opacity(0.).group_hover(group, |st| st.opacity(1.)))
+                    .child(icon(
+                        if collapsed { Icon::ChevronRight } else { Icon::ChevronDown },
+                        11.,
+                        t.fg_subtle,
+                    )),
+            ),
+        )
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_sidebar_section(source, cx)))
 }
 
 /// Sidebar row selection (docs/development/design.md): faint full-width fill + 2px left bar.

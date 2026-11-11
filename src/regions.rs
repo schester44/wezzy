@@ -5,7 +5,6 @@
 use crate::app::TermApp;
 use crate::ui::SidePanel;
 use gpui::{Context, KeyDownEvent, Window};
-use mux::pane::PaneId;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
@@ -14,33 +13,10 @@ pub enum Region {
     Diff,
 }
 
-#[derive(Clone, Debug)]
-pub enum SidebarItem {
-    Agent(PaneId),
-    Server { port: u16, pane_id: PaneId },
-}
-
 impl TermApp {
     /// The active tab has a zoomed pane: it fills the window, side panels hidden.
     pub(crate) fn pane_zoomed(&self) -> bool {
         self.active_tab().is_some_and(|t| t.get_zoomed_pane().is_some())
-    }
-
-    /// Sidebar entries in display order (agents, then servers).
-    pub(crate) fn sidebar_items(&self) -> Vec<SidebarItem> {
-        let mut items: Vec<SidebarItem> = crate::agents::collect(None)
-            .into_iter()
-            .map(|a| SidebarItem::Agent(a.pane_id))
-            .collect();
-        items.extend(
-            self.workspace_servers()
-                .into_iter()
-                .map(|s| SidebarItem::Server {
-                    port: s.port,
-                    pane_id: s.pane_id,
-                }),
-        );
-        items
     }
 
     /// Ctrl+h/l at the terminal's outer edge moves into the side panels.
@@ -144,20 +120,10 @@ impl TermApp {
             "k" | "up" => self.sidebar_cursor = self.sidebar_cursor.saturating_sub(1),
             "g" if !ks.modifiers.shift => self.sidebar_cursor = 0,
             "g" | "G" => self.sidebar_cursor = n - 1,
-            "enter" | "o" => match items[self.sidebar_cursor].clone() {
-                SidebarItem::Agent(pane_id) => {
-                    self.region = Region::Terminal;
-                    self.focus_pane(pane_id, window, cx);
-                }
-                SidebarItem::Server { port, pane_id } => {
-                    if ks.key == "o" {
-                        cx.open_url(&format!("http://localhost:{port}"));
-                    } else {
-                        self.region = Region::Terminal;
-                        self.focus_pane(pane_id, window, cx);
-                    }
-                }
-            },
+            "enter" | "o" => {
+                let item = items[self.sidebar_cursor].clone();
+                self.sidebar_activate(item, &ks.key, window, cx);
+            }
             _ => {}
         }
     }

@@ -4,9 +4,11 @@
 //! ```lua
 //! require("wezzy").setup({
 //!   close_confirmation = "smart",     -- "smart" | "never" | "always"
-//!   default_harness = "claude",       -- what ⌘N launches
-//!   agent_layout = "bsp",             -- "bsp" | "master-stack" (where ⌘N splits)
+//!   default_harness = "claude",       -- what ⌘A launches
+//!   agent_layout = "bsp",             -- "bsp" | "master-stack" (where ⌘A splits)
 //!   editor = { "nvim", "+{line}", "{file}" }, -- ⌘-click file:line opens this in a split
+//!   auto_update = true,               -- install new releases in the background (see update.rs)
+//!   sidebar = { "agents", "servers", "actions" }, -- ⌘B sections, top to bottom (see sidebar.rs)
 //!   harnesses = {                     -- name = argv; merged over the built-ins
 //!     claude = { "claude" },
 //!     codex = { "codex", "--full-auto" },
@@ -75,9 +77,15 @@ pub struct Settings {
     /// argv template for opening files; {file} {line} {col}
     pub editor: Vec<String>,
     pub show_sidebar: bool,
+    /// Sidebar sources, top to bottom; None = `Source::default_list()`.
+    sidebar: Option<Vec<crate::sidebar::Source>>,
+    /// Sidebar sections folded to their header (clicked in the sidebar).
+    pub sidebar_collapsed: Vec<crate::sidebar::Source>,
     /// macOS system sound played when an agent needs you or finishes;
     /// "" = default (Funk, like pi-chime), "off" = silent.
     pub sound: String,
+    /// Check for and install new releases (installed app only).
+    pub auto_update: bool,
     /// settings.json recipes, then the Lua config's
     pub recipes: Vec<crate::recipes::Recipe>,
     /// the settings.json subset, so saving from the UI doesn't copy Lua ones into the file
@@ -98,7 +106,10 @@ impl Settings {
         harnesses: Vec::new(),
         editor: Vec::new(),
         show_sidebar: true,
+        sidebar: None,
+        sidebar_collapsed: Vec::new(),
         sound: String::new(),
+        auto_update: true,
         recipes: Vec::new(),
         file_recipes: Vec::new(),
         hosts: Vec::new(),
@@ -161,6 +172,27 @@ impl Settings {
         out
     }
 
+    /// Sidebar sources, top to bottom.
+    pub fn sidebar(&self) -> Vec<crate::sidebar::Source> {
+        self.sidebar
+            .clone()
+            .unwrap_or_else(crate::sidebar::Source::default_list)
+    }
+
+    pub fn sidebar_enabled(&self, source: crate::sidebar::Source) -> bool {
+        self.sidebar().contains(&source)
+    }
+
+    /// Show or hide one source; a newly shown one goes at the bottom.
+    pub fn set_sidebar_source(&mut self, source: crate::sidebar::Source, on: bool) {
+        let mut list = self.sidebar();
+        list.retain(|s| *s != source);
+        if on {
+            list.push(source);
+        }
+        self.sidebar = Some(list);
+    }
+
     pub fn default_harness_name(&self) -> String {
         if self.default_harness.is_empty() {
             "claude".into()
@@ -187,6 +219,18 @@ fn on_path(bin: &str) -> bool {
 
 static SETTINGS: Mutex<Settings> = Mutex::new(Settings::DEFAULT);
 
+/// When we last wrote settings.json. WezTerm watches the config file's whole
+/// directory, so our own writes trigger a config reload.
+static LAST_WRITE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// Whether a config reload right now was most likely caused by our own write
+/// (WezTerm debounces for 200ms, then re-evaluates the config).
+pub fn just_saved() -> bool {
+    LAST_WRITE
+        .lock()
+        .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2))
+}
+
 pub fn get() -> Settings {
     SETTINGS.lock().clone()
 }
@@ -201,7 +245,12 @@ struct Stored {
     default_harness: Option<String>,
     editor: Option<Vec<String>>,
     show_sidebar: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sidebar: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sidebar_collapsed: Option<Vec<String>>,
     sound: Option<String>,
+    auto_update: Option<bool>,
     recipes: Option<Vec<StoredRecipe>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hosts: Option<Vec<StoredHost>>,
@@ -233,6 +282,19 @@ pub fn file_path() -> PathBuf {
     crate::paths::config_dir().join("settings.json")
 }
 
+/// Known source ids in order, unknown and repeated ones dropped.
+fn parse_sources(ids: &[String]) -> Vec<crate::sidebar::Source> {
+    let mut out = vec![];
+    for id in ids {
+        match crate::sidebar::Source::from_id(id) {
+            Some(src) if !out.contains(&src) => out.push(src),
+            Some(_) => {}
+            None => log::warn!("settings.json: unknown sidebar source {id:?}"),
+        }
+    }
+    out
+}
+
 fn from_file() -> Settings {
     let mut s = Settings::DEFAULT;
     let Ok(text) = std::fs::read_to_string(file_path()) else {
@@ -257,8 +319,17 @@ fn from_file() -> Settings {
     if let Some(v) = st.show_sidebar {
         s.show_sidebar = v;
     }
+    if let Some(v) = st.sidebar {
+        s.sidebar = Some(parse_sources(&v));
+    }
+    if let Some(v) = st.sidebar_collapsed {
+        s.sidebar_collapsed = parse_sources(&v);
+    }
     if let Some(v) = st.sound {
         s.sound = v;
+    }
+    if let Some(v) = st.auto_update {
+        s.auto_update = v;
     }
     if let Some(v) = st.recipes {
         s.file_recipes = v
@@ -303,7 +374,14 @@ pub fn update(f: impl FnOnce(&mut Settings)) {
         default_harness: (!s.default_harness.is_empty()).then(|| s.default_harness.clone()),
         editor: (!s.editor.is_empty()).then(|| s.editor.clone()),
         show_sidebar: Some(s.show_sidebar),
+        sidebar: s
+            .sidebar
+            .as_ref()
+            .map(|v| v.iter().map(|x| x.id().to_string()).collect()),
+        sidebar_collapsed: (!s.sidebar_collapsed.is_empty())
+            .then(|| s.sidebar_collapsed.iter().map(|x| x.id().to_string()).collect()),
         sound: (!s.sound.is_empty()).then(|| s.sound.clone()),
+        auto_update: Some(s.auto_update),
         recipes: (!s.file_recipes.is_empty()).then(|| {
             s.file_recipes
                 .iter()
@@ -339,7 +417,9 @@ pub fn update(f: impl FnOnce(&mut Settings)) {
         std::fs::create_dir_all(dir).ok();
     }
     if let Ok(text) = serde_json::to_string_pretty(&st) {
-        std::fs::write(&path, text + "\n").ok();
+        if std::fs::write(&path, text + "\n").is_ok() {
+            *LAST_WRITE.lock() = Some(std::time::Instant::now());
+        }
     }
 }
 
@@ -402,6 +482,16 @@ pub fn lua_setup(_: &mlua::Lua, opts: mlua::Table) -> mlua::Result<()> {
     }
     if let Some(v) = opts.get::<_, Option<Vec<String>>>("editor")? {
         s.editor = v;
+    }
+    if let Some(v) = opts.get::<_, Option<bool>>("auto_update")? {
+        s.auto_update = v;
+    }
+    if let Some(v) = opts.get::<_, Option<Vec<String>>>("sidebar")? {
+        if let Some(bad_id) = v.iter().find(|id| crate::sidebar::Source::from_id(id).is_none()) {
+            let ids: Vec<&str> = crate::sidebar::Source::ALL.iter().map(|x| x.id()).collect();
+            return Err(bad("sidebar", &format!("a list of {}", ids.join(", ")), bad_id));
+        }
+        s.sidebar = Some(parse_sources(&v));
     }
     if let Some(t) = opts.get::<_, Option<mlua::Table>>("harnesses")? {
         for pair in t.pairs::<String, Vec<String>>() {

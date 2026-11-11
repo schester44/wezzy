@@ -12,7 +12,9 @@ pub enum Row {
     CloseConfirmation,
     Editor,
     Sidebar,
+    SidebarActions,
     Sound,
+    Updates,
     AgentHooks,
     ConfigFile,
 }
@@ -23,7 +25,9 @@ pub const ROWS: &[Row] = &[
     Row::CloseConfirmation,
     Row::Editor,
     Row::Sidebar,
+    Row::SidebarActions,
     Row::Sound,
+    Row::Updates,
     Row::AgentHooks,
     Row::ConfigFile,
 ];
@@ -42,7 +46,9 @@ impl Row {
             Row::CloseConfirmation => "Confirm close",
             Row::Editor => "Editor",
             Row::Sidebar => "Sidebar",
+            Row::SidebarActions => "GitHub Actions",
             Row::Sound => "Sound",
+            Row::Updates => "Updates",
             Row::AgentHooks => "Agent hooks",
             Row::ConfigFile => "Config file",
         }
@@ -74,7 +80,11 @@ impl Row {
                 shell_words::join(argv)
             }
             Row::Sidebar => if sidebar_open { "Shown" } else { "Hidden" }.into(),
+            Row::SidebarActions => {
+                if s.sidebar_enabled(crate::sidebar::Source::Actions) { "Shown" } else { "Hidden" }.into()
+            }
             Row::Sound => s.sound().unwrap_or_else(|| "Off".into()),
+            Row::Updates => if s.auto_update { "Automatic" } else { "Off" }.into(),
             Row::AgentHooks => {
                 if crate::hooks::claude_hooks_installed() {
                     "Installed".into()
@@ -94,7 +104,9 @@ impl Row {
                 | Row::AgentLayout
                 | Row::CloseConfirmation
                 | Row::Sidebar
+                | Row::SidebarActions
                 | Row::Sound
+                | Row::Updates
         )
     }
 }
@@ -141,12 +153,17 @@ impl TermApp {
                 let open = self.sidebar_open;
                 settings::update(|s| s.show_sidebar = open);
             }
+            Row::SidebarActions => settings::update(|s| {
+                let on = !s.sidebar_enabled(crate::sidebar::Source::Actions);
+                s.set_sidebar_source(crate::sidebar::Source::Actions, on);
+            }),
             Row::Sound => {
                 let cur = settings::get().sound().unwrap_or_else(|| "off".into());
                 let next = cycle(crate::sound::CHOICES, cur.as_str(), step).to_string();
                 settings::update(|s| s.sound = next.clone());
                 crate::sound::play(&next);
             }
+            Row::Updates => settings::update(|s| s.auto_update = !s.auto_update),
             Row::Editor => {
                 if let Some(Overlay::Settings(st)) = self.overlay.as_mut() {
                     st.editing = Some(Row::Editor.value(true));

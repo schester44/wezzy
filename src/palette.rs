@@ -105,7 +105,8 @@ pub struct Item {
     pub title: String,
     pub subtitle: String,
     pub shortcut: Option<String>,
-    pub status: Option<agents::Status>,
+    /// An agent's status, and whether it's unseen.
+    pub status: Option<(agents::Status, bool)>,
     pub action: PaletteAction,
 }
 
@@ -114,6 +115,8 @@ pub struct PaletteState {
     pub send_from: Option<PaneId>,
     /// Picking an agent to send the git panel's review comments to.
     pub send_feedback: bool,
+    /// Picking a workspace to move this tab to (Move Tab to Workspace).
+    pub move_tab: Option<TabId>,
     pub query: String,
     pub scope: Scope,
     pub selected: usize,
@@ -125,6 +128,7 @@ impl PaletteState {
         Self {
             send_from: None,
             send_feedback: false,
+            move_tab: None,
             query: String::new(),
             scope,
             selected: 0,
@@ -152,12 +156,17 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
     vec![
         ("New Tab", Key(SpawnTab(SpawnTabDomain::CurrentPaneDomain))),
         ("New Workspace…", App(AppCommand::NewWorkspace)),
+        ("Rename Tab…", App(AppCommand::RenameTab)),
+        ("Rename Workspace…", App(AppCommand::RenameWorkspace)),
+        ("Move Tab to Workspace…", App(AppCommand::MoveTabToWorkspace)),
+        ("Move Pane to New Window", App(AppCommand::MovePaneToNewWindow)),
         ("Split Right", split(PaneDirection::Right)),
         ("Split Down", split(PaneDirection::Down)),
         ("Settings", App(AppCommand::OpenSettings)),
         ("Keyboard Shortcuts", App(AppCommand::ShowShortcuts)),
         ("Restart Wezzy", App(AppCommand::Restart)),
         ("Rebuild & Restart", App(AppCommand::RebuildRestart)),
+        ("Check for Updates", App(AppCommand::CheckForUpdates)),
         ("Open Editor", App(AppCommand::OpenEditor)),
         ("Quick Select", Key(QuickSelect)),
         ("Quick Select Errors", App(AppCommand::SelectError)),
@@ -211,7 +220,7 @@ impl TermApp {
                     }
                 },
                 shortcut: None,
-                status: Some(a.status),
+                status: Some((a.status, a.unseen)),
                 action: PaletteAction::FocusPane(a.pane_id),
             });
         }
@@ -315,8 +324,18 @@ impl TermApp {
             }
         }
 
-        // workspaces
+        // workspaces (moving a tab: every one but its own)
+        let moving = match &self.overlay {
+            Some(Overlay::Palette(p)) => p.move_tab,
+            _ => None,
+        };
+        let here = moving
+            .and_then(|t| mux.window_containing_tab(t))
+            .and_then(|w| mux.get_window(w).map(|w| w.get_workspace().to_string()));
         for ws in crate::workspaces::list() {
+            if here.as_deref() == Some(ws.name.as_str()) {
+                continue;
+            }
             items.push(Item {
                 kind: Kind::Workspace,
                 subtitle: ws.detail(),
@@ -330,6 +349,7 @@ impl TermApp {
         // commands
         let hooks_installed = crate::hooks::claude_hooks_installed();
         let dev_build = crate::restart::source_dir().is_some();
+        let staged = crate::update::staged();
         for (title, action) in commands() {
             if hooks_installed
                 && matches!(action, PaletteAction::App(AppCommand::InstallAgentHooks))
@@ -339,6 +359,14 @@ impl TermApp {
             if !dev_build && matches!(action, PaletteAction::App(AppCommand::RebuildRestart)) {
                 continue;
             }
+            if dev_build && matches!(action, PaletteAction::App(AppCommand::CheckForUpdates)) {
+                continue;
+            }
+            // a downloaded update runs on the next launch
+            let title = match (&action, &staged) {
+                (PaletteAction::App(AppCommand::Restart), Some(v)) => format!("Restart to Update to {v}"),
+                _ => title.to_string(),
+            };
             let shortcut = match &action {
                 PaletteAction::Key(k) => self.keys.shortcut_for(k),
                 PaletteAction::App(c) => self.keys.shortcut_for(&c.action()),
@@ -418,12 +446,17 @@ impl TermApp {
             "enter" => {
                 let send_from = state.send_from;
                 let send_feedback = state.send_feedback;
+                let move_tab = state.move_tab;
                 let new_ws = (state.scope == Scope::Workspaces)
                     .then(|| state.query.trim().to_string())
                     .filter(|q| !q.is_empty());
                 let pick = self.palette_results().get(state_selected(&self.overlay)).cloned();
                 self.overlay = None;
                 match pick.map(|i| i.action) {
+                    Some(PaletteAction::Workspace(name)) if move_tab.is_some() => {
+                        self.move_tab_to_workspace(move_tab.unwrap(), name);
+                        self.focus.focus(window);
+                    }
                     Some(PaletteAction::FocusPane(to)) if send_feedback => {
                         self.send_feedback_to(to, window, cx);
                     }
@@ -461,7 +494,14 @@ impl TermApp {
                     // no match in the workspace picker: create one with the typed name
                     None => {
                         if let Some(name) = new_ws {
-                            self.run_palette_action(PaletteAction::Workspace(name), window, cx);
+                            match move_tab {
+                                Some(tab) => self.move_tab_to_workspace(tab, name),
+                                None => self.run_palette_action(
+                                    PaletteAction::Workspace(name),
+                                    window,
+                                    cx,
+                                ),
+                            }
                         }
                     }
                 }
@@ -604,6 +644,10 @@ impl TermApp {
             }
             AppCommand::Restart => self.restart(cx),
             AppCommand::RebuildRestart => self.rebuild_and_restart(cx),
+            AppCommand::CheckForUpdates => {
+                self.flash("Checking for updates…");
+                crate::update::check_now();
+            }
             AppCommand::RunRecipe => self.open_palette(Scope::Recipes, cx),
             AppCommand::SshHost => self.open_palette(Scope::Hosts, cx),
             AppCommand::CommandPalette => self.open_palette(Scope::All, cx),
@@ -611,6 +655,37 @@ impl TermApp {
             AppCommand::FindTab => self.open_palette(Scope::Tabs, cx),
             AppCommand::SwitchWorkspace => self.open_palette(Scope::Workspaces, cx),
             AppCommand::NewWorkspace => self.prompt_new_workspace(cx),
+            AppCommand::RenameTab => self.prompt_rename(false, cx),
+            AppCommand::RenameWorkspace => self.prompt_rename(true, cx),
+            AppCommand::MoveTabToWorkspace => {
+                if let Some(tab) = self.active_tab().map(|t| t.tab_id()) {
+                    self.open_palette(Scope::Workspaces, cx);
+                    if let Some(Overlay::Palette(p)) = self.overlay.as_mut() {
+                        p.move_tab = Some(tab);
+                    }
+                }
+            }
+            AppCommand::MovePaneToNewWindow => {
+                if let Some(pane) = self.active_pane().map(|p| p.pane_id()) {
+                    // a new window still belongs to this workspace
+                    let workspace = Some(Mux::get().active_workspace());
+                    promise::spawn::spawn(async move {
+                        match Mux::get().move_pane_to_new_tab(pane, None, workspace).await {
+                            Ok((tab, window)) => crate::app::send_event(
+                                crate::app::AppEvent::TabMoved {
+                                    window,
+                                    tab: tab.tab_id(),
+                                    follow: true,
+                                },
+                            ),
+                            Err(e) => crate::app::send_event(crate::app::AppEvent::Flash(
+                                format!("move failed: {e:#}"),
+                            )),
+                        }
+                    })
+                    .detach();
+                }
+            }
             AppCommand::NewAgent => {
                 self.launch_harness(None, crate::launch::Placement::Split, _window, cx)
             }

@@ -99,7 +99,8 @@ Derived fills (via `with_alpha`):
   right (`fg` when selected), plus a chevron icon for choices.
 - **Shortcut sheet**: a modal opened with `?`, with groups of label on the left
   and key caps on the right. Any key closes it.
-- **Status dot**: 6px. `success` = done / running server, `fg_subtle` = idle,
+- **Status dot**: 6px. `success` = running server, or an agent done while you
+  were elsewhere (unseen, until you focus its pane); `fg_subtle` = idle or seen,
   `fg_muted` spinner = working, `warning` alert icon = needs input. Status never
   tints the row; the icon and its detail text carry it.
 - **Sidebar row**: same selection as lists. Keyboard cursor gets the `fg` 0.07 fill

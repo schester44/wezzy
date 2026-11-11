@@ -1,8 +1,24 @@
-# Vendored from wezterm@e68a8ec with two small additions (src/pane/clientpane.rs):
+# Vendored from wezterm@e68a8ec with small changes:
 #  - SetUserVar alerts from the server are re-published as MuxNotifications, like
 #    local panes do, so the app can fire WezTerm's `user-var-changed` Lua event
-#    (smart-splits' nvim -> terminal requests depend on it).
+#    (smart-splits' nvim -> terminal requests depend on it). (src/pane/clientpane.rs)
 #  - ClientPane::seed_user_var, to fill in vars set before the client attached.
+#    (src/pane/clientpane.rs)
+#  - split_pane with SplitSource::MovePane sends the moved pane's remote id
+#    (upstream sends the local one) and resyncs instead of adding a duplicate
+#    local pane. PaneSelect's swap is built on it. (src/domain.rs)
+#  - A resync updates an existing ClientPane's remote tab id when the server
+#    moved it to another tab; Resize and SetPaneZoomed name that tab, and a
+#    stale one leaves the real tab's split sizes wrong ("No space for split").
+#    (src/domain.rs, src/pane/clientpane.rs)
+#  - A resync drops a local tab the server removed when its panes now live in
+#    another tab (they moved), instead of showing them twice; it takes the
+#    server's workspace for an existing window; and spawn() names the new
+#    window's own workspace, not the active one. (src/domain.rs)
+#  - A resync fits the server's split tree to the tab size; if the server's
+#    sizes disagreed (a pane wider than its tab), it resends every pane's size
+#    so the server rebuilds its splits and can split again.
+#    (src/domain.rs, ClientPane::send_size in src/pane/clientpane.rs)
 [package]
 name = "wezterm-client"
 version = "0.1.0"

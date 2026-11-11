@@ -8,7 +8,7 @@ use config::{SshDomain, TlsDomainClient, UnixDomain};
 use mux::connui::{ConnectionUI, ConnectionUIParams};
 use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
 use mux::pane::{Pane, PaneId};
-use mux::tab::{SplitRequest, Tab, TabId};
+use mux::tab::{PaneNode, SplitRequest, Tab, TabId};
 use mux::window::WindowId;
 use mux::{Mux, MuxNotification};
 use portable_pty::CommandBuilder;
@@ -537,11 +537,15 @@ impl ClientDomain {
             .copied()
             .collect();
 
-        for (tabroot, tab_title) in panes.tabs.into_iter().zip(panes.tab_titles.iter()) {
+        for (mut tabroot, tab_title) in panes.tabs.into_iter().zip(panes.tab_titles.iter()) {
             let root_size = match tabroot.root_size() {
                 Some(size) => size,
                 None => continue,
             };
+            // wezzy: the server's split sizes can disagree with each other
+            // (e.g. after panes were moved between tabs), leaving it unable
+            // to split. Fit the tree to the tab and push the fixed sizes back.
+            let refit = fit_pane_tree(&mut tabroot, root_size);
 
             if let Some((remote_window_id, remote_tab_id)) = tabroot.window_and_tab_ids() {
                 let tab;
@@ -582,7 +586,13 @@ impl ClientDomain {
                     remote_panes_to_forget.remove(&entry.pane_id);
                     if let Some(pane_id) = inner.remote_to_local_pane_id(entry.pane_id) {
                         match mux.get_pane(pane_id) {
-                            Some(pane) => pane,
+                            Some(pane) => {
+                                // wezzy: the pane may have moved to this tab
+                                if let Some(cp) = pane.downcast_ref::<ClientPane>() {
+                                    cp.set_remote_tab_id(entry.tab_id);
+                                }
+                                pane
+                            }
                             None => {
                                 // We likely decided that we hit EOF on the tab and
                                 // removed it from the mux.  Let's add it back, but
@@ -618,6 +628,21 @@ impl ClientDomain {
                     }
                 });
 
+                if refit && tab.get_zoomed_pane().is_none() {
+                    log::warn!("tab {remote_tab_id}: server layout was inconsistent; resending pane sizes");
+                    for p in tab.iter_panes_ignoring_zoom() {
+                        if let Some(cp) = p.pane.downcast_ref::<ClientPane>() {
+                            cp.send_size(TerminalSize {
+                                rows: p.height,
+                                cols: p.width,
+                                pixel_width: p.pixel_width,
+                                pixel_height: p.pixel_height,
+                                dpi: root_size.dpi,
+                            });
+                        }
+                    }
+                }
+
                 if let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) {
                     let mut window = mux
                         .get_window_mut(local_window_id)
@@ -629,6 +654,10 @@ impl ClientDomain {
                     );
                     if window.get_tab_idx_for_id(tab.tab_id()).is_none() {
                         window.push_tab(&tab);
+                    }
+                    // wezzy: the server's workspace wins
+                    if let Some(ws) = workspace.as_deref() {
+                        window.set_workspace(ws);
                     }
                     continue;
                 }
@@ -691,10 +720,42 @@ impl ClientDomain {
                 windows.remove(&w);
             }
         }
+        // wezzy: a tab the server dropped because its panes moved elsewhere
+        // still holds them locally; empty it so the panes live only in their
+        // new tab, and close it.
+        let mut stale_tabs = vec![];
         if !remote_tabs_to_forget.is_empty() {
             let mut tabs = inner.remote_to_local_tab.lock().unwrap();
             for t in remote_tabs_to_forget {
-                tabs.remove(&t);
+                if let Some(local) = tabs.remove(&t) {
+                    stale_tabs.push(local);
+                }
+            }
+        }
+        for tab_id in stale_tabs {
+            let Some(tab) = mux.get_tab(tab_id) else {
+                continue;
+            };
+            let panes: Vec<PaneId> = tab
+                .iter_panes_ignoring_zoom()
+                .iter()
+                .map(|p| p.pane.pane_id())
+                .collect();
+            let live: HashSet<PaneId> = inner
+                .remote_to_local_pane
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(remote, _)| !remote_panes_to_forget.contains(remote))
+                .map(|(_, local)| *local)
+                .collect();
+            if !panes.iter().any(|p| live.contains(p)) {
+                continue; // the usual case (its panes exited): let it die normally
+            }
+            tab.sync_with_pane_tree(tab.get_size(), PaneNode::Empty, |_| unreachable!());
+            mux.remove_tab(tab_id);
+            for p in panes.into_iter().filter(|p| !live.contains(p)) {
+                mux.remove_pane(p);
             }
         }
         if !remote_panes_to_forget.is_empty() {
@@ -825,7 +886,11 @@ impl Domain for ClientDomain {
             .inner()
             .ok_or_else(|| anyhow!("domain is not attached"))?;
 
-        let workspace = Mux::get().active_workspace();
+        // wezzy: a new window belongs to its own workspace, not the active one
+        let workspace = Mux::get()
+            .get_window(window)
+            .map(|w| w.get_workspace().to_string())
+            .unwrap_or_else(|| Mux::get().active_workspace());
 
         let result = inner
             .client
@@ -888,7 +953,16 @@ impl Domain for ClientDomain {
                 command,
                 command_dir,
             } => (command, command_dir, None),
-            SplitSource::MovePane(move_pane_id) => (None, None, Some(move_pane_id)),
+            // wezzy: the server wants its own id for the pane being moved
+            SplitSource::MovePane(move_pane_id) => {
+                let moving = mux
+                    .get_pane(move_pane_id)
+                    .ok_or_else(|| anyhow!("pane_id {} is invalid", move_pane_id))?;
+                let moving = moving
+                    .downcast_ref::<ClientPane>()
+                    .ok_or_else(|| anyhow!("pane_id {} is not a ClientPane", move_pane_id))?;
+                (None, None, Some(moving.remote_pane_id))
+            }
         };
 
         let result = inner
@@ -902,6 +976,18 @@ impl Domain for ClientDomain {
                 move_pane_id,
             })
             .await?;
+
+        // wezzy: a moved pane already has a local pane; rebuild both tabs
+        // from the server instead of adding a second copy of it
+        if move_pane_id.is_some() {
+            self.resync().await?;
+            let local = inner
+                .remote_to_local_pane_id(result.pane_id)
+                .ok_or_else(|| anyhow!("remote pane {} didn't resolve", result.pane_id))?;
+            return mux
+                .get_pane(local)
+                .ok_or_else(|| anyhow!("local pane {local} is invalid"));
+        }
 
         let pane: Arc<dyn Pane> = Arc::new(ClientPane::new(
             &inner,
@@ -1003,6 +1089,57 @@ impl Domain for ClientDomain {
             DomainState::Attached
         } else {
             DomainState::Detached
+        }
+    }
+}
+
+/// wezzy: make every split in `node` fit inside `size` (the first child keeps
+/// its extent where it can, the second takes the rest), and give each pane the
+/// size of its slot. Returns whether anything changed.
+fn fit_pane_tree(node: &mut PaneNode, size: TerminalSize) -> bool {
+    match node {
+        PaneNode::Empty => false,
+        PaneNode::Leaf(entry) => {
+            let changed = entry.size.rows != size.rows || entry.size.cols != size.cols;
+            entry.size = size;
+            changed
+        }
+        PaneNode::Split { left, right, node } => {
+            let cell_w = size.pixel_width / size.cols.max(1);
+            let cell_h = size.pixel_height / size.rows.max(1);
+            let slot = |rows: usize, cols: usize| TerminalSize {
+                rows,
+                cols,
+                pixel_width: cols * cell_w,
+                pixel_height: rows * cell_h,
+                dpi: size.dpi,
+            };
+            let (first, second) = match node.direction {
+                mux::tab::SplitDirection::Horizontal => {
+                    let avail = size.cols.saturating_sub(1);
+                    if avail < 2 {
+                        return false;
+                    }
+                    let a = node.first.cols.clamp(1, avail - 1);
+                    (slot(size.rows, a), slot(size.rows, avail - a))
+                }
+                mux::tab::SplitDirection::Vertical => {
+                    let avail = size.rows.saturating_sub(1);
+                    if avail < 2 {
+                        return false;
+                    }
+                    let a = node.first.rows.clamp(1, avail - 1);
+                    (slot(a, size.cols), slot(avail - a, size.cols))
+                }
+            };
+            let dims = |s: &TerminalSize| (s.rows, s.cols);
+            let mut changed =
+                dims(&node.first) != dims(&first) || dims(&node.second) != dims(&second);
+            node.first = first;
+            node.second = second;
+            changed |= fit_pane_tree(left, first);
+            changed |= fit_pane_tree(right, second);
+            changed
         }
     }
 }

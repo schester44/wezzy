@@ -104,7 +104,7 @@ pub struct QuickSelect {
 }
 
 /// A viewport row as text, plus the cell column of every byte offset.
-fn row_text(line: &wezterm_term::Line) -> (String, Vec<usize>) {
+pub(crate) fn row_text(line: &wezterm_term::Line) -> (String, Vec<usize>) {
     let mut text = String::new();
     let mut cols = vec![];
     for cell in line.visible_cells() {
@@ -153,29 +153,38 @@ fn find(lines: &[wezterm_term::Line], res: &[Regex]) -> Vec<Match> {
     out
 }
 
-/// Equal-length labels so none is a prefix of another; nearest-to-bottom
-/// matches get the first (easiest) letters.
+/// Nearest-to-bottom matches get the first (easiest) letters.
 fn assign_labels(matches: &mut [Match], alphabet: &str) {
+    let labels = labels(matches.len(), alphabet);
+    for (m, label) in matches.iter_mut().rev().zip(labels) {
+        m.label = label;
+    }
+}
+
+/// `n` equal-length labels from `alphabet`'s lowercase letters, so none is a
+/// prefix of another. Also used by PaneSelect.
+pub(crate) fn labels(n: usize, alphabet: &str) -> Vec<String> {
     let letters: Vec<char> = alphabet.chars().filter(|c| c.is_ascii_lowercase()).collect();
     let letters = if letters.len() < 2 {
         "asdfqwerzxcvjklmiuopghtybn".chars().collect()
     } else {
         letters
     };
-    let n = matches.len();
     let mut len = 1;
     while letters.len().pow(len as u32) < n {
         len += 1;
     }
-    for (i, m) in matches.iter_mut().rev().enumerate() {
-        let mut label = String::new();
-        let mut k = i;
-        for _ in 0..len {
-            label.insert(0, letters[k % letters.len()]);
-            k /= letters.len();
-        }
-        m.label = label;
-    }
+    (0..n)
+        .map(|i| {
+            let mut label = String::new();
+            let mut k = i;
+            for _ in 0..len {
+                label.insert(0, letters[k % letters.len()]);
+                k /= letters.len();
+            }
+            label
+        })
+        .collect()
 }
 
 /// A wrapped run of rows, as one line of text.

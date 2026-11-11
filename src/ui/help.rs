@@ -87,6 +87,7 @@ pub(super) fn sheet(
         .absolute()
         .inset_0()
         .bg(gpui::hsla(0., 0., 0., 0.35))
+        .occlude()
         .flex()
         .items_center()
         .justify_center()

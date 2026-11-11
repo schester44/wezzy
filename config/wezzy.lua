@@ -12,8 +12,10 @@ config.window_padding = { left = 16, right = 16, top = 12, bottom = 12 }
 config.default_cursor_style = "BlinkingBar"
 config.enable_kitty_keyboard = true
 
--- App actions bind like any WezTerm action (the session server evaluates this
--- file too, without the wezzy module, hence the pcall):
+-- Keys are built in: Leader (⌃A) ? lists them all. Bindings here override
+-- them one key at a time. App actions bind like any WezTerm action (the
+-- session server evaluates this file too, without the wezzy module, hence the
+-- pcall):
 --
 -- local ok, wezzy = pcall(require, "wezzy")
 -- if ok then

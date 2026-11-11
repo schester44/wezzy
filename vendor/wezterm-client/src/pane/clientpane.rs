@@ -20,6 +20,7 @@ use ratelim::RateLimiter;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use termwiz::input::KeyEvent;
 use termwiz::surface::SequenceNo;
@@ -35,7 +36,8 @@ pub struct ClientPane {
     client: Arc<ClientInner>,
     local_pane_id: PaneId,
     pub remote_pane_id: PaneId,
-    pub remote_tab_id: TabId,
+    // wezzy: atomic so a resync can follow the pane when it moves to another tab
+    remote_tab_id: AtomicUsize,
     pub renderable: Mutex<RenderableState>,
     configured_palette: Mutex<ColorPalette>,
     palette: Mutex<ColorPalette>,
@@ -53,6 +55,36 @@ pub struct ClientPane {
 }
 
 impl ClientPane {
+    pub fn remote_tab_id(&self) -> TabId {
+        self.remote_tab_id.load(Ordering::Relaxed)
+    }
+
+    /// wezzy: the server moved this pane to another tab (PaneSelect, move to
+    /// new tab). Resize and zoom name the containing tab, so keep it current.
+    /// wezzy: tell the server this pane's size even if we think it already
+    /// knows, to repair a server layout that disagrees with ours.
+    pub fn send_size(&self, size: TerminalSize) {
+        let client = Arc::clone(&self.client);
+        let remote_pane_id = self.remote_pane_id;
+        let remote_tab_id = self.remote_tab_id();
+        promise::spawn::spawn(async move {
+            client
+                .client
+                .resize(Resize {
+                    containing_tab_id: remote_tab_id,
+                    pane_id: remote_pane_id,
+                    size,
+                })
+                .await
+        })
+        .detach();
+        self.renderable.lock().inner.borrow_mut().update_last_send();
+    }
+
+    pub fn set_remote_tab_id(&self, tab_id: TabId) {
+        self.remote_tab_id.store(tab_id, Ordering::Relaxed);
+    }
+
     /// wezzy: user vars set before we attached never reach us (they're not
     /// part of the initial sync). Lets the app fill in ones it can infer, e.g.
     /// IS_NVIM from the foreground process. Never overwrites a reported value.
@@ -129,7 +161,7 @@ impl ClientPane {
             mouse,
             remote_pane_id,
             local_pane_id,
-            remote_tab_id,
+            remote_tab_id: AtomicUsize::new(remote_tab_id),
             application_palette: Mutex::new(false),
             renderable: Mutex::new(render),
             writer: Mutex::new(writer),
@@ -387,7 +419,7 @@ impl Pane for ClientPane {
         let mut inner = render.inner.borrow_mut();
         let client = Arc::clone(&self.client);
         let remote_pane_id = self.remote_pane_id;
-        let remote_tab_id = self.remote_tab_id;
+        let remote_tab_id = self.remote_tab_id();
         // Invalidate any cached rows on a resize
         inner.make_all_stale();
         promise::spawn::spawn(async move {
@@ -423,22 +455,9 @@ impl Pane for ClientPane {
 
             // Invalidate any cached rows on a resize
             inner.make_all_stale();
-
-            let client = Arc::clone(&self.client);
-            let remote_pane_id = self.remote_pane_id;
-            let remote_tab_id = self.remote_tab_id;
-            promise::spawn::spawn(async move {
-                client
-                    .client
-                    .resize(Resize {
-                        containing_tab_id: remote_tab_id,
-                        pane_id: remote_pane_id,
-                        size,
-                    })
-                    .await
-            })
-            .detach();
-            inner.update_last_send();
+            drop(inner);
+            drop(render);
+            self.send_size(size);
         }
         Ok(())
     }

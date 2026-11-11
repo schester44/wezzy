@@ -81,7 +81,21 @@ the whole UI follows the WezTerm color scheme.
   the foreground process for that tty from the macOS process table.
 - **Vendored client patch:** user vars set before attach aren't synced, and
   `ClientPane` didn't republish `SetUserVar`. `vendor/wezterm-client` fixes
-  both, so `user-var-changed` handlers (smart-splits) work.
+  both, so `user-var-changed` handlers (smart-splits) work. It also fixes
+  `split_pane` with `SplitSource::MovePane`, which sent the local pane id.
+- **Layout changes must go through the server.** The client rebuilds each
+  tab's split tree from `ListPanes` on every resync (`TabResized`, which any
+  pane resize can trigger), so a change made only to the local `Tab` (e.g.
+  `Tab::swap_active_with_index`, `rotate_*`) is undone. The protocol can split,
+  move a pane into a split (`MovePane`), and move a pane to a new tab or window;
+  `paneselect.rs` builds swaps from those.
+- **Moving tabs:** no PDU moves a tab between windows. A tab that is its
+  window's only tab moves with its window (`SetWindowWorkspace`, via
+  `Window::set_workspace`). Any other tab is rebuilt in place: its first pane
+  goes to a new tab (`MovePaneToNewTab`), then each split is redone with
+  `MovePane`, walking the old `codec_pane_tree` (`rebuild_tab` in `app.rs`).
+  The client drops a local tab once the server has removed it and its panes
+  live elsewhere, so a moved pane isn't shown twice.
 
 ## Agents
 
@@ -95,6 +109,27 @@ the whole UI follows the WezTerm color scheme.
   title spinners, output and bells.
 - **Transitions:** state changes raise toasts, tab dots and the chime
   (`sound.rs`) when you're not looking at that pane.
+
+## Sidebar (`sidebar.rs`)
+
+- **Sources:** the sidebar is a stack of sources (`Source`: agents, servers,
+  actions).
+  Each has its own background poller and turns its snapshot into `Item`s;
+  `TermApp::sidebar_sections` lists the enabled ones that have items, in the
+  order of the `sidebar` setting. The view and the keyboard cursor
+  (`regions.rs`) both walk that list, so row indexes always agree.
+- **Opt-in:** sources that cost something to poll check
+  `settings::get().sidebar_enabled(..)` and idle while they're off
+  (`servers.rs` stops running `lsof`). Sources should also stay hidden when
+  they don't apply to the workspace.
+- **Actions** (`actions.rs`, opt-in): shells out to `gh` so its auth and
+  hosts apply. The view sets the target (active pane's cwd) only while the
+  sidebar is open with Actions on; the poller resolves repo root + branch
+  (or commit when detached), `owner/repo` via `gh repo view` (cached;
+  unresolvable repos retried every 5 min), then `gh run list`, keeping each
+  workflow's newest run. 10s while a run is active, 60s otherwise; results
+  are cached per branch so switching back is instant. ↵ runs `gh run watch` /
+  `gh run view --log-failed` / `gh run view` in a split (`run_command_in_split`).
 
 ## Git panel (`diff.rs`, `gitpanel.rs`, `ui/git.rs`, `feedback.rs`)
 

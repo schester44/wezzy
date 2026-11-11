@@ -7,8 +7,28 @@ use crate::app::{clear_alert, has_alert, last_output};
 use crate::hooks::{self, HookStatus};
 use mux::pane::{CachePolicy, PaneId};
 use mux::Mux;
+use parking_lot::Mutex;
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
+
+/// Agents that finished or asked for you while you were looking elsewhere,
+/// until you go to their pane. Main thread only, but a static like PANE_ALERTS.
+static UNSEEN: Mutex<Option<HashSet<PaneId>>> = Mutex::new(None);
+
+pub fn mark_unseen(pane_id: PaneId) {
+    UNSEEN.lock().get_or_insert_with(HashSet::new).insert(pane_id);
+}
+
+pub fn mark_seen(pane_id: PaneId) {
+    if let Some(s) = UNSEEN.lock().as_mut() {
+        s.remove(&pane_id);
+    }
+}
+
+fn is_unseen(pane_id: PaneId) -> bool {
+    UNSEEN.lock().as_ref().is_some_and(|s| s.contains(&pane_id))
+}
 
 const KNOWN: &[(&str, &str)] = &[
     ("claude", "Claude"),
@@ -41,6 +61,7 @@ pub enum Status {
     Idle,
 }
 
+#[derive(Clone, Debug)]
 pub struct Agent {
     pub pane_id: PaneId,
     pub kind: &'static str,
@@ -51,6 +72,8 @@ pub struct Agent {
     pub project: String,
     pub workspace: String,
     pub status: Status,
+    /// Finished or asked for you since you last went to its pane.
+    pub unseen: bool,
     pub focused: bool,
 }
 
@@ -127,6 +150,12 @@ pub fn collect(focused_pane: Option<PaneId>) -> Vec<Agent> {
             None => (guess(pane_id, kind, &raw_title), None),
         };
 
+        // back at work: whatever it finished before is old news
+        if status == Status::Working {
+            mark_seen(pane_id);
+        }
+        let unseen = is_unseen(pane_id);
+
         out.push(Agent {
             pane_id,
             kind,
@@ -135,6 +164,7 @@ pub fn collect(focused_pane: Option<PaneId>) -> Vec<Agent> {
             project,
             workspace,
             status,
+            unseen,
             focused: Some(pane_id) == focused_pane,
         });
     }

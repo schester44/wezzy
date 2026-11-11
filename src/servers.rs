@@ -29,7 +29,10 @@ static LISTENERS: Mutex<Vec<Listener>> = Mutex::new(Vec::new());
 
 pub fn start() {
     std::thread::spawn(|| loop {
-        if let Some(found) = scan() {
+        // idle while the sidebar doesn't list servers
+        if !crate::settings::get().sidebar_enabled(crate::sidebar::Source::Servers) {
+            LISTENERS.lock().clear();
+        } else if let Some(found) = scan() {
             *LISTENERS.lock() = found;
         }
         std::thread::sleep(Duration::from_secs(3));

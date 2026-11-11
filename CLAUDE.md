@@ -34,6 +34,7 @@ cargo test
 | `ui/mod.rs` | `Theme` (derived from the terminal palette), icons |
 | `render.rs` | paints panes/cells/cursor into a gpui canvas |
 | `keys.rs` | gpui keystroke → WezTerm key, leader + key tables, default bindings |
+| `copymode.rs` | copy mode (Leader y): vim motions over scrollback, selection, search, copy |
 | `luawin.rs` | Lua `window` object for `action_callback` / `wezterm.on` handlers |
 | `commands.rs` | app commands (`AppCommand`), exposed to Lua as `require("wezzy").action.*` |
 | `palette.rs`, `settings_ui.rs`, `regions.rs` | command palette, settings overlay, keyboard focus in side panels |
@@ -42,8 +43,12 @@ cargo test
 | `launch.rs`, `recipes.rs` | harness launcher (⌘N), recipes |
 | `hosts.rs` | SSH hosts (⌘⇧S / "ssh …" in ⌘K): config + `~/.ssh/config` aliases |
 | `workspaces.rs` | saved workspaces (name + cwd), the running + saved list behind the picker and sidebar menu |
+| `sidebar.rs`, `actions.rs` | sidebar sources (agents, servers, actions): which show, their items, ↵ / `o`; GitHub Actions runs via `gh` |
 | `servers.rs`, `sendout.rs`, `quickselect.rs`, `clipboard.rs` | dev servers, send output to agent, hints + ⌘-click, paste |
+| `paneselect.rs` | PaneSelect (Leader m): pane labels, swaps done on the server |
 | `settings.rs`, `paths.rs`, `sound.rs`, `restart.rs` | settings.json + Lua `setup()`, file locations, chime, restart |
+| `update.rs` | automatic updates: polls the release feed, verifies and swaps in the new bundle |
+| `scripts/bundle.sh`, `scripts/release.sh` | build Wezzy.app; cut a signed, notarized draft release (`docs/development/releasing.md`) |
 | `vendor/wezterm-client` | patched copy; see its `Cargo.toml` for the diff |
 | `config/wezzy.lua` | default config written on first run (embedded) |
 | `assets/` | icons (SVG, embedded), app icon, agent hook script |
@@ -95,6 +100,9 @@ cargo test
   `icons!` list and `Icon` enum in `ui/mod.rs`.
 - **A setting:** field + default in `Settings`, `Stored` + load/save in
   `settings.rs`, a `Row` in `settings_ui.rs`.
+- **A sidebar source:** a `Source` + `Item` variant in `sidebar.rs`, its items
+  and keys there, a row in `ui/view.rs`; its poller idles unless
+  `sidebar_enabled`.
 - **A palette source:** a `Kind` and items in `palette_items()`; ranking,
   sections and keys come for free.
 

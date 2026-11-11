@@ -15,7 +15,7 @@ use gpui::{
 };
 use mux::domain::SplitSource;
 use mux::pane::{Pane, PaneId};
-use mux::tab::{SplitDirection, SplitRequest, SplitSize, Tab};
+use mux::tab::{PaneNode, SplitDirection, SplitRequest, SplitSize, Tab, TabId};
 use mux::window::WindowId;
 use mux::{Mux, MuxNotification};
 use parking_lot::Mutex;
@@ -54,6 +54,17 @@ pub enum AppEvent {
         value: String,
     },
     AgentAlert(PaneId),
+    /// PaneSelect swapped two panes; `focus` is the pane to make active.
+    PanesSwapped {
+        tab: TabId,
+        focus: PaneId,
+    },
+    /// A tab landed somewhere else (Move Tab to Workspace, PaneSelect's moves).
+    TabMoved {
+        window: WindowId,
+        tab: TabId,
+        follow: bool,
+    },
     /// A diff-panel commit finished: Ok(summary) or Err((error, message)).
     Committed {
         result: Result<String, (String, String)>,
@@ -101,7 +112,13 @@ gpui::actions!(wezzy, [Quit, Hide, OpenSettings, ShowPalette]);
 /// macOS menu bar. No key equivalents: keys go through the user's bindings.
 fn install_menus(cx: &mut App) {
     use gpui::{Menu, MenuItem, SystemMenuType};
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    // through the view so it asks first, like ⌘Q
+    cx.on_action(|_: &Quit, _| {
+        send_event(AppEvent::Perform {
+            pane_id: None,
+            action: KeyAssignment::QuitApplication,
+        })
+    });
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.set_menus(vec![Menu {
         name: "Wezzy".into(),
@@ -176,6 +193,9 @@ pub fn open_main_window(cx: &mut App) {
 pub(crate) enum PromptTarget {
     /// A config `PromptInputLine`: an `action_callback` (EmitEvent) or a plain action.
     Action(KeyAssignment),
+    RenameTab(mux::tab::TabId),
+    /// the workspace's current name
+    RenameWorkspace(String),
 }
 
 pub(crate) enum Overlay {
@@ -189,6 +209,8 @@ pub(crate) enum Overlay {
     Confirm {
         message: String,
         detail: String,
+        /// label of the confirming button
+        verb: &'static str,
         action: KeyAssignment,
         cancel: Option<KeyAssignment>,
         pane_id: PaneId,
@@ -213,14 +235,20 @@ pub struct TermApp {
     pub(crate) keys: KeyState,
     pub(crate) viewports: HashMap<PaneId, StableRowIndex>,
     pub(crate) font_scale: f32,
+    /// top-bar tab under the mouse; shows its close button
+    pub(crate) hovered_tab: Option<usize>,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) flash: Option<(String, Instant)>,
+    /// The agent pane a toast is about; clicking the toast goes there.
+    pub(crate) flash_pane: Option<PaneId>,
     pub(crate) grid: Rc<Cell<GridGeom>>,
     pub(crate) sidebar_open: bool,
     pub(crate) ws_menu_open: bool,
     /// Inline "new workspace" name field inside the workspace menu.
     pub(crate) ws_new: Option<String>,
     pub(crate) quick_select: Option<crate::quickselect::QuickSelect>,
+    pub(crate) pane_select: Option<crate::paneselect::PaneSelect>,
+    pub(crate) copy_mode: Option<crate::copymode::CopyMode>,
     pub(crate) diff_open: bool,
     /// Which part of the window has keyboard focus.
     pub(crate) region: crate::regions::Region,
@@ -347,13 +375,17 @@ impl TermApp {
             keys: KeyState::new(&config::configuration()),
             viewports: HashMap::new(),
             font_scale: 1.0,
+            hovered_tab: None,
             overlay: None,
             flash: None,
+            flash_pane: None,
             grid: Rc::default(),
             sidebar_open: crate::settings::get().show_sidebar,
             ws_menu_open: false,
             ws_new: None,
             quick_select: None,
+            pane_select: None,
+            copy_mode: None,
             diff_open: false,
             region: crate::regions::Region::Terminal,
             sidebar_cursor: 0,
@@ -367,7 +399,9 @@ impl TermApp {
             _config_sub: config_sub,
         };
         crate::hooks::start();
+        crate::update::start();
         crate::servers::start();
+        crate::actions::start();
         crate::diff::start();
         if crate::session::persistent() {
             crate::session::start();
@@ -387,6 +421,13 @@ impl TermApp {
 
     pub(crate) fn flash(&mut self, msg: impl Into<String>) {
         self.flash = Some((msg.into(), Instant::now()));
+        self.flash_pane = None;
+    }
+
+    /// A toast about an agent: clicking it goes to the agent's pane.
+    fn flash_agent(&mut self, msg: impl Into<String>, pane_id: PaneId) {
+        self.flash(msg);
+        self.flash_pane = Some(pane_id);
     }
 
     fn on_event(&mut self, ev: AppEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -403,8 +444,16 @@ impl TermApp {
                             .first()
                             .copied()
                             .or_else(|| mux.iter_windows().first().copied());
-                        if self.mux_window_id.is_none() {
-                            cx.quit();
+                        match self.mux_window_id.and_then(|w| mux.get_window(w)) {
+                            // The workspace closed with it: follow the window we landed in.
+                            Some(w) if w.get_workspace() != mux.active_workspace() => {
+                                let ws = w.get_workspace().to_string();
+                                drop(w);
+                                mux.set_active_workspace(&ws);
+                                crate::session::remember_workspace(&ws);
+                            }
+                            Some(_) => {}
+                            None => cx.quit(),
                         }
                     }
                 }
@@ -420,7 +469,10 @@ impl TermApp {
             }
             AppEvent::ConfigReloaded => {
                 self.keys = KeyState::new(&config::configuration());
-                self.flash("config reloaded");
+                // saving settings.json reloads too (it sits next to the config)
+                if !crate::settings::just_saved() {
+                    self.flash("config reloaded");
+                }
             }
             AppEvent::Perform { pane_id, action } => self.perform(action, pane_id, window, cx),
             AppEvent::Clipboard(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
@@ -451,15 +503,17 @@ impl TermApp {
                     && window.is_window_active();
                 let attention = matches!(status, HookStatus::NeedsInput | HookStatus::Done);
                 if attention && !looking {
+                    crate::agents::mark_unseen(pane_id);
                     crate::sound::chime();
                     if let Some(a) = crate::agents::collect(None)
                         .into_iter()
                         .find(|a| a.pane_id == pane_id)
                     {
-                        self.flash(match detail.filter(|_| status == HookStatus::NeedsInput) {
+                        let msg = match detail.filter(|_| status == HookStatus::NeedsInput) {
                             Some(d) => format!("{} · {d}", a.project),
                             None => format!("{} · {}", a.kind, a.project),
-                        });
+                        };
+                        self.flash_agent(msg, pane_id);
                     }
                 }
             }
@@ -472,7 +526,15 @@ impl TermApp {
                     .into_iter()
                     .find(|a| a.pane_id == pane_id)
                 {
-                    self.flash(format!("{} · {}", a.kind, a.project));
+                    crate::agents::mark_unseen(pane_id);
+                    self.flash_agent(format!("{} · {}", a.kind, a.project), pane_id);
+                }
+            }
+            AppEvent::TabMoved { window: wid, tab, follow } => self.tab_moved(wid, tab, follow),
+            AppEvent::PanesSwapped { tab, focus } => {
+                let mux = Mux::get();
+                if let (Some(tab), Some(pane)) = (mux.get_tab(tab), mux.get_pane(focus)) {
+                    tab.set_active_pane(&pane);
                 }
             }
         }
@@ -483,6 +545,15 @@ impl TermApp {
 
     pub(crate) fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
+        if self.copy_mode.is_some() && self.overlay.is_none() {
+            self.copy_mode_key(ev, cx);
+            return;
+        }
+        if self.pane_select.is_some() {
+            self.pane_select_key(ev, cx);
+            cx.notify();
+            return;
+        }
         if self.quick_select.is_some() {
             self.quick_select_key(ev, window, cx);
             cx.notify();
@@ -620,6 +691,18 @@ impl TermApp {
                         PromptTarget::Action(other) if line.is_some() => {
                             self.perform(other, Some(pane_id), window, cx)
                         }
+                        PromptTarget::RenameTab(tab_id) => {
+                            if let (Some(name), Some(tab)) = (line, Mux::get().get_tab(tab_id)) {
+                                tab.set_title(name.trim());
+                            }
+                        }
+                        PromptTarget::RenameWorkspace(old) => {
+                            let name = line.map(|l| l.trim().to_string()).unwrap_or_default();
+                            if !name.is_empty() && name != old {
+                                Mux::get().rename_workspace(&old, &name);
+                                crate::session::remember_workspace(&name);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -638,24 +721,14 @@ impl TermApp {
                 }
                 _ => {}
             },
-            Overlay::Confirm {
-                action,
-                cancel,
-                pane_id,
-                ..
-            } => {
-                let (action, cancel, pane_id) = (action.clone(), cancel.clone(), *pane_id);
+            Overlay::Confirm { action, .. } => {
+                let quit_again = ks.key == "q"
+                    && ks.modifiers.platform
+                    && matches!(action, KeyAssignment::QuitApplication);
                 match ks.key.as_str() {
-                    "y" | "enter" => {
-                        self.overlay = None;
-                        self.perform(action, Some(pane_id), window, cx);
-                    }
-                    "n" | "escape" => {
-                        self.overlay = None;
-                        if let Some(c) = cancel {
-                            self.perform(c, Some(pane_id), window, cx);
-                        }
-                    }
+                    "y" | "enter" => self.answer_confirm(true, window, cx),
+                    "n" | "escape" => self.answer_confirm(false, window, cx),
+                    _ if quit_again => self.answer_confirm(true, window, cx),
                     _ => {}
                 }
             }
@@ -886,6 +959,10 @@ impl TermApp {
 
             // spawning
             SpawnTab(domain) => self.spawn_tab(domain, None, None),
+            SpawnWindow => {
+                let ws = Mux::get().active_workspace();
+                self.spawn_tab(SpawnTabDomain::CurrentPaneDomain, None, Some(ws))
+            }
             SpawnCommandInNewTab(cmd) => self.spawn_tab(cmd.domain.clone(), Some(cmd), None),
             SplitHorizontal(cmd) => self.split(SplitDirection::Horizontal, true, SplitSize::Percent(50), false, cmd),
             SplitVertical(cmd) => self.split(SplitDirection::Vertical, true, SplitSize::Percent(50), false, cmd),
@@ -923,6 +1000,7 @@ impl TermApp {
                         self.overlay = Some(Overlay::Confirm {
                             message: "Close this pane?".into(),
                             detail: running_detail(&[pane.clone()]),
+                            verb: "Close",
                             action: CloseCurrentPane { confirm: false },
                             cancel: None,
                             pane_id: pane.pane_id(),
@@ -935,18 +1013,23 @@ impl TermApp {
             }
             CloseCurrentTab { confirm } => {
                 if let (Some(tab), Some(pane)) = (tab, pane) {
+                    let panes: Vec<_> =
+                        tab.iter_panes_ignoring_zoom().into_iter().map(|p| p.pane).collect();
+                    // a split tab always asks: closing it loses the layout too
                     let ask = confirm
-                        && needs_confirmation(|| {
-                            tab.iter_panes_ignoring_zoom()
-                                .iter()
-                                .all(|p| crate::procs::can_close_quietly(&p.pane))
-                        });
+                        && (panes.len() > 1
+                            || needs_confirmation(|| {
+                                panes.iter().all(crate::procs::can_close_quietly)
+                            }));
                     if ask {
-                        let panes: Vec<_> =
-                            tab.iter_panes_ignoring_zoom().into_iter().map(|p| p.pane).collect();
+                        let mut detail = running_detail(&panes);
+                        if detail.is_empty() && panes.len() > 1 {
+                            detail = format!("{} panes", panes.len());
+                        }
                         self.overlay = Some(Overlay::Confirm {
                             message: "Close this tab?".into(),
-                            detail: running_detail(&panes),
+                            detail,
+                            verb: "Close",
                             action: CloseCurrentTab { confirm: false },
                             cancel: None,
                             pane_id: pane.pane_id(),
@@ -1052,7 +1135,9 @@ impl TermApp {
             }
             ShowTabNavigator => self.open_palette(crate::palette::Scope::Tabs, cx),
             QuickSelect => self.start_quick_select(&[], cx),
+            ActivateCopyMode => self.start_copy_mode(cx),
             QuickSelectArgs(args) => self.start_quick_select(&args.patterns, cx),
+            PaneSelect(args) => self.start_pane_select(&args, cx),
             ShowLauncherArgs(args) => {
                 use config::keyassignment::LauncherFlags;
                 use crate::palette::Scope;
@@ -1090,6 +1175,7 @@ impl TermApp {
                     self.overlay = Some(Overlay::Confirm {
                         message: strip_escapes(&c.message),
                         detail: String::new(),
+                        verb: "OK",
                         action: *c.action,
                         cancel: c.cancel.map(|b| *b),
                         pane_id: pane.pane_id(),
@@ -1115,7 +1201,21 @@ impl TermApp {
             ResetFontSize | ResetFontAndWindowSize => self.font_scale = 1.0,
             ToggleFullScreen => window.toggle_fullscreen(),
             Hide | HideApplication => cx.hide(),
-            QuitApplication => cx.quit(),
+            // quitting is rare and easy to hit by accident: always ask
+            // (answer_confirm quits for real; ⌘Q again also confirms)
+            QuitApplication => match &pane {
+                Some(pane) => {
+                    self.overlay = Some(Overlay::Confirm {
+                        message: "Quit Wezzy?".into(),
+                        detail: String::new(),
+                        verb: "Quit",
+                        action: QuitApplication,
+                        cancel: None,
+                        pane_id: pane.pane_id(),
+                    });
+                }
+                None => cx.quit(),
+            },
             ResetTerminal => pane.iter().for_each(|p| {
                 use termwiz::escape::{Action, Esc, EscCode};
                 p.perform_actions(vec![Action::Esc(Esc::Code(EscCode::FullReset))]);
@@ -1262,6 +1362,68 @@ impl TermApp {
         }
     }
 
+    /// Move a tab into another workspace (running, saved or new). A tab that is
+    /// its window's only tab, going to a workspace with no window yet, takes
+    /// its window along. Otherwise the session protocol has no "move tab": the
+    /// first pane moves into a new tab there, and the rest follow one by one
+    /// into splits rebuilt from the original layout.
+    pub(crate) fn move_tab_to_workspace(&mut self, tab_id: TabId, target: String) {
+        let mux = Mux::get();
+        let (Some(tab), Some(src)) = (mux.get_tab(tab_id), mux.window_containing_tab(tab_id))
+        else {
+            return;
+        };
+        let Some((source_ws, tabs_in_src)) = mux
+            .get_window(src)
+            .map(|w| (w.get_workspace().to_string(), w.count_tabs()))
+        else {
+            return;
+        };
+        if source_ws == target {
+            return;
+        }
+        // the source window dies with its last tab: follow the tab unless the
+        // workspace has another window to show
+        let follow = tabs_in_src == 1 && mux.iter_windows_in_workspace(&source_ws).len() == 1;
+        let dest = mux.iter_windows_in_workspace(&target).first().copied();
+
+        if tabs_in_src == 1 && dest.is_none() {
+            if let Some(mut w) = mux.get_window_mut(src) {
+                w.set_workspace(&target);
+            }
+            self.tab_moved(src, tab_id, follow);
+            return;
+        }
+        let layout = tab.codec_pane_tree();
+        let active = tab.get_active_pane().map(|p| p.pane_id());
+        promise::spawn::spawn(async move {
+            match rebuild_tab(layout, active, dest, target).await {
+                Ok((tab, window)) => send_event(AppEvent::TabMoved { window, tab, follow }),
+                Err(e) => send_event(AppEvent::Flash(format!("move failed: {e:#}"))),
+            }
+        })
+        .detach();
+    }
+
+    fn tab_moved(&mut self, window_id: WindowId, tab_id: TabId, follow: bool) {
+        let mux = Mux::get();
+        let Some(ws) = mux.get_window(window_id).map(|w| w.get_workspace().to_string()) else {
+            return;
+        };
+        if let Some(mut w) = mux.get_window_mut(window_id) {
+            if let Some(idx) = w.get_tab_idx_for_id(tab_id) {
+                w.set_active_tab_idx_without_saving(idx);
+            }
+        }
+        if follow {
+            mux.set_active_workspace(&ws);
+            crate::session::remember_workspace(&ws);
+            self.mux_window_id = Some(window_id);
+        } else {
+            self.flash(format!("Moved to {ws}"));
+        }
+    }
+
     /// Bring a pane to the front: switch workspace, tab and pane as needed.
     pub(crate) fn focus_pane(&mut self, pane_id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
         let mux = Mux::get();
@@ -1294,6 +1456,27 @@ impl TermApp {
             }
         });
         self.perform(KeyAssignment::CloseCurrentTab { confirm: true }, None, window, cx);
+    }
+
+    /// Leader , / Leader $: the name prompt, filled with the current name.
+    pub(crate) fn prompt_rename(&mut self, workspace: bool, cx: &mut Context<Self>) {
+        let (Some(tab), Some(pane)) = (self.active_tab(), self.active_pane()) else {
+            return;
+        };
+        let (description, input, target) = if workspace {
+            let ws = Mux::get().active_workspace();
+            ("Rename workspace", ws.clone(), PromptTarget::RenameWorkspace(ws))
+        } else {
+            ("Rename tab", tab.get_title(), PromptTarget::RenameTab(tab.tab_id()))
+        };
+        self.overlay = Some(Overlay::Prompt {
+            description: description.into(),
+            prompt: String::new(),
+            input,
+            target,
+            pane_id: pane.pane_id(),
+        });
+        cx.notify();
     }
 
     /// Open the workspace menu with its inline name field focused.
@@ -1400,6 +1583,61 @@ impl TermApp {
             _ => {}
         }
     }
+}
+
+/// Recreate a tab's layout in `dest` (or a new window in `workspace`) by
+/// moving its panes there on the session server: the first pane becomes a new
+/// tab, then each split is redone by moving its second half's first pane next
+/// to the first half's.
+async fn rebuild_tab(
+    layout: PaneNode,
+    active: Option<PaneId>,
+    dest: Option<WindowId>,
+    workspace: String,
+) -> anyhow::Result<(TabId, WindowId)> {
+    fn first_leaf(node: &PaneNode) -> Option<PaneId> {
+        match node {
+            PaneNode::Empty => None,
+            PaneNode::Leaf(e) => Some(e.pane_id),
+            PaneNode::Split { left, .. } => first_leaf(left),
+        }
+    }
+    let mux = Mux::get();
+    let first = first_leaf(&layout).ok_or_else(|| anyhow::anyhow!("tab has no panes"))?;
+    let (tab, window) = mux.move_pane_to_new_tab(first, dest, Some(workspace)).await?;
+    let mut todo = vec![(layout, first)];
+    while let Some((node, anchor)) = todo.pop() {
+        let PaneNode::Split { left, right, node } = node else {
+            continue;
+        };
+        let moving = first_leaf(&right).ok_or_else(|| anyhow::anyhow!("empty split"))?;
+        let (a, b) = match node.direction {
+            SplitDirection::Horizontal => (node.first.cols, node.second.cols),
+            SplitDirection::Vertical => (node.first.rows, node.second.rows),
+        };
+        let percent = (b * 100 / (a + b).max(1)).clamp(1, 99) as u8;
+        let request = SplitRequest {
+            direction: node.direction,
+            target_is_second: true,
+            top_level: false,
+            size: SplitSize::Percent(percent),
+        };
+        mux.split_pane(
+            anchor,
+            request,
+            SplitSource::MovePane(moving),
+            SpawnTabDomain::CurrentPaneDomain,
+        )
+        .await?;
+        todo.push((*left, anchor));
+        todo.push((*right, moving));
+    }
+    if let (Some(active), Some(pane)) = (active, active.and_then(|p| mux.get_pane(p))) {
+        if let Some(tab) = mux.resolve_pane_id(active).and_then(|(_, _, t)| mux.get_tab(t)) {
+            tab.set_active_pane(&pane);
+        }
+    }
+    Ok((tab.tab_id(), window))
 }
 
 fn build_command(spawn: Option<&SpawnCommand>) -> (Option<CommandBuilder>, Option<String>) {

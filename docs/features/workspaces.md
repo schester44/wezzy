@@ -11,7 +11,9 @@ right folder whether they're running or not.
 
 | | |
 |---|---|
-| ⌘⇧K | Pick a workspace |
+| ⌘⇧K or Leader k | Pick a workspace |
+| Leader n | New workspace |
+| Leader $ | Rename the workspace you're in |
 | ⌘K | Search everything; workspaces come first when the name matches |
 | Workspace name in the sidebar | Open the workspace menu (`j`/`k`, ↵, esc) |
 
@@ -22,6 +24,20 @@ picks one for you.
 When you reopen Wezzy, you're back in the workspace you were last in.
 
 A workspace goes away when you close its last tab.
+
+## Moving a tab
+
+Choose **Move Tab to Workspace…** in ⌘K and pick where the tab goes. The list
+has every workspace except the one you're in, saved ones included. Type a new
+name and press ↵ to move it into a new workspace.
+
+The tab keeps running: its shell, agent and scrollback come along. You stay
+where you are, unless that was the workspace's last tab, in which case you
+follow it.
+
+A tab with splits moves whole, with the same layout and the same pane focused.
+
+To put it on a key, bind `wezzy.action.MoveTabToWorkspace`.
 
 ## Saved workspaces
 
@@ -84,3 +100,8 @@ These only see the workspace you're in:
 
 The agents sidebar and ⌘K show agents and tabs from every workspace, so you can
 jump straight to one anywhere.
+
+## Moving a pane to a new window
+
+Choose **Move Pane to New Window** in ⌘K to move the active pane into a window
+of its own in the current workspace. The pane keeps running, and you follow it.

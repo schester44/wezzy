@@ -31,7 +31,12 @@ pub enum AppCommand {
     SshHost,
     Restart,
     RebuildRestart,
+    CheckForUpdates,
     ShowShortcuts,
+    RenameTab,
+    RenameWorkspace,
+    MoveTabToWorkspace,
+    MovePaneToNewWindow,
 }
 
 impl AppCommand {
@@ -54,7 +59,12 @@ impl AppCommand {
         Self::SshHost,
         Self::Restart,
         Self::RebuildRestart,
+        Self::CheckForUpdates,
         Self::ShowShortcuts,
+        Self::RenameTab,
+        Self::RenameWorkspace,
+        Self::MoveTabToWorkspace,
+        Self::MovePaneToNewWindow,
     ];
 
     /// Stable id, used in the event name.
@@ -78,7 +88,12 @@ impl AppCommand {
             Self::SshHost => "ssh-host",
             Self::Restart => "restart",
             Self::RebuildRestart => "rebuild-restart",
+            Self::CheckForUpdates => "check-for-updates",
             Self::ShowShortcuts => "show-shortcuts",
+            Self::RenameTab => "rename-tab",
+            Self::RenameWorkspace => "rename-workspace",
+            Self::MoveTabToWorkspace => "move-tab-to-workspace",
+            Self::MovePaneToNewWindow => "move-pane-to-new-window",
         }
     }
 
@@ -103,7 +118,12 @@ impl AppCommand {
             Self::SshHost => "SshHost",
             Self::Restart => "Restart",
             Self::RebuildRestart => "RebuildRestart",
+            Self::CheckForUpdates => "CheckForUpdates",
             Self::ShowShortcuts => "ShowShortcuts",
+            Self::RenameTab => "RenameTab",
+            Self::RenameWorkspace => "RenameWorkspace",
+            Self::MoveTabToWorkspace => "MoveTabToWorkspace",
+            Self::MovePaneToNewWindow => "MovePaneToNewWindow",
         }
     }
 
@@ -127,8 +147,13 @@ impl AppCommand {
             Self::SshHost => "SSH",
             Self::Restart => "Restart",
             Self::RebuildRestart => "Rebuild & restart",
+            Self::CheckForUpdates => "Check for updates",
             Self::ShowShortcuts => "Keyboard shortcuts",
             Self::SelectError => "Select an error",
+            Self::RenameTab => "Rename tab",
+            Self::RenameWorkspace => "Rename workspace",
+            Self::MoveTabToWorkspace => "Move tab to workspace",
+            Self::MovePaneToNewWindow => "Move pane to new window",
         }
     }
 
