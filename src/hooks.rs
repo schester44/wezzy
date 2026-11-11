@@ -46,6 +46,9 @@ pub struct HookState {
     pub status: HookStatus,
     /// Human-readable detail: "Editing app.rs", "needs permission to use Bash", ...
     pub detail: Option<String>,
+    /// The session's current directory, as the harness reports it (may differ
+    /// from the pane's: an agent that moved into a worktree).
+    pub cwd: Option<PathBuf>,
 }
 
 /// local pane id -> latest hook state
@@ -240,6 +243,7 @@ fn poll() {
                 harness,
                 status,
                 detail,
+                cwd: v["payload"]["cwd"].as_str().map(PathBuf::from),
             },
         );
     }

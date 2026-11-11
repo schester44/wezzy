@@ -6,6 +6,7 @@ How to use Wezzy.
 
 | | |
 |---|---|
+| [Git panel](features/git-panel.md) | Review, stage and commit agent changes, comment back, open a pull request |
 | [Keys](features/keys.md) | The leader key, panes and tabs, mouse selection, copy mode, changing keys |
 | [Sidebar](features/sidebar.md) | Agents, dev servers and GitHub Actions runs at a glance |
 | [SSH](features/ssh.md) | Open a shell on your machines from the palette |

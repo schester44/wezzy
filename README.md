@@ -28,7 +28,7 @@ macOS only for now. Download `Wezzy.dmg` from the
 - **Sessions that survive.** Shells and agents live in a background session
   server. Quit Wezzy, come back, everything's still running.
 - **A git panel for reviewing agent work.** Stage hunks, comment on lines, send
-  the comments back to the agent, commit. Vim keys, obviously.
+  the comments back to the agent, commit, open the pull request. Vim keys, obviously.
 - **One palette for everything.** ⌘K finds agents, tabs, workspaces, recipes,
   SSH hosts and commands.
 - **Paste and drop images into agents.** Screenshots go straight to Claude / pi.

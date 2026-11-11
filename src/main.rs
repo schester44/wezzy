@@ -22,6 +22,7 @@ mod notify;
 mod palette;
 mod paneselect;
 mod paths;
+mod pr;
 mod quickselect;
 mod recipes;
 mod regions;

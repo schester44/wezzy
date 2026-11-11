@@ -61,14 +61,10 @@ impl Render for TermApp {
                 crate::agents::mark_seen(p.pane_id());
             }
         }
-        // point the diff panel at the active pane's repo
+        // point the diff panel at the active pane's repo (or its agent's worktree)
         crate::diff::set_target(
             (self.diff_open && !zoomed)
-                .then(|| {
-                    pane.as_ref()
-                        .and_then(|p| p.get_current_working_dir(mux::pane::CachePolicy::AllowStale))
-                        .map(|u| std::path::PathBuf::from(u.path()))
-                })
+                .then(|| pane.as_ref().and_then(crate::gitpanel::git_dir))
                 .flatten(),
         );
         // and the Actions source at its branch, while it's on screen
