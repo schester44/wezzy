@@ -391,8 +391,6 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
             SpawnTab(SpawnTabDomain::CurrentPaneDomain),
         ),
         ((WKey::Char('{'), s), ActivateTabRelative(-1)),
-        ((WKey::Char('`'), s), ActivateWindowRelative(1)),
-        ((WKey::Char('~'), s), ActivateWindowRelative(-1)),
         ((WKey::Char('}'), s), ActivateTabRelative(1)),
         ((WKey::Char('='), s), IncreaseFontSize),
         ((WKey::Char('-'), s), DecreaseFontSize),

@@ -115,10 +115,9 @@ is waiting on you.
 | | |
 |---|---|
 | ⌘N | New window |
-| ⌘\` / ⌘~ | Next / previous window |
 | Leader 1–9 | Go to that window |
 | Click a number | Go to that window |
-| ⌘K, **Next Window** / **Previous Window** | Same, from the palette |
+| **Next Window** / **Previous Window** in ⌘K | Cycle through the windows |
 | **Find Tab…** in ⌘K | Lists every window and its tabs |
 
 A window closes with its last tab. When you close the last one in the

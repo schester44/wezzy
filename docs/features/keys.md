@@ -23,7 +23,6 @@ seconds.
 | Leader [ / Leader ] | Previous / next tab |
 | ⌘1–9 | Go to tab |
 | ⌃⌘1–8 | Move the tab to that position |
-| ⌘\` / ⌘~ | Next / previous window |
 | Leader 1–9 | Go to window |
 | ⌥⌘1–9 | Go to agent; numbers show in the sidebar while you hold ⌥⌘ |
 | Leader , | Rename the tab |
