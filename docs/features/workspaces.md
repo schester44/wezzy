@@ -104,7 +104,7 @@ jump straight to one anywhere.
 ## Windows
 
 Most of the time a workspace is one set of tabs. When you want a second set
-in the same project, open another window with ⌘N (or **New Window** in ⌘K). Each
+in the same project, open another window with Leader w (or **New Window** in ⌘K). Each
 window has its own tabs, and the top bar shows the tabs of the window you're
 in.
 
@@ -114,7 +114,7 @@ is waiting on you.
 
 | | |
 |---|---|
-| ⌘N | New window |
+| Leader w | New window |
 | Leader 1–9 | Go to that window |
 | Click a number | Go to that window |
 | **Next Window** / **Previous Window** in ⌘K | Cycle through the windows |

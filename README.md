@@ -42,8 +42,9 @@ macOS only for now. Download `Wezzy.dmg` from the
 | Leader ? | Every key (the leader is ⌃A) |
 | ⌘K | Palette (agents, tabs, workspaces, commands) |
 | ⌘⇧K | Switch workspace |
-| ⌘N | New window |
-| ⌘A / ⌘⇧A | New agent in a split / tab |
+| ⌘N | New terminal in the current tab |
+| Leader w | New window |
+| ⌘I / ⌘⇧I | New agent in a split / tab |
 | ⌥⌘1–9 | Jump to agent 1–9 (numbers show in the sidebar while ⌥⌘ is held) |
 | ⌘D | Git panel |
 | ⌘R | Recipes |

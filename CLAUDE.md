@@ -41,7 +41,7 @@ cargo test
 | `session.rs` | attach to the session server (`wezterm-mux-server`), pane id mapping |
 | `hooks.rs`, `agents.rs`, `procs.rs` | agent hook install/polling, agent detection + status, foreground process lookup |
 | `notify.rs` | macOS notifications and the Dock badge for agents waiting on you |
-| `launch.rs`, `recipes.rs` | harness launcher (⌘N), recipes |
+| `launch.rs`, `recipes.rs` | harness launcher (⌘I), recipes |
 | `hosts.rs` | SSH hosts (⌘⇧S / "ssh …" in ⌘K): config + `~/.ssh/config` aliases |
 | `workspaces.rs` | saved workspaces (name + cwd), the running + saved list behind the picker and sidebar menu |
 | `sidebar.rs`, `actions.rs` | sidebar sources (agents, servers, actions): which show, their items, ↵ / `o`; GitHub Actions runs via `gh` |

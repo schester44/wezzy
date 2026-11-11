@@ -62,7 +62,7 @@ If `wezzy.lua` and `settings.json` both list a name, `wezzy.lua` wins.
 
 ## Good to know
 
-- Splits go where a new agent from ⌘A would, following your agent layout
+- Splits go where a new agent from ⌘I would, following your agent layout
   setting.
 - ssh starts from your login shell, so your `PATH`, keys and agent setup
   work as they do in any terminal.

@@ -12,8 +12,9 @@ seconds.
 | | |
 |---|---|
 | ⌘T | New tab |
-| ⌘N | New window |
-| ⌘\\ | New terminal: a split in the current tab, placed like a new agent |
+| ⌘N or ⌘\\ | New terminal: a split in the current tab, placed like a new agent |
+| ⌘I / ⌘⇧I | New agent in a split / a new tab |
+| Leader w | New window |
 | ⌘W | Close pane |
 | Leader s / Leader v | Split down / right |
 | Leader ⇧S / Leader ⇧V | Split up / left |

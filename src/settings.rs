@@ -4,8 +4,8 @@
 //! ```lua
 //! require("wezzy").setup({
 //!   close_confirmation = "smart",     -- "smart" | "never" | "always"
-//!   default_harness = "claude",       -- what ⌘A launches
-//!   agent_layout = "bsp",             -- "bsp" | "master-stack" (where ⌘A splits)
+//!   default_harness = "claude",       -- what ⌘I launches
+//!   agent_layout = "bsp",             -- "bsp" | "master-stack" (where ⌘I splits)
 //!   editor = { "nvim", "+{line}", "{file}" }, -- ⌘-click file:line opens this in a split
 //!   auto_update = true,               -- install new releases in the background (see update.rs)
 //!   notifications = true,             -- macOS notifications + Dock badge for agents (see notify.rs)

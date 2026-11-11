@@ -1,5 +1,5 @@
-//! Launching agent harnesses: ⌘A splits the current tab (bsp / master-stack),
-//! ⌘⇧A opens a new tab; the palette lists every harness.
+//! Launching agent harnesses: ⌘I splits the current tab (bsp / master-stack),
+//! ⌘⇧I opens a new tab; the palette lists every harness.
 
 use crate::app::{send_event, AppEvent, TermApp};
 use crate::settings::{self, AgentLayout, Harness};
