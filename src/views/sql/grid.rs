@@ -2,6 +2,7 @@
 //! copying. Only the rows that fit are drawn.
 
 use super::db::{Editable, ResultSet};
+use super::export::{self, Format};
 use crate::views::editor::Editor;
 use crate::render::Metrics;
 use crate::ui::{with_alpha, Theme};
@@ -69,14 +70,8 @@ pub struct Grid {
     manual: HashMap<String, usize>,
     /// a column edge being dragged: (column, where the drag started, width then)
     resizing: Option<(usize, f32, usize)>,
-}
-
-fn tsv_value(v: &Option<String>) -> String {
-    v.as_deref()
-        .unwrap_or("")
-        .chars()
-        .map(|c| if c == '\t' || c == '\n' || c == '\r' { ' ' } else { c })
-        .collect()
+    /// `c`: the "Copy as" menu, and its highlighted item
+    copy_menu: Option<usize>,
 }
 
 fn plural(n: usize, what: &str) -> String {
@@ -147,12 +142,77 @@ impl Grid {
         for r in &rows {
             if set.rows.get(*r).is_some() {
                 let cells: Vec<String> = (0..set.columns.len())
-                    .map(|c| self.value(set, *r, c).map(tsv_value).unwrap_or_default())
+                    .map(|c| self.value(set, *r, c).map(export::tsv_value).unwrap_or_default())
                     .collect();
                 lines.push(cells.join("\t"));
             }
         }
         Some(Action::Copy(lines.join("\n"), format!("Copied {}", plural(rows.len(), "row"))))
+    }
+
+    /// The target rows in `f`, as `Action::Copy`.
+    pub fn copy_as(&self, set: &ResultSet, f: Format, edit: Option<&Editable>) -> Option<Action> {
+        let targets: Vec<usize> = self.target_rows().into_iter().filter(|r| *r < set.rows.len()).collect();
+        if targets.is_empty() {
+            return None;
+        }
+        let rows = export::Rows {
+            columns: &set.columns,
+            rows: targets
+                .iter()
+                .map(|r| (0..set.columns.len()).map(|c| self.value(set, *r, c).cloned().flatten()).collect())
+                .collect(),
+        };
+        let text = export::format(f, &rows, self.col, edit);
+        let n = targets.len();
+        let toast = match f {
+            Format::Column => format!(
+                "Copied {} of {}",
+                plural(n, "value"),
+                set.columns.get(self.col).map_or("", |c| c.as_str())
+            ),
+            _ => format!("Copied {} as {}", plural(n, "row"), f.label()),
+        };
+        Some(Action::Copy(text, toast))
+    }
+
+    /// Keys while the "Copy as" menu is open: it takes them all.
+    fn menu_key(&mut self, ks: &Keystroke, set: &ResultSet, edit: Option<&Editable>) -> Option<Action> {
+        let i = self.copy_menu?;
+        let last = Format::ALL.len() - 1;
+        let pick = match ks.key.as_str() {
+            "j" | "down" => {
+                self.copy_menu = Some((i + 1).min(last));
+                None
+            }
+            "k" | "up" => {
+                self.copy_menu = Some(i.saturating_sub(1));
+                None
+            }
+            "g" if ks.modifiers.shift => {
+                self.copy_menu = Some(last);
+                None
+            }
+            "g" => {
+                self.copy_menu = Some(0);
+                None
+            }
+            "enter" => Some(Format::ALL[i]),
+            k if !ks.modifiers.shift && !ks.modifiers.control && !ks.modifiers.platform => {
+                let f = Format::ALL.into_iter().find(|f| f.key() == k);
+                if f.is_none() {
+                    self.copy_menu = None;
+                }
+                f
+            }
+            _ => {
+                self.copy_menu = None;
+                None
+            }
+        };
+        let f = pick?;
+        self.copy_menu = None;
+        self.copy_as(set, f, edit)
     }
 
     /// The column whose right edge is under `pos` in the header.
@@ -314,6 +374,9 @@ impl Grid {
         if self.edit.is_some() {
             return Some(self.edit_key(ks, set, edit));
         }
+        if self.copy_menu.is_some() {
+            return Some(self.menu_key(ks, set, edit));
+        }
         let rows = set.rows.len();
         let cols = set.columns.len();
         let half = (self.page_rows / 2).max(1);
@@ -348,6 +411,7 @@ impl Grid {
                 }
             }
             ("y", false) => return Some(self.copy(set, m.shift)),
+            ("c", false) if !m.shift && rows > 0 => self.copy_menu = Some(0),
             ("e", false) if !m.shift => return Some(self.begin_edit(set, edit)),
             ("n", false) if m.shift => {
                 if let Some(Err(why)) = edit.map(|e| e.check(self.col)) {
@@ -388,6 +452,7 @@ impl Grid {
         set: &ResultSet,
         edit: Option<&Editable>,
     ) -> Option<Action> {
+        self.copy_menu = None;
         // clicking elsewhere keeps what was typed
         if self.edit.is_some() {
             self.commit_edit(set);
@@ -602,6 +667,20 @@ impl Grid {
                     .child(e.editor.render(m, t, focused, px(w), row_h, |_, _| vec![])),
             )
         });
+        let menu = self.copy_menu.filter(|_| focused).map(|sel| {
+            // under the cursor cell, or over it when there's no room below
+            let (x0, _) = shown
+                .iter()
+                .find(|(c, _, _)| *c == self.col)
+                .map_or((f32::from(gutter_w), 0.), |&(_, a, b)| (a, b));
+            let h = f32::from(size.height);
+            let menu_h = MENU_ROW * Format::ALL.len() as f32 + 8. + 2.;
+            let cell_y = f32::from(row_h) * (1 + self.row.saturating_sub(self.top)) as f32;
+            let below = cell_y + f32::from(row_h) + 2.;
+            let y = if below + menu_h <= h { below } else { (cell_y - menu_h - 2.).max(0.) };
+            let x = x0.min(f32::from(size.width) - MENU_W).max(0.);
+            copy_menu(sel, t).absolute().left(px(x)).top(px(y))
+        });
         div()
             .relative()
             .size_full()
@@ -611,8 +690,64 @@ impl Grid {
             .child(header)
             .children(rows)
             .children(input)
+            .children(menu)
             .into_any_element()
     }
+}
+
+const MENU_W: f32 = 200.;
+const MENU_ROW: f32 = 28.;
+
+/// The "Copy as" menu: one row per format, its letter as a key cap.
+fn copy_menu(selected: usize, t: &Theme) -> gpui::Div {
+    let items = Format::ALL.iter().enumerate().map(|(i, f)| {
+        let sel = i == selected;
+        div()
+            .relative()
+            .h(px(MENU_ROW))
+            .px(px(12.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .when(sel, |d| {
+                d.bg(with_alpha(t.fg, 0.07))
+                    .child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent))
+            })
+            .child(div().text_color(if sel { t.fg } else { t.fg_muted }).child(f.label()))
+            .child(key_cap(f.key(), t))
+    });
+    div()
+        .w(px(MENU_W))
+        .py(px(4.))
+        .bg(t.elevated)
+        .border_1()
+        .border_color(t.border)
+        .rounded_lg()
+        .shadow_md()
+        .overflow_hidden()
+        .font_family(".SystemUIFont")
+        .text_size(px(13.))
+        .children(items)
+}
+
+/// A key cap, as `kbd()` in the main view draws them.
+fn key_cap(label: &'static str, t: &Theme) -> gpui::Div {
+    div()
+        .flex_none()
+        .min_w(px(18.))
+        .h(px(18.))
+        .px_1()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_sm()
+        .border_1()
+        .border_color(t.border)
+        .bg(t.hover)
+        .font_family(crate::ui::term_family())
+        .text_size(px(10.))
+        .text_color(t.fg_muted)
+        .child(label)
 }
 
 /// One line of a value, cut to `w` chars.
@@ -741,5 +876,54 @@ mod undo_tests {
         assert_eq!(g.pending.get(&(0, 1)), Some(&Some("x".into())));
         g.key(&u, &set, None);
         assert!(g.pending.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod copy_as_tests {
+    use super::*;
+
+    #[test]
+    fn menu_copies_selection_with_pending_edits() {
+        let set = ResultSet {
+            columns: vec!["id".into(), "name".into()],
+            rows: vec![
+                vec![Some("1".into()), Some("a".into())],
+                vec![Some("2".into()), Some("b".into())],
+                vec![Some("3".into()), Some("c".into())],
+            ],
+            total: 3,
+        };
+        let mut g = Grid::default();
+        g.sync(1, &set);
+        g.set_cell(&set, 2, 1, None);
+        g.selected = [0, 2].into_iter().collect();
+        let key = |k: &str| Keystroke::parse(k).unwrap();
+        assert!(matches!(g.key(&key("c"), &set, None), Some(None)));
+        g.key(&key("j"), &set, None);
+        match g.key(&key("enter"), &set, None) {
+            Some(Some(Action::Copy(text, toast))) => {
+                assert_eq!(text, "id\tname\n1\ta\n3\t");
+                assert_eq!(toast, "Copied 2 rows as TSV");
+            }
+            _ => panic!("no copy"),
+        }
+        assert!(g.copy_menu.is_none());
+        // a letter picks directly; the cursor row when nothing is selected
+        g.selected.clear();
+        g.row = 1;
+        g.col = 1;
+        g.key(&key("c"), &set, None);
+        match g.key(&key("v"), &set, None) {
+            Some(Some(Action::Copy(text, toast))) => {
+                assert_eq!(text, "b");
+                assert_eq!(toast, "Copied 1 value of name");
+            }
+            _ => panic!("no copy"),
+        }
+        // esc closes without copying
+        g.key(&key("c"), &set, None);
+        assert!(matches!(g.key(&key("escape"), &set, None), Some(None)));
+        assert!(g.copy_menu.is_none());
     }
 }

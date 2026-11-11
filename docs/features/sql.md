@@ -58,6 +58,7 @@ Tables in your search path are completed bare (`users`), others with their schem
 | ⌘A | Select every row on the page |
 | y or ⌘C | Copy the cell, or the selected rows |
 | Y | Copy the selected rows (or this row) with column names |
+| c | Copy the selected rows (or this row) as CSV, JSON and more |
 | esc | Clear the selection, or go back to the editor |
 | i, ↵, ctrl+k | Back to the editor |
 
@@ -69,6 +70,23 @@ editor to put the cursor there.
 
 Rows are copied tab-separated, one per line, so they paste into a spreadsheet
 as cells. A cell is copied exactly as it is.
+
+`c` opens a "Copy as" menu by the cursor. Move with j k or the arrows and press
+↵, or press the item's letter:
+
+| | |
+|---|---|
+| c | CSV, with column names first. Values with commas, quotes or line breaks are quoted; NULL is empty |
+| t | TSV, with column names first, like `Y` |
+| o | JSON: a list of objects keyed by column name. Every value is a string, the way Postgres shows it; NULL is `null` |
+| m | Markdown: a table with column names as its header |
+| s | SQL insert: one `insert into … values` with a row of values for each row |
+| v | Column values: the cursor's column, one value per line |
+
+Values you've changed but not saved are copied as you see them. An insert names
+the table the rows come from when every column comes straight from one table
+(`select * from users`). Otherwise, such as with a join or a computed column, it
+says `insert into table_name`, for you to fill in.
 
 Queries that only read (`select`, `with`, `table`, `values`) come back 500 rows
 at a time. The line between the editor and the result shows where you are

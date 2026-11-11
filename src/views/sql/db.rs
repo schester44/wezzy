@@ -82,11 +82,11 @@ impl Editable {
     }
 }
 
-fn quote_ident(s: &str) -> String {
+pub(super) fn quote_ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }
 
-fn quote_literal(v: &Option<String>) -> String {
+pub(super) fn quote_literal(v: &Option<String>) -> String {
     match v {
         Some(s) => format!("'{}'", s.replace('\'', "''")),
         None => "NULL".into(),
