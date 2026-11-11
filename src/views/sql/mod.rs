@@ -10,6 +10,7 @@
 pub mod complete;
 pub mod conn;
 mod db;
+mod export;
 mod grid;
 
 use super::editor::{Editor, Pos};
@@ -788,6 +789,7 @@ impl PaneView for SqlView {
                 &[
                     ("y", "Copy cell, or selected rows"),
                     ("Y", "Copy rows with column names"),
+                    ("c", "Copy as CSV, JSON, insert…"),
                 ],
             ),
         ];
