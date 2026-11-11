@@ -30,7 +30,7 @@ cargo test
 | `main.rs` | startup: env, settings, config, mux + session domain, gpui app |
 | `app.rs` | `TermApp` state, event plumbing (`AppEvent`), key routing, `perform()` (the KeyAssignment interpreter), spawning/splitting |
 | `ui/view.rs` | the main view: top bar, tabs, sidebar, terminal canvas, overlays |
-| `ui/git.rs`, `gitpanel.rs`, `diff.rs`, `feedback.rs` | git panel view, its state/keys, git polling + staging, hunk comments |
+| `ui/git.rs`, `gitpanel.rs`, `diff.rs`, `feedback.rs`, `pr.rs` | git panel view, its state/keys, git polling + staging, hunk comments, branch PR lookup + creation via `gh` |
 | `ui/mod.rs` | `Theme` (derived from the terminal palette), icons |
 | `render.rs` | paints panes/cells/cursor into a gpui canvas |
 | `keys.rs` | gpui keystroke → WezTerm key, leader + key tables, default bindings |
@@ -40,6 +40,7 @@ cargo test
 | `palette.rs`, `settings_ui.rs`, `regions.rs` | command palette, settings overlay, keyboard focus in side panels |
 | `session.rs` | attach to the session server (`wezterm-mux-server`), pane id mapping |
 | `hooks.rs`, `agents.rs`, `procs.rs` | agent hook install/polling, agent detection + status, foreground process lookup |
+| `notify.rs` | macOS notifications and the Dock badge for agents waiting on you |
 | `launch.rs`, `recipes.rs` | harness launcher (⌘N), recipes |
 | `hosts.rs` | SSH hosts (⌘⇧S / "ssh …" in ⌘K): config + `~/.ssh/config` aliases |
 | `workspaces.rs` | saved workspaces (name + cwd), the running + saved list behind the picker and sidebar menu |

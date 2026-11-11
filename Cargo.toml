@@ -39,6 +39,9 @@ objc = "0.2"
 postgres = "0.19"
 postgres-native-tls = "0.5"
 native-tls = "0.2"
+# already in the tree via gpui; notify.rs (UserNotifications, Dock badge)
+objc2 = "0.6"
+block2 = "0.6"
 
 [profile.dev]
 opt-level = 1

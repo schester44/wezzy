@@ -8302,6 +8302,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "block2",
  "config",
  "dispatch",
  "env-bootstrap",
@@ -8315,6 +8316,7 @@ dependencies = [
  "native-tls",
  "nucleo-matcher",
  "objc",
+ "objc2",
  "parking_lot",
  "portable-pty",
  "postgres",

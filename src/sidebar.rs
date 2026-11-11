@@ -14,8 +14,19 @@ use crate::agents::Agent;
 use crate::app::TermApp;
 use crate::regions::Region;
 use crate::servers::Server;
-use gpui::{Context, Window};
+use gpui::{Context, KeyDownEvent, Window};
+use mux::pane::PaneId;
 use mux::Mux;
+
+/// The inline name field on an agent row (Rename agent / `r`).
+pub struct AgentRename {
+    pub pane_id: PaneId,
+    pub input: String,
+    /// Where keyboard focus goes back to when done.
+    back: Region,
+    /// The sidebar was opened for this; close it again when done.
+    hide_sidebar: bool,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
@@ -132,9 +143,11 @@ impl TermApp {
         crate::servers::for_panes(&panes)
     }
 
-    /// ↵ / `o` on a sidebar row (keyboard cursor).
+    /// ↵ / `o` / `r` on a sidebar row (keyboard cursor).
     pub(crate) fn sidebar_activate(&mut self, item: Item, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         match item {
+            Item::Agent(a) if key == "r" => self.start_agent_rename(Some(a.pane_id), cx),
+            _ if key == "r" => {}
             Item::Agent(a) => {
                 self.region = Region::Terminal;
                 self.focus_pane(a.pane_id, window, cx);
@@ -150,6 +163,113 @@ impl TermApp {
                 self.open_run(&r, window, cx);
             }
         }
+    }
+
+    /// Name an agent in place on its sidebar row (Rename agent / `r`): `pane_id`,
+    /// else the one under the sidebar cursor, else the active pane's.
+    pub(crate) fn start_agent_rename(&mut self, pane_id: Option<PaneId>, cx: &mut Context<Self>) {
+        let selected = match self.sidebar_items().get(self.sidebar_cursor) {
+            Some(Item::Agent(a)) if self.region == Region::Sidebar => Some(a.pane_id),
+            _ => None,
+        };
+        let target = pane_id
+            .or(selected)
+            .or(self.active_pane().map(|p| p.pane_id()))
+            .and_then(|id| crate::agents::collect(None).into_iter().find(|a| a.pane_id == id));
+        let Some(agent) = target else {
+            self.flash("No agent in this pane");
+            return;
+        };
+        let settings = crate::settings::get();
+        if !settings.sidebar().contains(&Source::Agents) {
+            self.flash("Agents are off in the sidebar");
+            return;
+        }
+        // the field lives on the row, so the row has to be on screen
+        if settings.sidebar_collapsed.contains(&Source::Agents) {
+            crate::settings::update(|s| s.sidebar_collapsed.retain(|x| *x != Source::Agents));
+        }
+        self.overlay = None;
+        self.ws_menu_open = false;
+        if let Some(tab) = self.active_tab().filter(|t| t.get_zoomed_pane().is_some()) {
+            tab.set_zoomed(false);
+        }
+        // the git panel shares the sidebar's slot (closing it moves focus to the terminal)
+        if self.diff_open {
+            self.close_diff_panel();
+        }
+        let back = self.region;
+        let hide_sidebar = !self.sidebar_open;
+        self.sidebar_open = true;
+        self.region = Region::Sidebar;
+        if let Some(i) = self
+            .sidebar_items()
+            .iter()
+            .position(|it| matches!(it, Item::Agent(a) if a.pane_id == agent.pane_id))
+        {
+            self.sidebar_cursor = i;
+        }
+        self.agent_rename = Some(AgentRename {
+            pane_id: agent.pane_id,
+            input: agent.name.clone().unwrap_or_default(),
+            back,
+            hide_sidebar,
+        });
+        cx.notify();
+    }
+
+    /// Close the name field, saving what was typed when `save` (blank clears).
+    pub(crate) fn finish_agent_rename(&mut self, save: bool) {
+        let Some(r) = self.agent_rename.take() else {
+            return;
+        };
+        if save {
+            crate::agents::names::set(r.pane_id, &r.input);
+        }
+        self.region = r.back;
+        if r.hide_sidebar {
+            self.sidebar_open = false;
+            if self.region == Region::Sidebar {
+                self.region = Region::Terminal;
+            }
+        }
+    }
+
+    /// Every key goes to the name field while it's open.
+    pub(crate) fn agent_rename_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        let ks = &ev.keystroke;
+        let m = &ks.modifiers;
+        // the agent quit while its row was being edited: the field is gone
+        let pane_id = self.agent_rename.as_ref().map(|r| r.pane_id);
+        if !crate::agents::collect(None).iter().any(|a| Some(a.pane_id) == pane_id) {
+            self.finish_agent_rename(false);
+            cx.notify();
+            return;
+        }
+        let Some(r) = self.agent_rename.as_mut() else {
+            return;
+        };
+        match ks.key.as_str() {
+            "escape" => self.finish_agent_rename(false),
+            "[" if m.control => self.finish_agent_rename(false),
+            "enter" => self.finish_agent_rename(true),
+            "backspace" if m.alt || m.platform => r.input.clear(),
+            "backspace" => {
+                r.input.pop();
+            }
+            "v" if m.platform => {
+                if let Some(t) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                    r.input.push_str(t.lines().next().unwrap_or("").trim());
+                }
+            }
+            _ if !m.control && !m.platform => {
+                if let Some(c) = &ks.key_char {
+                    r.input.push_str(c);
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
     }
 
     /// Follow a live run, or show a finished one's log, in a split.

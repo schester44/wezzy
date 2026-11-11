@@ -6,9 +6,11 @@ How to use Wezzy.
 
 | | |
 |---|---|
+| [Git panel](features/git-panel.md) | Review, stage and commit agent changes, comment back, open a pull request |
 | [Keys](features/keys.md) | The leader key, panes and tabs, mouse selection, copy mode, changing keys |
 | [Sidebar](features/sidebar.md) | Agents, dev servers and GitHub Actions runs at a glance |
 | [SSH](features/ssh.md) | Open a shell on your machines from the palette |
+| [SQL](features/sql.md) | Query Postgres from ⌘K: an editor with completion, the result as a table |
 | [Updates](features/updates.md) | Automatic updates, and turning them off |
 | [Workspaces](features/workspaces.md) | One workspace per project, and saved ones that open in the right folder |
 

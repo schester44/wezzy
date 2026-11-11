@@ -50,7 +50,12 @@ impl AssetSource for Assets {
             "sparkles",
             "message",
             "server",
-            "database"
+            "database",
+            "git-pull-request",
+            "git-pull-request-draft",
+            "git-pull-request-closed",
+            "git-merge",
+            "cloud-off"
         ))
     }
 
@@ -81,6 +86,11 @@ pub enum Icon {
     Message,
     Server,
     Database,
+    PullRequest,
+    PullRequestDraft,
+    PullRequestClosed,
+    GitMerge,
+    CloudOff,
 }
 
 /// A spinning loader, for "working" states.
@@ -120,6 +130,11 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> impl IntoElement {
         Icon::Message => "icons/message.svg",
         Icon::Server => "icons/server.svg",
         Icon::Database => "icons/database.svg",
+        Icon::PullRequest => "icons/git-pull-request.svg",
+        Icon::PullRequestDraft => "icons/git-pull-request-draft.svg",
+        Icon::PullRequestClosed => "icons/git-pull-request-closed.svg",
+        Icon::GitMerge => "icons/git-merge.svg",
+        Icon::CloudOff => "icons/cloud-off.svg",
     };
     svg()
         .path(path)

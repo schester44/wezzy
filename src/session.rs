@@ -185,18 +185,21 @@ async fn refresh_ttys() -> anyhow::Result<()> {
     let inner = ClientDomain::get_client_inner_for_domain(domain.domain_id())?;
     let panes = inner.client.list_panes().await?;
     let mut map = std::collections::HashMap::new();
+    let mut live = std::collections::HashSet::new();
     fn walk(
         node: mux::tab::PaneNode,
         inner: &wezterm_client::domain::ClientInner,
         map: &mut std::collections::HashMap<mux::pane::PaneId, String>,
+        live: &mut std::collections::HashSet<mux::pane::PaneId>,
     ) {
         match node {
             mux::tab::PaneNode::Empty => {}
             mux::tab::PaneNode::Split { left, right, .. } => {
-                walk(*left, inner, map);
-                walk(*right, inner, map);
+                walk(*left, inner, map, live);
+                walk(*right, inner, map, live);
             }
             mux::tab::PaneNode::Leaf(entry) => {
+                live.insert(entry.pane_id);
                 if let (Some(local), Some(tty)) =
                     (inner.remote_to_local_pane_id(entry.pane_id), entry.tty_name)
                 {
@@ -206,9 +209,10 @@ async fn refresh_ttys() -> anyhow::Result<()> {
         }
     }
     for tab in panes.tabs {
-        walk(tab, &inner, &mut map);
+        walk(tab, &inner, &mut map, &mut live);
     }
     *crate::procs::PANE_TTYS.lock() = Some(map);
+    crate::agents::names::retain(|id| live.contains(&id));
 
     // nvim that was already running when we attached never re-announces
     // IS_NVIM; infer it so smart-splits (and our edge nav) see it.

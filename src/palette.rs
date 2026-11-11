@@ -196,6 +196,7 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Run Recipe…", App(AppCommand::RunRecipe)),
         ("SSH…", App(AppCommand::SshHost)),
         ("Toggle Diff Panel", App(AppCommand::ToggleDiffPanel)),
+        ("Create Pull Request", App(AppCommand::CreatePullRequest)),
         ("Toggle Pane Zoom", Key(TogglePaneZoomState)),
         ("Close Pane", Key(CloseCurrentPane { confirm: true })),
         ("Close Tab", Key(CloseCurrentTab { confirm: true })),
@@ -203,9 +204,11 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Previous Tab", Key(ActivateTabRelative(-1))),
         ("Toggle Sidebar", App(AppCommand::ToggleSidebar)),
         ("Find Agent…", App(AppCommand::FindAgent)),
+        ("Rename Agent…", App(AppCommand::RenameAgent)),
         ("Find Tab…", App(AppCommand::FindTab)),
         ("Switch Workspace…", App(AppCommand::SwitchWorkspace)),
-        ("Install Claude Code Hooks", App(AppCommand::InstallAgentHooks)),
+        ("Install Agent Hooks", App(AppCommand::InstallAgentHooks)),
+        ("Uninstall Agent Hooks", App(AppCommand::UninstallAgentHooks)),
         ("Reload Configuration", Key(ReloadConfiguration)),
         ("Increase Font Size", Key(IncreaseFontSize)),
         ("Decrease Font Size", Key(DecreaseFontSize)),
@@ -230,15 +233,17 @@ impl TermApp {
         for a in agents::collect(self.active_pane().map(|p| p.pane_id())) {
             items.push(Item {
                 kind: Kind::Agent,
-                title: format!("{} · {}", a.kind, a.project),
+                title: format!("{} · {}", a.display_name(), a.project),
                 subtitle: {
                     let pane = crate::session::remote_pane_id(a.pane_id)
                         .map(|id| format!(" · pane {id}"))
                         .unwrap_or_default();
+                    // a named agent still says what it is
+                    let kind = a.name.as_ref().map(|_| format!("{} · ", a.kind)).unwrap_or_default();
                     if a.title.is_empty() {
-                        format!("{}{pane}", a.workspace)
+                        format!("{kind}{}{pane}", a.workspace)
                     } else {
-                        format!("{} — {}{pane}", a.title, a.workspace)
+                        format!("{kind}{} — {}{pane}", a.title, a.workspace)
                     }
                 },
                 shortcut: None,
@@ -385,13 +390,18 @@ impl TermApp {
         }
 
         // commands
-        let hooks_installed = crate::hooks::claude_hooks_installed();
+        let hooks = crate::hooks::harness_hooks();
+        let hooks_installed = crate::hooks::all_installed();
+        let any_hooks = hooks.iter().any(|h| h.installed);
         let dev_build = crate::restart::source_dir().is_some();
         let staged = crate::update::staged();
         for (title, action) in commands() {
             if hooks_installed
                 && matches!(action, PaletteAction::App(AppCommand::InstallAgentHooks))
             {
+                continue;
+            }
+            if !any_hooks && matches!(action, PaletteAction::App(AppCommand::UninstallAgentHooks)) {
                 continue;
             }
             if !dev_build && matches!(action, PaletteAction::App(AppCommand::RebuildRestart)) {
@@ -700,6 +710,7 @@ impl TermApp {
             AppCommand::SshHost => self.open_palette(Scope::Hosts, cx),
             AppCommand::CommandPalette => self.open_palette(Scope::All, cx),
             AppCommand::FindAgent => self.open_palette(Scope::Agents, cx),
+            AppCommand::RenameAgent => self.start_agent_rename(None, cx),
             AppCommand::FindTab => self.open_palette(Scope::Tabs, cx),
             AppCommand::SwitchWorkspace => self.open_palette(Scope::Workspaces, cx),
             AppCommand::NewWorkspace => self.prompt_new_workspace(cx),
@@ -761,9 +772,15 @@ impl TermApp {
             AppCommand::SendOutputToAgent => self.send_output_to_agent(_window, cx),
             AppCommand::SelectError => self.start_error_select(cx),
             AppCommand::OpenEditor => self.open_editor_here(_window, cx),
-            AppCommand::InstallAgentHooks => match crate::hooks::install_claude_hooks() {
-                Ok(()) => self.flash("Hooks installed"),
+            AppCommand::CreatePullRequest => self.pull_request_command(),
+            AppCommand::InstallAgentHooks => match crate::hooks::install_all() {
+                Ok(done) => self.flash(format!("Hooks installed · {}", hook_labels(&done))),
                 Err(e) => self.flash(format!("Couldn't install hooks: {e:#}")),
+            },
+            AppCommand::UninstallAgentHooks => match crate::hooks::uninstall_all() {
+                Ok(done) if done.is_empty() => self.flash("No hooks installed"),
+                Ok(done) => self.flash(format!("Hooks removed · {}", hook_labels(&done))),
+                Err(e) => self.flash(format!("Couldn't remove hooks: {e:#}")),
             },
         }
         cx.notify();
@@ -871,4 +888,8 @@ fn state_selected(overlay: &Option<Overlay>) -> usize {
         Some(Overlay::Palette(s)) => s.selected,
         _ => 0,
     }
+}
+
+fn hook_labels(hs: &[crate::hooks::Harness]) -> String {
+    hs.iter().map(|h| h.label()).collect::<Vec<_>>().join(", ")
 }

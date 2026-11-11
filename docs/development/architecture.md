@@ -120,12 +120,27 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
 
 - **Detection** (`agents.rs`): foreground process name/argv matches a known
   harness, or a hook record exists.
-- **Status** (`hooks.rs`): `assets/hooks/agent-hook.sh`, registered as a
-  Claude Code hook, writes each lifecycle event to
-  `~/.local/state/wezzy/agents/<WEZTERM_PANE>.json`. The app polls the
-  directory, maps server pane ids to local ones and derives
-  Working / NeedsInput / Done / Idle. Without hooks, status is guessed from
-  title spinners, output and bells.
+- **Status** (`hooks.rs`): each supported harness writes its latest
+  lifecycle event to `~/.local/state/wezzy/agents/<WEZTERM_PANE>.json` as
+  `{"harness", "pane", "ts", "payload"}`. Two wirings:
+  - *Hook file* (Claude Code `~/.claude/settings.json`, Codex
+    `~/.codex/hooks.json`): `assets/hooks/agent-hook.sh <harness>` is merged
+    in as a command hook for each event; the payload is the harness's own
+    hook input.
+  - *Plugin* (pi `~/.pi/agent/extensions/wezzy.ts`, opencode
+    `~/.config/opencode/plugins/wezzy.js`): our file from `assets/hooks/`
+    writes the record itself, with `{"event", "cwd", "tool", "input", ...}`
+    using the harness's event names. Plugin files start with
+    `wezzy agent status`, which is how install, uninstall and the startup
+    refresh recognize them.
+
+  The app polls the directory, maps server pane ids to local ones and turns
+  the payload into Working / NeedsInput / Done / Idle with a per-harness
+  `interpret_*`, plus the tool detail and the agent's `cwd`. Every writer
+  is a no-op outside Wezzy panes (`WEZZY` + `WEZTERM_PANE`). Install merges
+  into existing config (other hooks untouched, a one-time `.wezzy-backup`
+  before the first change) and is idempotent. Without hooks, status is
+  guessed from title spinners, output and bells.
 - **Subagents:** events fired inside a Claude subagent carry `agent_id`; the
   script writes them to `<WEZTERM_PANE>.<agent_id>.json` so they don't
   overwrite the main agent's status, and `HookState::subagents` collects them
@@ -135,8 +150,22 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
   or changes, or after 30 minutes without events. A subagent waiting on you
   makes its agent NeedsInput. `hooks::start` re-registers hooks installed by a
   build that subscribed to fewer events.
+- **Names** (`agents::names`): Rename agent stores a name per server pane id
+  in a state file, since the mux protocol can't store data on a server pane.
+  The file records the server's pid and is ignored under a new server (pane ids
+  restart from 0); `session.rs` prunes ids missing from `ListPanes`.
+  `Agent::display_name()` is the one way to name an agent in the UI.
 - **Transitions:** state changes raise toasts, tab dots and the chime
   (`sound.rs`) when you're not looking at that pane.
+- **Notifications** (`notify.rs`): with the window inactive, a transition also
+  posts a `UNUserNotificationCenter` notification with identifier
+  `pane-<server pane id>` (one per pane, replaced on the next transition), and
+  the Dock badge counts `agents::UNSEEN`. Clicks come back through the
+  delegate as `AppEvent::NotificationClicked` and go to `focus_pane`;
+  `mark_seen` withdraws the pane's notification. UserNotifications throws
+  without a bundle id, so `cargo run` builds skip notifications (badge only).
+  Permission is asked on the first post. `notify::tests` checks every message
+  signature against the runtime, since dev builds assert them at the call.
 
 ## Sidebar (`sidebar.rs`)
 
@@ -159,11 +188,21 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
   are cached per branch so switching back is instant. ↵ runs `gh run watch` /
   `gh run view --log-failed` / `gh run view` in a split (`run_command_in_split`).
 
-## Git panel (`diff.rs`, `gitpanel.rs`, `ui/git.rs`, `feedback.rs`)
+## Git panel (`diff.rs`, `gitpanel.rs`, `ui/git.rs`, `feedback.rs`, `pr.rs`)
 
-- **Polling:** a background poller snapshots `git status` plus parsed hunks
-  for the active pane's repo every 2s, with `GIT_OPTIONAL_LOCKS=0` so it never
-  takes `index.lock`.
+- **Target:** `gitpanel::git_dir` picks the directory: the `cwd` from the
+  pane's latest hook payload (an agent that moved into a worktree), unless a
+  shell is back in the foreground, else the pane's cwd.
+- **Polling:** a background poller snapshots `git status` plus parsed hunks,
+  branch and upstream ahead/behind for that repo every 2s, with
+  `GIT_OPTIONAL_LOCKS=0` so it never takes `index.lock`.
+- **Pull requests** (`pr.rs`): each snapshot calls `pr::poll`, which runs
+  `gh pr view` on its own thread when the (repo, branch) entry is missing,
+  older than 60s, or the upstream sha moved; failures (no `gh`, no auth, no
+  PR) cache as "no PR". `p` / the palette command run `pr::begin` off the
+  main thread (refresh, checks, default branch from `<remote>/HEAD`) and
+  answer with `AppEvent::PullRequest`; creating pushes, then `gh pr create
+  --base <default>` with `GH_PROMPT_DISABLED=1`.
 - **Mutations:** staging and discarding go through `git apply [--cached] [-R]`
   on single-hunk patches.
 - **Review comments:** comments on hunks or lines are sent to an agent as one
@@ -177,3 +216,4 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
 | Active workspace | `~/.local/share/wezzy/last-workspace` |
 | App settings | `~/.config/wezzy/settings.json` |
 | Agent status | `~/.local/state/wezzy/agents/` |
+| Agent names | `~/.local/state/wezzy/agent-names.json` (keyed by server pane id + server pid) |

@@ -23,6 +23,8 @@ pub enum AppCommand {
     NewAgent,
     NewAgentTab,
     InstallAgentHooks,
+    UninstallAgentHooks,
+    RenameAgent,
     ToggleDiffPanel,
     SendOutputToAgent,
     SelectError,
@@ -39,6 +41,7 @@ pub enum AppCommand {
     MoveTabToWorkspace,
     MovePaneToNewWindow,
     BalancePanes,
+    CreatePullRequest,
 }
 
 impl AppCommand {
@@ -53,6 +56,8 @@ impl AppCommand {
         Self::NewAgent,
         Self::NewAgentTab,
         Self::InstallAgentHooks,
+        Self::UninstallAgentHooks,
+        Self::RenameAgent,
         Self::ToggleDiffPanel,
         Self::SendOutputToAgent,
         Self::SelectError,
@@ -69,6 +74,7 @@ impl AppCommand {
         Self::MoveTabToWorkspace,
         Self::MovePaneToNewWindow,
         Self::BalancePanes,
+        Self::CreatePullRequest,
     ];
 
     /// Stable id, used in the event name.
@@ -84,6 +90,8 @@ impl AppCommand {
             Self::NewAgent => "new-agent",
             Self::NewAgentTab => "new-agent-tab",
             Self::InstallAgentHooks => "install-agent-hooks",
+            Self::UninstallAgentHooks => "uninstall-agent-hooks",
+            Self::RenameAgent => "rename-agent",
             Self::ToggleDiffPanel => "toggle-diff-panel",
             Self::SendOutputToAgent => "send-output-to-agent",
             Self::SelectError => "select-error",
@@ -100,6 +108,7 @@ impl AppCommand {
             Self::MoveTabToWorkspace => "move-tab-to-workspace",
             Self::MovePaneToNewWindow => "move-pane-to-new-window",
             Self::BalancePanes => "balance-panes",
+            Self::CreatePullRequest => "create-pull-request",
         }
     }
 
@@ -116,6 +125,8 @@ impl AppCommand {
             Self::NewAgent => "NewAgent",
             Self::NewAgentTab => "NewAgentTab",
             Self::InstallAgentHooks => "InstallAgentHooks",
+            Self::UninstallAgentHooks => "UninstallAgentHooks",
+            Self::RenameAgent => "RenameAgent",
             Self::ToggleDiffPanel => "ToggleDiffPanel",
             Self::SendOutputToAgent => "SendOutputToAgent",
             Self::SelectError => "SelectError",
@@ -132,6 +143,7 @@ impl AppCommand {
             Self::MoveTabToWorkspace => "MoveTabToWorkspace",
             Self::MovePaneToNewWindow => "MovePaneToNewWindow",
             Self::BalancePanes => "BalancePanes",
+            Self::CreatePullRequest => "CreatePullRequest",
         }
     }
 
@@ -148,6 +160,8 @@ impl AppCommand {
             Self::NewAgent => "New agent",
             Self::NewAgentTab => "New agent in a tab",
             Self::InstallAgentHooks => "Install agent hooks",
+            Self::UninstallAgentHooks => "Uninstall agent hooks",
+            Self::RenameAgent => "Rename agent",
             Self::ToggleDiffPanel => "Git panel",
             Self::SendOutputToAgent => "Send output to agent",
             Self::OpenEditor => "Open editor",
@@ -164,6 +178,7 @@ impl AppCommand {
             Self::MoveTabToWorkspace => "Move tab to workspace",
             Self::MovePaneToNewWindow => "Move pane to new window",
             Self::BalancePanes => "Balance panes",
+            Self::CreatePullRequest => "Create pull request",
         }
     }
 

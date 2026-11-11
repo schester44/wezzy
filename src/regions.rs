@@ -120,7 +120,7 @@ impl TermApp {
             "k" | "up" => self.sidebar_cursor = self.sidebar_cursor.saturating_sub(1),
             "g" if !ks.modifiers.shift => self.sidebar_cursor = 0,
             "g" | "G" => self.sidebar_cursor = n - 1,
-            "enter" | "o" => {
+            "enter" | "o" | "r" => {
                 let item = items[self.sidebar_cursor].clone();
                 self.sidebar_activate(item, &ks.key, window, cx);
             }

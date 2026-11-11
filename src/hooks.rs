@@ -1,9 +1,24 @@
 //! Exact agent status from harness hooks.
 //!
-//! `assets/hooks/agent-hook.sh` is installed to ~/.local/share/wezzy/bin and
-//! registered as a Claude Code hook. On every lifecycle event it writes the
-//! payload to ~/.local/state/wezzy/agents/<WEZTERM_PANE>.json. We poll that
-//! directory and turn the latest event per pane into a `HookState`.
+//! Every supported harness reports its lifecycle events into one record per
+//! pane, ~/.local/state/wezzy/agents/<WEZTERM_PANE>.json:
+//!
+//! ```json
+//! {"harness":"claude","pane":3,"ts":1731340000,"payload":{...}}
+//! ```
+//!
+//! How the record gets written depends on the harness (`Wiring`):
+//!
+//! - **Claude Code, Codex**: `assets/hooks/agent-hook.sh` is installed to
+//!   ~/.local/share/wezzy/bin and registered as a command hook in the
+//!   harness's JSON hooks file. The payload is the harness's own hook input.
+//! - **pi, opencode**: a small extension/plugin of ours in the harness's
+//!   plugin directory writes the record itself. The payload is
+//!   `{"event", "cwd", "tool", "input", "message", ...}` with the harness's
+//!   native event names.
+//!
+//! We poll the directory and map the latest event per pane to a `HookState`
+//! with a per-harness `interpret_*`; polling and pane id mapping are shared.
 //!
 //! Events from inside a Claude subagent carry an `agent_id`; the script writes
 //! those to <WEZTERM_PANE>.<agent_id>.json instead, and they show up as the
@@ -19,10 +34,14 @@ use mux::pane::PaneId;
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const HOOK_SCRIPT: &str = include_str!("../assets/hooks/agent-hook.sh");
+const PI_EXTENSION: &str = include_str!("../assets/hooks/pi-extension.ts");
+const OPENCODE_PLUGIN: &str = include_str!("../assets/hooks/opencode-plugin.js");
+/// First line of every plugin file we write; how we recognize ours.
+const PLUGIN_MARKER: &str = "wezzy agent status";
 
 /// Claude Code events we subscribe to.
 const CLAUDE_EVENTS: &[&str] = &[
@@ -42,6 +61,20 @@ const CLAUDE_EVENTS: &[&str] = &[
 /// before SubagentStop fired).
 const SUBAGENT_STALE: Duration = Duration::from_secs(30 * 60);
 
+/// Codex events we subscribe to.
+const CODEX_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PreCompact",
+    "PostCompact",
+    "Stop",
+    "Interrupt",
+    "SessionEnd",
+];
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum HookStatus {
     Working,
@@ -58,6 +91,9 @@ pub struct HookState {
     pub status: HookStatus,
     /// Human-readable detail: "Editing app.rs", "needs permission to use Bash", ...
     pub detail: Option<String>,
+    /// The agent's working directory, as the harness reports it (may differ
+    /// from the pane's: an agent that moved into a worktree).
+    pub cwd: Option<PathBuf>,
     /// Subagents this agent has running, oldest first.
     pub subagents: Vec<Subagent>,
 }
@@ -87,9 +123,206 @@ pub fn forget(pane_id: PaneId) {
     }
 }
 
-fn data_dir() -> PathBuf {
-    crate::paths::data_dir()
+// -- harnesses ---------------------------------------------------------------
+
+/// Harnesses that report exact status.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Harness {
+    Claude,
+    Codex,
+    Pi,
+    OpenCode,
 }
+
+pub const HARNESSES: &[Harness] = &[Harness::Claude, Harness::Codex, Harness::Pi, Harness::OpenCode];
+
+/// How a harness gets our events into the state directory.
+enum Wiring {
+    /// Our script as a command hook in a Claude-style JSON hooks file.
+    HookFile {
+        path: PathBuf,
+        events: &'static [&'static str],
+        timeout: u64,
+    },
+    /// A plugin file of ours in the harness's plugin directory.
+    Plugin { path: PathBuf, source: &'static str },
+}
+
+impl Harness {
+    /// The `harness` field in records, and the binary name.
+    pub fn id(self) -> &'static str {
+        match self {
+            Harness::Claude => "claude",
+            Harness::Codex => "codex",
+            Harness::Pi => "pi",
+            Harness::OpenCode => "opencode",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        crate::agents::label_for(self.id()).unwrap_or("Agent")
+    }
+
+    fn from_id(id: &str) -> Option<Self> {
+        HARNESSES.iter().copied().find(|h| h.id() == id)
+    }
+
+    fn wiring(self) -> Wiring {
+        let home = &*config::HOME_DIR;
+        let env_dir = |var: &str, default: PathBuf| {
+            std::env::var_os(var)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or(default)
+        };
+        match self {
+            Harness::Claude => Wiring::HookFile {
+                path: home.join(".claude/settings.json"),
+                events: CLAUDE_EVENTS,
+                timeout: 5,
+            },
+            Harness::Codex => Wiring::HookFile {
+                path: env_dir("CODEX_HOME", home.join(".codex")).join("hooks.json"),
+                events: CODEX_EVENTS,
+                // Codex caps SessionEnd and Interrupt hooks at 3s
+                timeout: 3,
+            },
+            Harness::Pi => Wiring::Plugin {
+                path: env_dir("PI_CODING_AGENT_DIR", home.join(".pi/agent")).join("extensions/wezzy.ts"),
+                source: PI_EXTENSION,
+            },
+            Harness::OpenCode => Wiring::Plugin {
+                path: env_dir("XDG_CONFIG_HOME", home.join(".config")).join("opencode/plugins/wezzy.js"),
+                source: OPENCODE_PLUGIN,
+            },
+        }
+    }
+
+    fn hook_command(self) -> String {
+        format!("{} {}", script_path().display(), self.id())
+    }
+
+    fn is_installed(self) -> bool {
+        match self.wiring() {
+            Wiring::HookFile { path, events, .. } => read_json(&path)
+                .ok()
+                .flatten()
+                .is_some_and(|v| has_hooks(&v, events, &self.hook_command())),
+            Wiring::Plugin { path, .. } => is_our_plugin(&path),
+        }
+    }
+
+    fn install(self) -> anyhow::Result<()> {
+        match self.wiring() {
+            Wiring::HookFile { path, events, timeout } => {
+                write_script()?;
+                let cmd = self.hook_command();
+                edit_json(&path, |root| merge_hooks(root, events, &cmd, timeout))
+            }
+            Wiring::Plugin { path, source } => install_plugin(&path, source),
+        }
+    }
+
+    fn uninstall(self) -> anyhow::Result<()> {
+        match self.wiring() {
+            Wiring::HookFile { path, .. } => {
+                if read_json(&path)?.is_some_and(|v| has_any_hook(&v)) {
+                    edit_json(&path, remove_hooks)?;
+                }
+                Ok(())
+            }
+            Wiring::Plugin { path, .. } => {
+                if is_our_plugin(&path) {
+                    std::fs::remove_file(&path)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A harness's hooks as the settings row shows them.
+#[derive(Clone, Copy, Debug)]
+pub struct HarnessHooks {
+    pub harness: Harness,
+    /// Its binary is on PATH.
+    pub available: bool,
+    pub installed: bool,
+}
+
+static STATUS_CACHE: Mutex<Option<(Instant, Vec<HarnessHooks>)>> = Mutex::new(None);
+
+/// Every harness's hook state (cached for a few seconds).
+pub fn harness_hooks() -> Vec<HarnessHooks> {
+    let mut c = STATUS_CACHE.lock();
+    if let Some((at, v)) = &*c {
+        if at.elapsed() < Duration::from_secs(3) {
+            return v.clone();
+        }
+    }
+    let v: Vec<HarnessHooks> = HARNESSES
+        .iter()
+        .map(|&h| HarnessHooks {
+            harness: h,
+            available: crate::settings::on_path(h.id()),
+            installed: h.is_installed(),
+        })
+        .collect();
+    *c = Some((Instant::now(), v.clone()));
+    v
+}
+
+/// Hooks are in for every harness on PATH (and at least one).
+pub fn all_installed() -> bool {
+    let hs = harness_hooks();
+    hs.iter().any(|h| h.installed) && hs.iter().all(|h| h.installed || !h.available)
+}
+
+/// Install hooks for every supported harness on PATH. Returns the harnesses
+/// done; fails if none could be.
+pub fn install_all() -> anyhow::Result<Vec<Harness>> {
+    let targets: Vec<Harness> = harness_hooks()
+        .into_iter()
+        .filter(|h| h.available || h.installed)
+        .map(|h| h.harness)
+        .collect();
+    if targets.is_empty() {
+        anyhow::bail!("no supported agent on PATH");
+    }
+    let r = for_each(&targets, Harness::install);
+    *STATUS_CACHE.lock() = None;
+    r
+}
+
+/// Remove our hooks from every harness that has them.
+pub fn uninstall_all() -> anyhow::Result<Vec<Harness>> {
+    let targets: Vec<Harness> = harness_hooks()
+        .into_iter()
+        .filter(|h| h.installed)
+        .map(|h| h.harness)
+        .collect();
+    let r = for_each(&targets, Harness::uninstall);
+    *STATUS_CACHE.lock() = None;
+    r
+}
+
+fn for_each(hs: &[Harness], f: fn(Harness) -> anyhow::Result<()>) -> anyhow::Result<Vec<Harness>> {
+    let mut done = vec![];
+    let mut errors = vec![];
+    for &h in hs {
+        match f(h) {
+            Ok(()) => done.push(h),
+            Err(e) => errors.push(format!("{}: {e:#}", h.label())),
+        }
+    }
+    if errors.is_empty() {
+        Ok(done)
+    } else {
+        Err(anyhow::anyhow!(errors.join("; ")))
+    }
+}
+
+// -- files -------------------------------------------------------------------
 
 fn state_dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
@@ -99,7 +332,7 @@ fn state_dir() -> PathBuf {
 }
 
 pub fn script_path() -> PathBuf {
-    data_dir().join("bin/agent-hook")
+    crate::paths::data_dir().join("bin/agent-hook")
 }
 
 /// Keep the installed script in sync with this build (it's ours to overwrite).
@@ -114,50 +347,76 @@ pub fn write_script() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn claude_settings_path() -> PathBuf {
-    config::HOME_DIR.join(".claude/settings.json")
-}
-
-fn hook_command() -> String {
-    format!("{} claude", script_path().display())
-}
-
-/// Are our hooks registered in ~/.claude/settings.json? (cached for a few seconds)
-pub fn claude_hooks_installed() -> bool {
-    static CACHE: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
-    let mut c = CACHE.lock();
-    if let Some((at, v)) = *c {
-        if at.elapsed() < Duration::from_secs(3) {
-            return v;
-        }
+/// `None` when the file doesn't exist.
+fn read_json(path: &Path) -> anyhow::Result<Option<Value>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) if text.trim().is_empty() => Ok(Some(Value::Object(Default::default()))),
+        Ok(text) => serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| anyhow::anyhow!("{} isn't valid JSON: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
     }
-    let v = check_claude_hooks();
-    *c = Some((std::time::Instant::now(), v));
-    v
 }
 
-fn check_claude_hooks() -> bool {
-    let Ok(text) = std::fs::read_to_string(claude_settings_path()) else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        return false;
-    };
-    let cmd = hook_command();
-    CLAUDE_EVENTS.iter().all(|ev| has_command(&v["hooks"][ev], &cmd))
+/// Copy `path` aside once, before the first time we change it.
+fn backup(path: &Path) -> anyhow::Result<()> {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".wezzy-backup");
+    let backup = path.with_file_name(name);
+    if path.exists() && !backup.exists() {
+        std::fs::copy(path, &backup)?;
+    }
+    Ok(())
 }
 
-/// Registered for some of our events but not all: installed by an older build.
-fn claude_hooks_outdated() -> bool {
-    let Ok(text) = std::fs::read_to_string(claude_settings_path()) else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        return false;
-    };
-    let cmd = hook_command();
-    let has = |ev: &&str| has_command(&v["hooks"][*ev], &cmd);
-    CLAUDE_EVENTS.iter().any(has) && !CLAUDE_EVENTS.iter().all(has)
+/// Atomic write, via a sibling temp file.
+fn write_atomic(path: &Path, contents: &str) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".wezzy-tmp");
+    let tmp = path.with_file_name(name);
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Read-modify-write a JSON config, keeping everything we don't touch.
+/// Leaves the file alone when nothing changed.
+fn edit_json(path: &Path, f: impl FnOnce(&mut Value) -> anyhow::Result<()>) -> anyhow::Result<()> {
+    let before = read_json(path)?;
+    let mut root = before.clone().unwrap_or_else(|| Value::Object(Default::default()));
+    f(&mut root)?;
+    if before.as_ref() == Some(&root) {
+        return Ok(());
+    }
+    backup(path)?;
+    write_atomic(path, &(serde_json::to_string_pretty(&root)? + "\n"))
+}
+
+fn is_our_plugin(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .is_ok_and(|t| t.lines().next().is_some_and(|l| l.contains(PLUGIN_MARKER)))
+}
+
+fn install_plugin(path: &Path, source: &str) -> anyhow::Result<()> {
+    if std::fs::read_to_string(path).ok().as_deref() == Some(source) {
+        return Ok(());
+    }
+    if !is_our_plugin(path) {
+        backup(path)?;
+    }
+    write_atomic(path, source)
+}
+
+// -- hook file merging -------------------------------------------------------
+
+/// Ours: any command running an `agent-hook` script from a `/bin/` dir,
+/// including older installs under a previous app name.
+fn is_our_command(c: &str) -> bool {
+    c.contains("/bin/agent-hook")
 }
 
 fn has_command(groups: &Value, cmd: &str) -> bool {
@@ -170,57 +429,78 @@ fn has_command(groups: &Value, cmd: &str) -> bool {
     })
 }
 
-/// Merge our hook into every event in ~/.claude/settings.json, keeping
-/// everything else as-is. Writes a one-time backup first.
-pub fn install_claude_hooks() -> anyhow::Result<()> {
-    write_script()?;
-    let path = claude_settings_path();
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
-    let mut root: Value = serde_json::from_str(&text)
-        .map_err(|e| anyhow::anyhow!("{} isn't valid JSON: {e}", path.display()))?;
-    let backup = path.with_extension("json.wezzy-backup");
-    if path.exists() && !backup.exists() {
-        std::fs::copy(&path, &backup)?;
-    }
-    let cmd = hook_command();
-    let obj = root
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("settings.json isn't an object"))?;
-    let hooks = obj
-        .entry("hooks")
-        .or_insert_with(|| Value::Object(Default::default()));
-    for ev in CLAUDE_EVENTS {
-        let groups = hooks
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("settings.json `hooks` isn't an object"))?
-            .entry(*ev)
-            .or_insert_with(|| Value::Array(vec![]));
-        // drop entries from older installs (e.g. a previous app name/path)
-        if let Some(arr) = groups.as_array_mut() {
-            arr.retain(|g| {
-                !g["hooks"].as_array().is_some_and(|hs| {
-                    hs.iter().any(|h| {
-                        h["command"]
-                            .as_str()
-                            .is_some_and(|c| c.contains("/bin/agent-hook") && c != cmd)
+fn has_hooks(root: &Value, events: &[&str], cmd: &str) -> bool {
+    events.iter().all(|ev| has_command(&root["hooks"][ev], cmd))
+}
+
+fn has_any_hook(root: &Value) -> bool {
+    root["hooks"].as_object().is_some_and(|evs| {
+        evs.values().any(|groups| {
+            groups.as_array().is_some_and(|gs| {
+                gs.iter().any(|g| {
+                    g["hooks"].as_array().is_some_and(|hs| {
+                        hs.iter().any(|h| h["command"].as_str().is_some_and(is_our_command))
                     })
                 })
-            });
-        }
-        if !has_command(groups, &cmd) {
-            groups
-                .as_array_mut()
-                .ok_or_else(|| anyhow::anyhow!("hooks.{ev} isn't an array"))?
-                .push(serde_json::json!({
-                    "hooks": [{ "type": "command", "command": cmd, "timeout": 5 }]
-                }));
+            })
+        })
+    })
+}
+
+/// Add our command to every event in `root.hooks`, keeping everything else.
+/// Our entries from older installs (another path) are replaced.
+fn merge_hooks(root: &mut Value, events: &[&str], cmd: &str, timeout: u64) -> anyhow::Result<()> {
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("the file isn't a JSON object"))?;
+    let hooks = obj
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Default::default()))
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("`hooks` isn't an object"))?;
+    for ev in events {
+        let groups = hooks
+            .entry(*ev)
+            .or_insert_with(|| Value::Array(vec![]))
+            .as_array_mut()
+            .ok_or_else(|| anyhow::anyhow!("hooks.{ev} isn't an array"))?;
+        strip_ours(groups, |c| c != cmd);
+        if !has_command(&Value::Array(groups.clone()), cmd) {
+            groups.push(serde_json::json!({
+                "hooks": [{ "type": "command", "command": cmd, "timeout": timeout }]
+            }));
         }
     }
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    let tmp = path.with_extension("json.wezzy-tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&root)? + "\n")?;
-    std::fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+/// Remove every hook of ours; drop groups and events left empty by that.
+fn remove_hooks(root: &mut Value) -> anyhow::Result<()> {
+    let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    hooks.retain(|_, groups| {
+        let Some(arr) = groups.as_array_mut() else {
+            return true;
+        };
+        let before = arr.len();
+        strip_ours(arr, |_| true);
+        !(arr.is_empty() && before > 0)
+    });
+    Ok(())
+}
+
+/// Drop our hooks matching `which` from a list of hook groups; a group left
+/// with no hooks goes too. Other people's hooks are never touched.
+fn strip_ours(groups: &mut Vec<Value>, which: impl Fn(&str) -> bool) {
+    groups.retain_mut(|g| {
+        let Some(hs) = g.get_mut("hooks").and_then(Value::as_array_mut) else {
+            return true;
+        };
+        let before = hs.len();
+        hs.retain(|h| !h["command"].as_str().is_some_and(|c| is_our_command(c) && which(c)));
+        !(hs.is_empty() && before > 0)
+    });
 }
 
 // -- watching ----------------------------------------------------------------
@@ -229,15 +509,22 @@ pub fn start() {
     if let Err(e) = write_script() {
         log::warn!("couldn't write agent hook script: {e:#}");
     }
-    // hooks registered before the dekita -> wezzy rename point at the old path,
-    // and older builds subscribed to fewer events; re-register (install
-    // replaces our old entries)
-    if claude_hooks_outdated()
-        || std::fs::read_to_string(claude_settings_path())
-            .is_ok_and(|t| t.contains("/.local/share/dekita/bin/agent-hook"))
-    {
-        if let Err(e) = install_claude_hooks() {
-            log::warn!("couldn't update agent hooks: {e:#}");
+    // Keep installed plugins in sync with this build, and re-register hooks
+    // that point at an old path (e.g. from before the dekita -> wezzy rename).
+    for &h in HARNESSES {
+        let refresh = match h.wiring() {
+            Wiring::Plugin { path, source } => {
+                is_our_plugin(&path) && std::fs::read_to_string(&path).ok().as_deref() != Some(source)
+            }
+            Wiring::HookFile { path, .. } => read_json(&path)
+                .ok()
+                .flatten()
+                .is_some_and(|v| has_any_hook(&v) && !h.is_installed()),
+        };
+        if refresh {
+            if let Err(e) = h.install() {
+                log::warn!("couldn't update {} hooks: {e:#}", h.label());
+            }
         }
     }
     std::thread::spawn(|| loop {
@@ -324,6 +611,7 @@ fn poll() {
             continue;
         };
         sessions.insert(local, session);
+        let cwd = v["payload"]["cwd"].as_str().filter(|c| !c.is_empty()).map(PathBuf::from);
         next.insert(
             local,
             HookState {
@@ -331,6 +619,7 @@ fn poll() {
                 status,
                 detail,
                 subagents: vec![],
+                cwd,
             },
         );
     }
@@ -409,19 +698,37 @@ fn subagent_meta(p: &Value, id: &str) -> Option<SubagentMeta> {
     })
 }
 
+// -- event -> status ---------------------------------------------------------
+
+type Interpreted = Option<(HookStatus, Option<String>)>;
+
 /// Map a harness event to a status. `None` means the session ended.
-fn interpret(harness: &str, p: &Value) -> Option<(HookStatus, Option<String>)> {
-    if harness != "claude" {
-        return Some((HookStatus::Idle, None));
+fn interpret(harness: &str, p: &Value) -> Interpreted {
+    match Harness::from_id(harness) {
+        Some(Harness::Claude) => interpret_claude(p),
+        Some(Harness::Codex) => interpret_codex(p),
+        Some(Harness::Pi) => interpret_pi(p),
+        Some(Harness::OpenCode) => interpret_opencode(p),
+        None => Some((HookStatus::Idle, None)),
     }
+}
+
+fn thinking() -> (HookStatus, Option<String>) {
+    (HookStatus::Working, Some("Thinking…".into()))
+}
+
+fn compacting() -> (HookStatus, Option<String>) {
+    (HookStatus::Working, Some("Compacting context…".into()))
+}
+
+fn interpret_claude(p: &Value) -> Interpreted {
     let event = p["hook_event_name"].as_str().unwrap_or("");
     Some(match event {
         "SessionEnd" => return None,
         "SessionStart" => (HookStatus::Idle, None),
-        "UserPromptSubmit" => (HookStatus::Working, Some("Thinking…".into())),
-        "PreToolUse" => (HookStatus::Working, Some(describe_tool(p))),
-        "PostToolUse" => (HookStatus::Working, Some("Thinking…".into())),
-        "PreCompact" => (HookStatus::Working, Some("Compacting context…".into())),
+        "UserPromptSubmit" | "PostToolUse" => thinking(),
+        "PreToolUse" => (HookStatus::Working, Some(describe_tool(&p["tool_name"], &p["tool_input"]))),
+        "PreCompact" => compacting(),
         "Stop" => (HookStatus::Done, None),
         "Notification" => {
             let msg = p["message"].as_str().unwrap_or("").to_string();
@@ -438,41 +745,342 @@ fn interpret(harness: &str, p: &Value) -> Option<(HookStatus, Option<String>)> {
     })
 }
 
-fn describe_tool(p: &Value) -> String {
-    let tool = p["tool_name"].as_str().unwrap_or("tool");
-    let input = &p["tool_input"];
+fn interpret_codex(p: &Value) -> Interpreted {
+    let event = p["hook_event_name"].as_str().unwrap_or("");
+    Some(match event {
+        "SessionEnd" => return None,
+        "SessionStart" => (HookStatus::Idle, None),
+        "UserPromptSubmit" | "PostToolUse" | "PostCompact" => thinking(),
+        "PreToolUse" => (HookStatus::Working, Some(describe_tool(&p["tool_name"], &p["tool_input"]))),
+        "PermissionRequest" => {
+            let tool = describe_tool(&p["tool_name"], &p["tool_input"]);
+            let detail = p["tool_input"]["description"]
+                .as_str()
+                .filter(|d| !d.is_empty())
+                .map(str::to_string)
+                .unwrap_or(tool);
+            (HookStatus::NeedsInput, Some(detail))
+        }
+        "PreCompact" => compacting(),
+        // an interrupted turn is over too: it's your move
+        "Stop" | "Interrupt" => (HookStatus::Done, None),
+        _ => (HookStatus::Working, None),
+    })
+}
+
+fn interpret_pi(p: &Value) -> Interpreted {
+    Some(match p["event"].as_str().unwrap_or("") {
+        "session_shutdown" => return None,
+        "session_start" => (HookStatus::Idle, None),
+        "agent_start" | "tool_execution_end" => thinking(),
+        "tool_execution_start" => (HookStatus::Working, Some(describe_tool(&p["tool"], &p["input"]))),
+        "session_before_compact" => compacting(),
+        "ui_prompt_start" => (HookStatus::NeedsInput, message(p)),
+        "ui_prompt_end" if p["idle"].as_bool() == Some(true) => (HookStatus::Done, None),
+        "ui_prompt_end" => thinking(),
+        "agent_settled" => (HookStatus::Done, None),
+        _ => (HookStatus::Working, None),
+    })
+}
+
+fn interpret_opencode(p: &Value) -> Interpreted {
+    Some(match p["event"].as_str().unwrap_or("") {
+        "exit" => return None,
+        "start" => (HookStatus::Idle, None),
+        "session.busy" | "tool.execute.after" | "permission.replied" => thinking(),
+        "tool.execute.before" => (HookStatus::Working, Some(describe_tool(&p["tool"], &p["input"]))),
+        "permission.asked" => {
+            let detail = message(p).or_else(|| {
+                p["tool"]
+                    .as_str()
+                    .filter(|t| !t.is_empty())
+                    .map(|t| format!("Permission to use {t}"))
+            });
+            (HookStatus::NeedsInput, detail)
+        }
+        "session.idle" | "session.error" => (HookStatus::Done, None),
+        _ => (HookStatus::Working, None),
+    })
+}
+
+fn message(p: &Value) -> Option<String> {
+    p["message"].as_str().filter(|m| !m.is_empty()).map(str::to_string)
+}
+
+fn clip(s: &str) -> String {
+    let s = s.lines().next().unwrap_or("").trim();
+    if s.chars().count() > 48 {
+        format!("{}…", s.chars().take(47).collect::<String>())
+    } else {
+        s.to_string()
+    }
+}
+
+/// "Editing app.rs", "$ cargo test", ... from a tool call. Tool names differ
+/// per harness (`Edit`, `edit`, `apply_patch`, ...), so match loosely.
+fn describe_tool(tool: &Value, input: &Value) -> String {
+    let tool = tool.as_str().unwrap_or("tool");
+    let str_field = |keys: &[&str]| keys.iter().find_map(|k| input[*k].as_str().filter(|s| !s.is_empty()));
     let file = || {
-        input["file_path"]
-            .as_str()
-            .or(input["notebook_path"].as_str())
-            .and_then(|f| std::path::Path::new(f).file_name())
+        str_field(&["file_path", "filePath", "path", "notebook_path"])
+            .or_else(|| patch_file(input))
+            .and_then(|f| Path::new(f).file_name())
             .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| "files".into())
     };
-    let clip = |s: &str| {
-        let s = s.lines().next().unwrap_or("").trim();
-        if s.chars().count() > 48 {
-            format!("{}…", s.chars().take(47).collect::<String>())
-        } else {
-            s.to_string()
-        }
+    let command = || match &input["command"] {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(a) => Some(a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+        _ => None,
     };
-    match tool {
-        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => {
-            format!("Editing {}", file().unwrap_or_else(|| "files".into()))
-        }
-        "Read" => format!("Reading {}", file().unwrap_or_else(|| "files".into())),
-        "Bash" => input["description"]
-            .as_str()
+    match tool.to_ascii_lowercase().as_str() {
+        "edit" | "multiedit" | "write" | "notebookedit" | "apply_patch" | "patch" | "replace"
+        | "write_file" => format!("Editing {}", file()),
+        "read" | "read_file" | "view" => format!("Reading {}", file()),
+        "bash" | "shell" | "exec_command" | "local_shell" | "run_shell_command" => str_field(&["description"])
             .map(clip)
-            .or_else(|| input["command"].as_str().map(|c| format!("$ {}", clip(c))))
+            .or_else(|| command().filter(|c| !c.is_empty()).map(|c| format!("$ {}", clip(&c))))
             .unwrap_or_else(|| "Running a command".into()),
-        "Grep" | "Glob" => "Searching code".into(),
-        "WebFetch" | "WebSearch" => "Browsing the web".into(),
-        "Task" | "Agent" => input["description"]
-            .as_str()
+        "grep" | "glob" | "find" | "ls" | "list" | "search" => "Searching code".into(),
+        "webfetch" | "websearch" | "web_search" | "fetch" => "Browsing the web".into(),
+        "task" | "agent" => str_field(&["description"])
             .map(|d| format!("Subagent: {}", clip(d)))
             .unwrap_or_else(|| "Running a subagent".into()),
-        "TodoWrite" => "Updating todos".into(),
-        other => format!("Using {other}"),
+        "todowrite" | "update_plan" => "Updating todos".into(),
+        _ => format!("Using {tool}"),
+    }
+}
+
+/// The first file named in an apply_patch body ("*** Update File: src/a.rs").
+fn patch_file(input: &Value) -> Option<&str> {
+    let body = input["input"].as_str().or(input["patch"].as_str()).or(input["command"].as_str())?;
+    body.lines().find_map(|l| {
+        ["*** Update File: ", "*** Add File: ", "*** Delete File: "]
+            .iter()
+            .find_map(|p| l.strip_prefix(p))
+            .map(str::trim)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn st(harness: &str, p: Value) -> Interpreted {
+        interpret(harness, &p)
+    }
+
+    #[test]
+    fn claude_events() {
+        assert_eq!(st("claude", json!({"hook_event_name": "SessionEnd"})), None);
+        assert_eq!(
+            st("claude", json!({"hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": {"file_path": "/x/src/app.rs"}})),
+            Some((HookStatus::Working, Some("Editing app.rs".into())))
+        );
+        assert_eq!(
+            st("claude", json!({"hook_event_name": "Notification", "message": "Claude needs your permission to use Bash"})),
+            Some((HookStatus::NeedsInput, Some("Claude needs your permission to use Bash".into())))
+        );
+        assert_eq!(
+            st("claude", json!({"hook_event_name": "Notification", "notification_type": "idle_prompt", "message": "x"})),
+            Some((HookStatus::Done, None))
+        );
+        assert_eq!(st("claude", json!({"hook_event_name": "Stop"})), Some((HookStatus::Done, None)));
+    }
+
+    #[test]
+    fn codex_events() {
+        assert_eq!(st("codex", json!({"hook_event_name": "SessionStart", "source": "startup"})), Some((HookStatus::Idle, None)));
+        assert_eq!(st("codex", json!({"hook_event_name": "UserPromptSubmit"})), Some(thinking()));
+        assert_eq!(
+            st("codex", json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "cargo test --all"}})),
+            Some((HookStatus::Working, Some("$ cargo test --all".into())))
+        );
+        assert_eq!(
+            st("codex", json!({"hook_event_name": "PreToolUse", "tool_name": "apply_patch",
+                "tool_input": {"command": "*** Begin Patch\n*** Update File: src/hooks.rs\n@@"}})),
+            Some((HookStatus::Working, Some("Editing hooks.rs".into())))
+        );
+        assert_eq!(
+            st("codex", json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf target", "description": "Delete build output"}})),
+            Some((HookStatus::NeedsInput, Some("Delete build output".into())))
+        );
+        assert_eq!(
+            st("codex", json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash",
+                "tool_input": {"command": "git push", "description": null}})),
+            Some((HookStatus::NeedsInput, Some("$ git push".into())))
+        );
+        assert_eq!(st("codex", json!({"hook_event_name": "Stop"})), Some((HookStatus::Done, None)));
+        assert_eq!(st("codex", json!({"hook_event_name": "Interrupt"})), Some((HookStatus::Done, None)));
+        assert_eq!(st("codex", json!({"hook_event_name": "SessionEnd"})), None);
+    }
+
+    #[test]
+    fn pi_events() {
+        assert_eq!(st("pi", json!({"event": "session_start", "cwd": "/w"})), Some((HookStatus::Idle, None)));
+        assert_eq!(st("pi", json!({"event": "agent_start"})), Some(thinking()));
+        assert_eq!(
+            st("pi", json!({"event": "tool_execution_start", "tool": "read", "input": {"path": "src/main.rs"}})),
+            Some((HookStatus::Working, Some("Reading main.rs".into())))
+        );
+        assert_eq!(
+            st("pi", json!({"event": "tool_execution_start", "tool": "bash", "input": {"command": "ls -la\nmore"}})),
+            Some((HookStatus::Working, Some("$ ls -la".into())))
+        );
+        assert_eq!(
+            st("pi", json!({"event": "ui_prompt_start", "message": "Allow rm?"})),
+            Some((HookStatus::NeedsInput, Some("Allow rm?".into())))
+        );
+        assert_eq!(st("pi", json!({"event": "ui_prompt_end", "idle": false})), Some(thinking()));
+        assert_eq!(st("pi", json!({"event": "ui_prompt_end", "idle": true})), Some((HookStatus::Done, None)));
+        assert_eq!(st("pi", json!({"event": "agent_settled"})), Some((HookStatus::Done, None)));
+        assert_eq!(st("pi", json!({"event": "session_shutdown"})), None);
+    }
+
+    #[test]
+    fn opencode_events() {
+        assert_eq!(st("opencode", json!({"event": "start"})), Some((HookStatus::Idle, None)));
+        assert_eq!(st("opencode", json!({"event": "session.busy"})), Some(thinking()));
+        assert_eq!(
+            st("opencode", json!({"event": "tool.execute.before", "tool": "edit", "input": {"filePath": "/r/a.ts"}})),
+            Some((HookStatus::Working, Some("Editing a.ts".into())))
+        );
+        assert_eq!(
+            st("opencode", json!({"event": "permission.asked", "tool": "bash"})),
+            Some((HookStatus::NeedsInput, Some("Permission to use bash".into())))
+        );
+        assert_eq!(st("opencode", json!({"event": "permission.replied"})), Some(thinking()));
+        assert_eq!(st("opencode", json!({"event": "session.idle"})), Some((HookStatus::Done, None)));
+        assert_eq!(st("opencode", json!({"event": "exit"})), None);
+    }
+
+    #[test]
+    fn unknown_harness_is_idle() {
+        assert_eq!(st("mystery", json!({"event": "x"})), Some((HookStatus::Idle, None)));
+    }
+
+    const CMD: &str = "/Users/me/.local/share/wezzy/bin/agent-hook codex";
+
+    #[test]
+    fn merge_keeps_other_hooks_and_is_idempotent() {
+        let mut root = json!({
+            "model": "x",
+            "hooks": {
+                "Stop": [{ "hooks": [{ "type": "command", "command": "say done" }] }],
+                "Custom": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "lint" }] }]
+            }
+        });
+        merge_hooks(&mut root, CODEX_EVENTS, CMD, 3).unwrap();
+        assert!(has_hooks(&root, CODEX_EVENTS, CMD));
+        assert_eq!(root["model"], "x");
+        assert_eq!(root["hooks"]["Stop"].as_array().unwrap().len(), 2);
+        assert_eq!(root["hooks"]["Stop"][0]["hooks"][0]["command"], "say done");
+        assert_eq!(root["hooks"]["Custom"][0]["hooks"][0]["command"], "lint");
+        assert_eq!(root["hooks"]["Stop"][1]["hooks"][0]["timeout"], 3);
+
+        let once = root.clone();
+        merge_hooks(&mut root, CODEX_EVENTS, CMD, 3).unwrap();
+        assert_eq!(root, once);
+    }
+
+    #[test]
+    fn merge_replaces_old_install_path() {
+        let old = "/Users/me/.local/share/dekita/bin/agent-hook codex";
+        let mut root = json!({ "hooks": { "Stop": [
+            { "hooks": [{ "type": "command", "command": old }] },
+            { "hooks": [{ "type": "command", "command": "say hi" }, { "type": "command", "command": old }] }
+        ] } });
+        merge_hooks(&mut root, &["Stop"], CMD, 3).unwrap();
+        let stop = root["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 2);
+        assert_eq!(stop[0]["hooks"], json!([{ "type": "command", "command": "say hi" }]));
+        assert_eq!(stop[1]["hooks"][0]["command"], CMD);
+    }
+
+    #[test]
+    fn merge_rejects_unexpected_shapes() {
+        assert!(merge_hooks(&mut json!([]), &["Stop"], CMD, 3).is_err());
+        assert!(merge_hooks(&mut json!({ "hooks": [] }), &["Stop"], CMD, 3).is_err());
+        assert!(merge_hooks(&mut json!({ "hooks": { "Stop": {} } }), &["Stop"], CMD, 3).is_err());
+    }
+
+    #[test]
+    fn remove_takes_only_ours() {
+        let mut root = json!({ "hooks": {
+            "Stop": [{ "hooks": [{ "type": "command", "command": "say done" }] }],
+            "Empty": []
+        } });
+        merge_hooks(&mut root, &["Stop", "SessionStart"], CMD, 3).unwrap();
+        assert!(has_any_hook(&root));
+        remove_hooks(&mut root).unwrap();
+        assert!(!has_any_hook(&root));
+        assert_eq!(
+            root,
+            json!({ "hooks": {
+                "Stop": [{ "hooks": [{ "type": "command", "command": "say done" }] }],
+                "Empty": []
+            } })
+        );
+    }
+
+    fn tmp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("wezzy-hooks-test-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn edit_json_backs_up_once_and_skips_noops() {
+        let d = tmp_dir("edit");
+        let path = d.join("hooks.json");
+        let original = "{\"theme\": \"dark\"}";
+        std::fs::write(&path, original).unwrap();
+        edit_json(&path, |r| merge_hooks(r, &["Stop"], CMD, 3)).unwrap();
+        let backup = d.join("hooks.json.wezzy-backup");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+        let v = read_json(&path).unwrap().unwrap();
+        assert_eq!(v["theme"], "dark");
+        assert!(has_hooks(&v, &["Stop"], CMD));
+
+        // a second edit keeps the first backup
+        edit_json(&path, remove_hooks).unwrap();
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+
+        // a missing file is created, with nothing to back up
+        let fresh = d.join("new/hooks.json");
+        edit_json(&fresh, |r| merge_hooks(r, &["Stop"], CMD, 3)).unwrap();
+        assert!(fresh.exists() && !d.join("new/hooks.json.wezzy-backup").exists());
+
+        // invalid JSON is left alone
+        std::fs::write(&path, "{ nope").unwrap();
+        assert!(edit_json(&path, |r| merge_hooks(r, &["Stop"], CMD, 3)).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ nope");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn plugins_install_and_are_recognized() {
+        let d = tmp_dir("plugin");
+        for source in [PI_EXTENSION, OPENCODE_PLUGIN] {
+            assert!(source.lines().next().unwrap().contains(PLUGIN_MARKER));
+            let path = d.join("plugins/wezzy.js");
+            std::fs::remove_file(&path).ok();
+            assert!(!is_our_plugin(&path));
+            install_plugin(&path, source).unwrap();
+            assert!(is_our_plugin(&path));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+        }
+        // someone else's file of the same name is backed up first
+        let theirs = d.join("other.ts");
+        std::fs::write(&theirs, "export default () => {}\n").unwrap();
+        install_plugin(&theirs, PI_EXTENSION).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(d.join("other.ts.wezzy-backup")).unwrap(),
+            "export default () => {}\n"
+        );
+        std::fs::remove_dir_all(&d).ok();
     }
 }

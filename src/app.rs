@@ -75,6 +75,10 @@ pub enum AppEvent {
         status: crate::hooks::HookStatus,
         detail: Option<String>,
     },
+    /// A macOS notification was clicked (notify.rs); the session server's pane id.
+    NotificationClicked(PaneId),
+    /// The git panel's pull request flow (`pr.rs`).
+    PullRequest(crate::pr::PrEvent),
 }
 
 static EVENTS: OnceLock<smol::channel::Sender<AppEvent>> = OnceLock::new();
@@ -248,6 +252,8 @@ pub struct TermApp {
     pub(crate) ws_menu_open: bool,
     /// Inline "new workspace" name field inside the workspace menu.
     pub(crate) ws_new: Option<String>,
+    /// Inline name field on a sidebar agent row.
+    pub(crate) agent_rename: Option<crate::sidebar::AgentRename>,
     pub(crate) quick_select: Option<crate::quickselect::QuickSelect>,
     pub(crate) pane_select: Option<crate::paneselect::PaneSelect>,
     pub(crate) copy_mode: Option<crate::copymode::CopyMode>,
@@ -389,6 +395,7 @@ impl TermApp {
             sidebar_open: crate::settings::get().show_sidebar,
             ws_menu_open: false,
             ws_new: None,
+            agent_rename: None,
             quick_select: None,
             pane_select: None,
             copy_mode: None,
@@ -407,6 +414,7 @@ impl TermApp {
             _config_sub: config_sub,
         };
         crate::hooks::start();
+        crate::notify::start();
         crate::update::start();
         crate::servers::start();
         crate::actions::start();
@@ -438,12 +446,29 @@ impl TermApp {
         self.flash_pane = Some(pane_id);
     }
 
+    /// A macOS notification about an agent, for when Wezzy is in the background.
+    /// Title: who; body: what it needs (or its task when it's done).
+    fn notify_agent(&self, a: &crate::agents::Agent, detail: Option<String>) {
+        let title = match a.project.as_str() {
+            "" => a.display_name().to_string(),
+            p => format!("{} · {p}", a.display_name()),
+        };
+        let body = detail.unwrap_or_else(|| {
+            // agents put their task in the pane title; skip a bare "Claude Code"
+            let t = a.title.trim();
+            let bare = t.to_lowercase().starts_with(&a.kind.to_lowercase());
+            if bare { String::new() } else { t.to_string() }
+        });
+        crate::notify::post(a.pane_id, title, body);
+    }
+
     fn on_event(&mut self, ev: AppEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             AppEvent::MuxChanged => {
                 MUX_DIRTY.store(false, Ordering::Release);
                 let mux = Mux::get();
                 mux.prune_dead_windows();
+                crate::notify::sync_badge(); // drops closed panes
                 if let Some(id) = self.mux_window_id {
                     if mux.get_window(id).is_none() {
                         // Our window died (last pane exited): fall back to any other window.
@@ -501,6 +526,7 @@ impl TermApp {
                 }
             }
             AppEvent::Committed { result, amend } => self.on_committed(result, amend),
+            AppEvent::PullRequest(ev) => self.on_pull_request(ev, cx),
             AppEvent::AgentStatusChanged {
                 pane_id,
                 status,
@@ -510,6 +536,9 @@ impl TermApp {
                 let looking = self.active_pane().map(|p| p.pane_id()) == Some(pane_id)
                     && window.is_window_active();
                 let attention = matches!(status, HookStatus::NeedsInput | HookStatus::Done);
+                if status == HookStatus::Working {
+                    crate::agents::mark_seen(pane_id);
+                }
                 if attention && !looking {
                     crate::agents::mark_unseen(pane_id);
                     crate::sound::chime();
@@ -517,11 +546,15 @@ impl TermApp {
                         .into_iter()
                         .find(|a| a.pane_id == pane_id)
                     {
-                        let msg = match detail.filter(|_| status == HookStatus::NeedsInput) {
-                            Some(d) => format!("{} · {d}", a.project),
-                            None => format!("{} · {}", a.kind, a.project),
+                        let detail = detail.filter(|_| status == HookStatus::NeedsInput);
+                        let msg = match &detail {
+                            Some(d) => format!("{} · {d}", a.name.as_ref().unwrap_or(&a.project)),
+                            None => format!("{} · {}", a.display_name(), a.project),
                         };
                         self.flash_agent(msg, pane_id);
+                        if !window.is_window_active() {
+                            self.notify_agent(&a, detail);
+                        }
                     }
                 }
             }
@@ -534,8 +567,22 @@ impl TermApp {
                     .into_iter()
                     .find(|a| a.pane_id == pane_id)
                 {
-                    crate::agents::mark_unseen(pane_id);
-                    self.flash_agent(format!("{} · {}", a.kind, a.project), pane_id);
+                    let fresh = crate::agents::mark_unseen(pane_id);
+                    self.flash_agent(format!("{} · {}", a.display_name(), a.project), pane_id);
+                    // bells repeat; notify once until you've been back
+                    if fresh && !window.is_window_active() {
+                        self.notify_agent(&a, None);
+                    }
+                }
+            }
+            AppEvent::NotificationClicked(remote) => {
+                if let Some(pane_id) = crate::session::local_pane_id(remote) {
+                    cx.activate(true);
+                    window.activate_window();
+                    self.flash = None;
+                    self.flash_pane = None;
+                    self.region = crate::regions::Region::Terminal;
+                    self.focus_pane(pane_id, window, cx);
                 }
             }
             AppEvent::TabMoved { window: wid, tab, follow } => self.tab_moved(wid, tab, follow),
@@ -565,6 +612,10 @@ impl TermApp {
         if self.quick_select.is_some() {
             self.quick_select_key(ev, window, cx);
             cx.notify();
+            return;
+        }
+        if self.agent_rename.is_some() {
+            self.agent_rename_key(ev, cx);
             return;
         }
         if self.ws_new.is_some() {
