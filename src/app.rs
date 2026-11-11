@@ -75,6 +75,8 @@ pub enum AppEvent {
         status: crate::hooks::HookStatus,
         detail: Option<String>,
     },
+    /// A macOS notification was clicked (notify.rs); the session server's pane id.
+    NotificationClicked(PaneId),
 }
 
 static EVENTS: OnceLock<smol::channel::Sender<AppEvent>> = OnceLock::new();
@@ -399,6 +401,7 @@ impl TermApp {
             _config_sub: config_sub,
         };
         crate::hooks::start();
+        crate::notify::start();
         crate::update::start();
         crate::servers::start();
         crate::actions::start();
@@ -430,12 +433,29 @@ impl TermApp {
         self.flash_pane = Some(pane_id);
     }
 
+    /// A macOS notification about an agent, for when Wezzy is in the background.
+    /// Title: who; body: what it needs (or its task when it's done).
+    fn notify_agent(&self, a: &crate::agents::Agent, detail: Option<String>) {
+        let title = match a.project.as_str() {
+            "" => a.kind.to_string(),
+            p => format!("{} · {p}", a.kind),
+        };
+        let body = detail.unwrap_or_else(|| {
+            // agents put their task in the pane title; skip a bare "Claude Code"
+            let t = a.title.trim();
+            let bare = t.to_lowercase().starts_with(&a.kind.to_lowercase());
+            if bare { String::new() } else { t.to_string() }
+        });
+        crate::notify::post(a.pane_id, title, body);
+    }
+
     fn on_event(&mut self, ev: AppEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             AppEvent::MuxChanged => {
                 MUX_DIRTY.store(false, Ordering::Release);
                 let mux = Mux::get();
                 mux.prune_dead_windows();
+                crate::notify::sync_badge(); // drops closed panes
                 if let Some(id) = self.mux_window_id {
                     if mux.get_window(id).is_none() {
                         // Our window died (last pane exited): fall back to any other window.
@@ -502,6 +522,9 @@ impl TermApp {
                 let looking = self.active_pane().map(|p| p.pane_id()) == Some(pane_id)
                     && window.is_window_active();
                 let attention = matches!(status, HookStatus::NeedsInput | HookStatus::Done);
+                if status == HookStatus::Working {
+                    crate::agents::mark_seen(pane_id);
+                }
                 if attention && !looking {
                     crate::agents::mark_unseen(pane_id);
                     crate::sound::chime();
@@ -509,11 +532,15 @@ impl TermApp {
                         .into_iter()
                         .find(|a| a.pane_id == pane_id)
                     {
-                        let msg = match detail.filter(|_| status == HookStatus::NeedsInput) {
+                        let detail = detail.filter(|_| status == HookStatus::NeedsInput);
+                        let msg = match &detail {
                             Some(d) => format!("{} · {d}", a.project),
                             None => format!("{} · {}", a.kind, a.project),
                         };
                         self.flash_agent(msg, pane_id);
+                        if !window.is_window_active() {
+                            self.notify_agent(&a, detail);
+                        }
                     }
                 }
             }
@@ -526,8 +553,22 @@ impl TermApp {
                     .into_iter()
                     .find(|a| a.pane_id == pane_id)
                 {
-                    crate::agents::mark_unseen(pane_id);
+                    let fresh = crate::agents::mark_unseen(pane_id);
                     self.flash_agent(format!("{} · {}", a.kind, a.project), pane_id);
+                    // bells repeat; notify once until you've been back
+                    if fresh && !window.is_window_active() {
+                        self.notify_agent(&a, None);
+                    }
+                }
+            }
+            AppEvent::NotificationClicked(remote) => {
+                if let Some(pane_id) = crate::session::local_pane_id(remote) {
+                    cx.activate(true);
+                    window.activate_window();
+                    self.flash = None;
+                    self.flash_pane = None;
+                    self.region = crate::regions::Region::Terminal;
+                    self.focus_pane(pane_id, window, cx);
                 }
             }
             AppEvent::TabMoved { window: wid, tab, follow } => self.tab_moved(wid, tab, follow),

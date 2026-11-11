@@ -8,6 +8,7 @@
 //!   agent_layout = "bsp",             -- "bsp" | "master-stack" (where ⌘A splits)
 //!   editor = { "nvim", "+{line}", "{file}" }, -- ⌘-click file:line opens this in a split
 //!   auto_update = true,               -- install new releases in the background (see update.rs)
+//!   notifications = true,             -- macOS notifications + Dock badge for agents (see notify.rs)
 //!   sidebar = { "agents", "servers", "actions" }, -- ⌘B sections, top to bottom (see sidebar.rs)
 //!   harnesses = {                     -- name = argv; merged over the built-ins
 //!     claude = { "claude" },
@@ -86,6 +87,9 @@ pub struct Settings {
     pub sound: String,
     /// Check for and install new releases (installed app only).
     pub auto_update: bool,
+    /// macOS notifications and the Dock badge when an agent needs you while
+    /// Wezzy is in the background.
+    pub notifications: bool,
     /// settings.json recipes, then the Lua config's
     pub recipes: Vec<crate::recipes::Recipe>,
     /// the settings.json subset, so saving from the UI doesn't copy Lua ones into the file
@@ -110,6 +114,7 @@ impl Settings {
         sidebar_collapsed: Vec::new(),
         sound: String::new(),
         auto_update: true,
+        notifications: true,
         recipes: Vec::new(),
         file_recipes: Vec::new(),
         hosts: Vec::new(),
@@ -251,6 +256,7 @@ struct Stored {
     sidebar_collapsed: Option<Vec<String>>,
     sound: Option<String>,
     auto_update: Option<bool>,
+    notifications: Option<bool>,
     recipes: Option<Vec<StoredRecipe>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hosts: Option<Vec<StoredHost>>,
@@ -331,6 +337,9 @@ fn from_file() -> Settings {
     if let Some(v) = st.auto_update {
         s.auto_update = v;
     }
+    if let Some(v) = st.notifications {
+        s.notifications = v;
+    }
     if let Some(v) = st.recipes {
         s.file_recipes = v
             .into_iter()
@@ -382,6 +391,7 @@ pub fn update(f: impl FnOnce(&mut Settings)) {
             .then(|| s.sidebar_collapsed.iter().map(|x| x.id().to_string()).collect()),
         sound: (!s.sound.is_empty()).then(|| s.sound.clone()),
         auto_update: Some(s.auto_update),
+        notifications: Some(s.notifications),
         recipes: (!s.file_recipes.is_empty()).then(|| {
             s.file_recipes
                 .iter()
@@ -485,6 +495,9 @@ pub fn lua_setup(_: &mlua::Lua, opts: mlua::Table) -> mlua::Result<()> {
     }
     if let Some(v) = opts.get::<_, Option<bool>>("auto_update")? {
         s.auto_update = v;
+    }
+    if let Some(v) = opts.get::<_, Option<bool>>("notifications")? {
+        s.notifications = v;
     }
     if let Some(v) = opts.get::<_, Option<Vec<String>>>("sidebar")? {
         if let Some(bad_id) = v.iter().find(|id| crate::sidebar::Source::from_id(id).is_none()) {

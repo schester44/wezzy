@@ -14,6 +14,7 @@ pub enum Row {
     Sidebar,
     SidebarActions,
     Sound,
+    Notifications,
     Updates,
     AgentHooks,
     ConfigFile,
@@ -27,6 +28,7 @@ pub const ROWS: &[Row] = &[
     Row::Sidebar,
     Row::SidebarActions,
     Row::Sound,
+    Row::Notifications,
     Row::Updates,
     Row::AgentHooks,
     Row::ConfigFile,
@@ -48,6 +50,7 @@ impl Row {
             Row::Sidebar => "Sidebar",
             Row::SidebarActions => "GitHub Actions",
             Row::Sound => "Sound",
+            Row::Notifications => "Notifications",
             Row::Updates => "Updates",
             Row::AgentHooks => "Agent hooks",
             Row::ConfigFile => "Config file",
@@ -84,6 +87,7 @@ impl Row {
                 if s.sidebar_enabled(crate::sidebar::Source::Actions) { "Shown" } else { "Hidden" }.into()
             }
             Row::Sound => s.sound().unwrap_or_else(|| "Off".into()),
+            Row::Notifications => if s.notifications { "On" } else { "Off" }.into(),
             Row::Updates => if s.auto_update { "Automatic" } else { "Off" }.into(),
             Row::AgentHooks => {
                 if crate::hooks::claude_hooks_installed() {
@@ -106,6 +110,7 @@ impl Row {
                 | Row::Sidebar
                 | Row::SidebarActions
                 | Row::Sound
+                | Row::Notifications
                 | Row::Updates
         )
     }
@@ -162,6 +167,10 @@ impl TermApp {
                 let next = cycle(crate::sound::CHOICES, cur.as_str(), step).to_string();
                 settings::update(|s| s.sound = next.clone());
                 crate::sound::play(&next);
+            }
+            Row::Notifications => {
+                settings::update(|s| s.notifications = !s.notifications);
+                crate::notify::sync_badge();
             }
             Row::Updates => settings::update(|s| s.auto_update = !s.auto_update),
             Row::Editor => {
