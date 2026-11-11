@@ -1,4 +1,4 @@
-//! SSH hosts: servers you can open a shell on from the palette (⇧⌘S, or
+//! SSH hosts: servers you can open a shell on from the palette (⌘⇧S, or
 //! "ssh <name>" in ⌘K). ↵ opens it in a split, ⌘↵ in a new tab.
 //!
 //! Hosts come from the config and from `~/.ssh/config` (every `Host` without

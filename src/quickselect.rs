@@ -7,7 +7,7 @@
 //! QuickSelect: every match gets a label; type it to copy (lowercase) or to
 //! copy + paste into the pane (uppercase). Esc cancels.
 //!
-//! Error select (⇧⌘E) uses the same labels, but each hint is an error and
+//! Error select (⌘⇧E) uses the same labels, but each hint is an error and
 //! selecting it copies the whole block around it: the error line through the
 //! end of its paragraph (rustc's `-->` and code lines, a Python traceback, a
 //! panic message), stopping at a blank line, the next error, or a prompt.

@@ -1,4 +1,4 @@
-//! Saved workspaces: named workspaces you can pick (sidebar menu, ⌘K, ⇧⌘K)
+//! Saved workspaces: named workspaces you can pick (sidebar menu, ⌘K, ⌘⇧K)
 //! before they exist. Opening one that isn't running starts it with a shell in
 //! its directory; opening one that is just switches to it.
 //!

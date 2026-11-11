@@ -43,16 +43,16 @@ The important part.
 | | |
 |---|---|
 | ⌘K | Palette (agents, tabs, workspaces, commands) |
-| ⇧⌘K | Switch workspace |
-| ⌘N / ⇧⌘N | New agent in a split / tab |
+| ⌘⇧K | Switch workspace |
+| ⌘N / ⌘⇧N | New agent in a split / tab |
 | Leader 1–9 | Jump to agent 1–9 (numbers show in the sidebar while the leader is armed) |
 | ⌘D | Git panel |
 | ⌘R | Recipes |
-| ⇧⌘S | SSH hosts |
+| ⌘⇧S | SSH hosts |
 | ⌘E | Editor |
 | ⌘B | Sidebar |
 | ⌘, | Settings |
-| ⇧⌘↵ | Send last output to an agent |
+| ⌘⇧↵ | Send last output to an agent |
 | ⌃⇧Space | Quick select |
 | ⌃h/j/k/l | Move between panes and panels |
 | ? | Shortcut sheet in the git panel |
@@ -79,6 +79,6 @@ scripts/bundle.sh --dmg   # Wezzy.app + dmg in target/release
 
 Working on Wezzy inside Wezzy: ⌘K → Rebuild & Restart.
 
-More in [CLAUDE.md](CLAUDE.md), [docs/architecture.md](docs/architecture.md) and [docs/roadmap](docs/roadmap).
+More in [CLAUDE.md](CLAUDE.md) and [docs/](docs/README.md).
 
 Built on [WezTerm](https://github.com/wezterm/wezterm) and [gpui](https://github.com/zed-industries/zed).

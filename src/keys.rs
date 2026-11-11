@@ -389,13 +389,17 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
     v
 }
 
-fn format_combo(key: &WKey, mods: Mods) -> String {
+fn format_combo(key: &WKey, mut mods: Mods) -> String {
+    // an uppercase letter is typed with shift; say so, since keycaps are all uppercase
+    if matches!(key, WKey::Char(c) if c.is_uppercase()) {
+        mods |= Mods::SHIFT;
+    }
     let mut out = String::new();
     for (m, sym) in [
         (Mods::CTRL, "⌃"),
         (Mods::ALT, "⌥"),
-        (Mods::SHIFT, "⇧"),
         (Mods::SUPER, "⌘"),
+        (Mods::SHIFT, "⇧"),
     ] {
         if mods.contains(m) {
             out.push_str(sym);

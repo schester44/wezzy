@@ -97,4 +97,36 @@ cargo test
 - **A palette source:** a `Kind` and items in `palette_items()`; ranking,
   sections and keys come for free.
 
+## Documentation
+
+Every feature has a doc in `docs/`. Keeping them current is part of the work,
+not a follow-up.
+
+- **New major feature** (a panel, a palette source, a config section, a new
+  kind of thing users can do): write `docs/<feature>.md` in the same change and
+  add it to the index in `docs/README.md`.
+- **Changing or refactoring a feature:** update its doc in the same change.
+  Keys, config fields, behavior and file names in docs must match the code.
+  If the feature was removed, remove the doc and its index entry.
+- **Small changes** (a new key for an existing command, a new setting) go in the
+  existing doc for that feature, not a new file.
+- **Before finishing**, check every claim against the code: key bindings in
+  `keys.rs`, config fields in `settings.rs`, behavior in the implementation.
+  Don't document what you haven't verified.
+
+A feature doc covers, in this order:
+
+1. **What it is.** One or two sentences.
+2. **Using it.** Keys, palette commands, clicks. A table when there are several.
+3. **Configuring it.** Lua `setup()` and `settings.json` examples that work as
+   written, plus defaults.
+4. **Behavior.** What happens in each case, including edge cases, limits and
+   interactions with other features (workspaces, remote panes, the session server).
+5. **Code.** A short table mapping files and functions to what they do.
+
+`docs/workspaces.md` is the model. Write for someone using Wezzy, not for
+someone reading the diff: no "now", "new", or change history.
+`docs/architecture.md` covers internals that span features; update it when a
+structural change makes it wrong.
+
 Commit messages are short and imperative. Don't commit unless asked.
