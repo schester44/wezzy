@@ -488,7 +488,11 @@ fn default_key_tables() -> Vec<(&'static str, config::keyassignment::KeyTable)> 
         ((WKey::Char('j'), Mods::NONE), entry(AdjustPaneSize(Down, 2))),
         ((WKey::Char('k'), Mods::NONE), entry(AdjustPaneSize(Up, 2))),
         ((WKey::Char('l'), Mods::NONE), entry(AdjustPaneSize(Right, 2))),
-        ((WKey::Char('='), Mods::NONE), entry(AppCommand::BalancePanes.action())),
+        // balancing is a finishing move: leave resize mode after it
+        (
+            (WKey::Char('='), Mods::NONE),
+            entry(Multiple(vec![AppCommand::BalancePanes.action(), PopKeyTable])),
+        ),
         ((WKey::Char('\u{1b}'), Mods::NONE), entry(PopKeyTable)),
     ];
     vec![(RESIZE_TABLE, resize.into_iter().collect())]

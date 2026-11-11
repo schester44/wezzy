@@ -25,8 +25,20 @@ impl TermApp {
     }
 }
 
+impl TermApp {
+    /// A view's sheet (`?` inside it).
+    pub(super) fn view_shortcuts_modal(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let Some(Overlay::ViewShortcuts(pane_id)) = self.overlay else {
+            return None;
+        };
+        let (title, columns) = self.views.shortcuts(pane_id)?;
+        let width = 300. * columns.len().max(2) as f32;
+        Some(sheet(title, columns, width, t, cx, |this| this.overlay = None))
+    }
+}
+
 /// Static rows for hand-written sheets: keys are space-separated alternatives.
-pub(super) fn group(title: &str, rows: &[(&str, &str)]) -> Group {
+pub(crate) fn group(title: &str, rows: &[(&str, &str)]) -> Group {
     Group {
         title: title.into(),
         rows: rows

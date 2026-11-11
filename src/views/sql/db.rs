@@ -5,6 +5,7 @@
 use crate::app::{send_event, AppEvent};
 use parking_lot::Mutex;
 use postgres::{CancelToken, Client, SimpleQueryMessage};
+use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -46,6 +47,159 @@ pub struct Run {
     pub elapsed: Duration,
     /// set when the query is read-only and fetched a page at a time
     pub page: Option<Page>,
+    /// which cells can be changed, for a paged result
+    pub edit: Option<Arc<Editable>>,
+}
+
+/// Where a result's columns come from, as Postgres reports them, so a cell
+/// can be written back with `update … where <primary key> = …`.
+#[derive(Debug, Default)]
+pub struct Editable {
+    /// per result column: (index into `tables`, the column's real name)
+    pub columns: Vec<Option<(usize, String)>>,
+    pub tables: Vec<EditTable>,
+}
+
+#[derive(Debug)]
+pub struct EditTable {
+    pub schema: String,
+    pub name: String,
+    /// primary key columns: (result column, name); None if the result lacks
+    /// one of them (or the table has no primary key)
+    pub key: Option<Vec<(usize, String)>>,
+}
+
+impl Editable {
+    /// Why column `c` can't be edited, if it can't.
+    pub fn check(&self, c: usize) -> Result<(), &'static str> {
+        let Some(Some((t, _))) = self.columns.get(c) else {
+            return Err("Not a table column");
+        };
+        match &self.tables[*t].key {
+            Some(_) => Ok(()),
+            None => Err("Needs the table's primary key in the result"),
+        }
+    }
+}
+
+fn quote_ident(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+fn quote_literal(v: &Option<String>) -> String {
+    match v {
+        Some(s) => format!("'{}'", s.replace('\'', "''")),
+        None => "NULL".into(),
+    }
+}
+
+/// One `update` per changed (table, row). `changes`: (row, column) → new value.
+pub fn update_sql(
+    edit: &Editable,
+    set: &ResultSet,
+    changes: &BTreeMap<(usize, usize), Option<String>>,
+) -> Result<Vec<String>, String> {
+    let mut by_row: BTreeMap<(usize, usize), Vec<(String, &Option<String>)>> = BTreeMap::new();
+    for ((row, col), value) in changes {
+        let Some(Some((t, name))) = edit.columns.get(*col) else {
+            return Err("Not a table column".into());
+        };
+        by_row.entry((*t, *row)).or_default().push((name.clone(), value));
+    }
+    let mut out = vec![];
+    for ((t, row), sets) in by_row {
+        let table = &edit.tables[t];
+        let key = table.key.as_ref().ok_or("Needs the table's primary key in the result")?;
+        let mut cond = vec![];
+        for (c, name) in key {
+            match set.rows.get(row).and_then(|r| r.get(*c)).cloned().flatten() {
+                Some(v) => cond.push(format!("{} = {}", quote_ident(name), quote_literal(&Some(v)))),
+                None => return Err(format!("Row {} has no {name}", row + 1)),
+            }
+        }
+        let assigns: Vec<String> = sets
+            .iter()
+            .map(|(n, v)| format!("{} = {}", quote_ident(n), quote_literal(v)))
+            .collect();
+        out.push(format!(
+            "update {}.{} set {} where {}",
+            quote_ident(&table.schema),
+            quote_ident(&table.name),
+            assigns.join(", "),
+            cond.join(" and ")
+        ));
+    }
+    Ok(out)
+}
+
+/// Ask Postgres where each column of `sql`'s result comes from.
+fn editable(client: &mut Client, sql: &str) -> Option<Editable> {
+    let stmt = client
+        .prepare(&format!("select * from (\n{sql}\n) as _wezzy_page"))
+        .ok()?;
+    let origins: Vec<Option<(u32, i16)>> = stmt
+        .columns()
+        .iter()
+        .map(|c| match (c.table_oid(), c.column_id()) {
+            (Some(t), Some(a)) if t != 0 && a > 0 => Some((t, a)),
+            _ => None,
+        })
+        .collect();
+    let mut oids: Vec<u32> = origins.iter().flatten().map(|(t, _)| *t).collect();
+    oids.sort();
+    oids.dedup();
+    if oids.is_empty() {
+        return None;
+    }
+    let rows = client
+        .query(
+            "select c.oid, n.nspname::text, c.relname::text, a.attnum, a.attname::text,
+                    coalesce(a.attnum = any(i.indkey), false)
+             from pg_class c
+             join pg_namespace n on n.oid = c.relnamespace
+             join pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
+             left join pg_index i on i.indrelid = c.oid and i.indisprimary
+             where c.oid = any($1) and c.relkind in ('r', 'p')",
+            &[&oids],
+        )
+        .ok()?;
+    // oid → (schema, name, attnum → (name, is_pk))
+    let mut info: BTreeMap<u32, (String, String, BTreeMap<i16, (String, bool)>)> = BTreeMap::new();
+    for r in rows {
+        let oid: u32 = r.get(0);
+        let e = info.entry(oid).or_insert_with(|| (r.get(1), r.get(2), BTreeMap::new()));
+        e.2.insert(r.get(3), (r.get(4), r.get(5)));
+    }
+    let mut ed = Editable::default();
+    let mut table_idx: BTreeMap<u32, usize> = BTreeMap::new();
+    for (oid, (schema, name, attrs)) in &info {
+        let pk: Vec<i16> = attrs.iter().filter(|(_, (_, pk))| *pk).map(|(a, _)| *a).collect();
+        let key: Option<Vec<(usize, String)>> = (!pk.is_empty())
+            .then(|| {
+                pk.iter()
+                    .map(|a| {
+                        let c = origins.iter().position(|o| *o == Some((*oid, *a)))?;
+                        Some((c, attrs[a].0.clone()))
+                    })
+                    .collect()
+            })
+            .flatten();
+        table_idx.insert(*oid, ed.tables.len());
+        ed.tables.push(EditTable {
+            schema: schema.clone(),
+            name: name.clone(),
+            key,
+        });
+    }
+    ed.columns = origins
+        .iter()
+        .map(|o| {
+            let (oid, a) = (*o)?;
+            let t = *table_idx.get(&oid)?;
+            Some((t, info[&oid].2.get(&a)?.0.clone()))
+        })
+        .collect();
+    Some(ed)
 }
 
 /// Rows per page.
@@ -82,6 +236,8 @@ enum Job {
     Query(String),
     /// another page of the last result, from this row
     Page(usize),
+    /// run these updates in one transaction, then reload the page
+    Save(Vec<String>),
 }
 
 pub struct Db {
@@ -143,6 +299,10 @@ impl Db {
 
     pub fn page(&self, offset: usize) {
         self.tx.send(Job::Page(offset)).ok();
+    }
+
+    pub fn save(&self, updates: Vec<String>) {
+        self.tx.send(Job::Save(updates)).ok();
     }
 
     pub fn cancel(&self) {
@@ -209,6 +369,10 @@ fn worker(url: String, verify: bool, shared: Arc<Mutex<Shared>>, rx: mpsc::Recei
                             Outcome::Rows(set) => (set.total > PAGE, set.rows.len()),
                             _ => (false, 0),
                         };
+                        let edit = matches!(outcome, Outcome::Rows(_))
+                            .then(|| editable(&mut client, &inner))
+                            .flatten()
+                            .map(Arc::new);
                         publish(Run {
                             outcome,
                             elapsed: started.elapsed(),
@@ -218,6 +382,7 @@ fn worker(url: String, verify: bool, shared: Arc<Mutex<Shared>>, rx: mpsc::Recei
                                 has_more,
                                 total: (!has_more).then_some(shown as u64),
                             }),
+                            edit,
                         });
                         if has_more {
                             let total = count(&mut client, &inner);
@@ -240,6 +405,7 @@ fn worker(url: String, verify: bool, shared: Arc<Mutex<Shared>>, rx: mpsc::Recei
                     outcome,
                     elapsed: started.elapsed(),
                     page: None,
+                    edit: None,
                 });
                 if schema_changed {
                     if let Ok(schema) = load_schema(&mut client) {
@@ -248,32 +414,77 @@ fn worker(url: String, verify: bool, shared: Arc<Mutex<Shared>>, rx: mpsc::Recei
                 }
                 send_event(AppEvent::Redraw);
             }
-            Job::Page(offset) => {
-                let page = shared
-                    .lock()
-                    .last
-                    .as_ref()
-                    .and_then(|r| r.page.as_ref())
-                    .map(|p| (p.sql.clone(), p.total));
-                let Some((sql, total)) = page else {
-                    shared.lock().running = None;
-                    continue;
-                };
-                let outcome = fetch_page(&mut client, &sql, offset);
-                let has_more = matches!(&outcome, Outcome::Rows(set) if set.total > PAGE);
-                publish(Run {
-                    outcome,
-                    elapsed: started.elapsed(),
-                    page: Some(Page {
-                        sql,
-                        offset,
-                        has_more,
-                        total,
-                    }),
-                });
+            Job::Page(offset) => reload(&mut client, &shared, offset, started, &publish),
+            Job::Save(updates) => {
+                let saved = (|| -> Result<(), String> {
+                    let mut tx = client.transaction().map_err(|e| error_text(&e))?;
+                    for u in &updates {
+                        let n = tx.execute(u.as_str(), &[]).map_err(|e| error_text(&e))?;
+                        if n == 0 {
+                            return Err("A row you changed is gone; nothing was saved".into());
+                        }
+                    }
+                    tx.commit().map_err(|e| error_text(&e))
+                })();
+                match saved {
+                    Ok(()) => {
+                        let n = updates.len();
+                        send_event(AppEvent::Flash(format!(
+                            "Saved {n} row{}",
+                            if n == 1 { "" } else { "s" }
+                        )));
+                        let offset = shared
+                            .lock()
+                            .last
+                            .as_ref()
+                            .and_then(|r| r.page.as_ref())
+                            .map_or(0, |p| p.offset);
+                        reload(&mut client, &shared, offset, started, &publish);
+                    }
+                    Err(e) => {
+                        shared.lock().running = None;
+                        send_event(AppEvent::Flash(e));
+                    }
+                }
             }
         }
     }
+}
+
+/// Fetch the last result's query again from row `offset`, keeping its count
+/// and what's editable.
+fn reload(
+    client: &mut Client,
+    shared: &Mutex<Shared>,
+    offset: usize,
+    started: Instant,
+    publish: &dyn Fn(Run),
+) {
+    let page = {
+        let s = shared.lock();
+        s.last.as_ref().and_then(|r| {
+            let p = r.page.as_ref()?;
+            Some((p.sql.clone(), p.total, r.edit.clone()))
+        })
+    };
+    let Some((sql, total, edit)) = page else {
+        shared.lock().running = None;
+        send_event(AppEvent::Redraw);
+        return;
+    };
+    let outcome = fetch_page(client, &sql, offset);
+    let has_more = matches!(&outcome, Outcome::Rows(set) if set.total > PAGE);
+    publish(Run {
+        outcome,
+        elapsed: started.elapsed(),
+        page: Some(Page {
+            sql,
+            offset,
+            has_more,
+            total,
+        }),
+        edit,
+    });
 }
 
 /// The query, ready to wrap in `select * from (…)`, if it only reads and is
@@ -390,4 +601,31 @@ fn load_schema(client: &mut Client) -> Result<Schema, postgres::Error> {
         tables,
         search_path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn updates_group_by_row_and_quote() {
+        let edit = Editable {
+            columns: vec![Some((0, "id".into())), Some((0, "firstName".into())), Some((0, "note".into()))],
+            tables: vec![EditTable {
+                schema: "neverwait".into(),
+                name: "online_profiles".into(),
+                key: Some(vec![(0, "id".into())]),
+            }],
+        };
+        let set = ResultSet {
+            columns: vec!["id".into(), "firstName".into(), "note".into()],
+            rows: vec![vec![Some("3".into()), Some("a".into()), None]],
+            total: 1,
+        };
+        let changes: BTreeMap<_, _> = [((0, 1), Some("it's".to_string())), ((0, 2), None)].into_iter().collect();
+        assert_eq!(
+            update_sql(&edit, &set, &changes).unwrap(),
+            vec![r#"update "neverwait"."online_profiles" set "firstName" = 'it''s', "note" = NULL where "id" = '3'"#]
+        );
+    }
 }

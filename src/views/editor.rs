@@ -38,9 +38,12 @@ pub struct Editor {
     scroll_col: usize,
     /// bumped on every change, so owners can tell when to save
     pub version: u64,
+    /// text inset from the left and top
+    pub inset: (f32, f32),
+    /// rows drawn with a faint band behind them (the statement ⌘↵ runs)
+    pub band: Option<(usize, usize)>,
 }
 
-const INSET: f32 = 10.;
 
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -59,6 +62,8 @@ impl Editor {
             scroll_row: 0,
             scroll_col: 0,
             version: 0,
+            inset: (10., 5.),
+            band: None,
         };
         e.lines = split_lines(text);
         e
@@ -321,14 +326,27 @@ impl Editor {
     /// Put the cursor where the mouse went down (`pos` relative to the
     /// editor); `extend` (shift) selects up to it.
     pub fn click(&mut self, m: &Metrics, pos: Point<Pixels>, extend: bool) {
-        let col = ((f32::from(pos.x) - INSET) / f32::from(m.cell_w)).round().max(0.) as usize;
-        let row = ((f32::from(pos.y) - INSET / 2.) / f32::from(m.line_h)).floor().max(0.) as usize;
+        let (ix, iy) = self.inset;
+        let col = ((f32::from(pos.x) - ix) / f32::from(m.cell_w)).round().max(0.) as usize;
+        let row = ((f32::from(pos.y) - iy) / f32::from(m.line_h)).floor().max(0.) as usize;
         let p = self.clamp(Pos {
             row: row + self.scroll_row,
             col: col + self.scroll_col,
         });
         self.goal = None;
         self.move_to(p, extend);
+    }
+
+    /// The position of char offset `at` in `text()`.
+    pub fn pos_of(&self, mut at: usize) -> Pos {
+        for (row, l) in self.lines.iter().enumerate() {
+            if at <= l.len() {
+                return Pos { row, col: at };
+            }
+            at -= l.len() + 1;
+        }
+        let row = self.lines.len() - 1;
+        Pos { row, col: self.lines[row].len() }
     }
 
     pub fn select_all(&mut self) {
@@ -433,8 +451,8 @@ impl Editor {
     /// Where the cursor is drawn, relative to the editor's top-left.
     pub fn cursor_origin(&self, m: &Metrics) -> (Pixels, Pixels) {
         (
-            px(INSET) + m.cell_w * (self.cur.col.saturating_sub(self.scroll_col)) as f32,
-            px(INSET / 2.) + m.line_h * (self.cur.row.saturating_sub(self.scroll_row)) as f32,
+            px(self.inset.0) + m.cell_w * (self.cur.col.saturating_sub(self.scroll_col)) as f32,
+            px(self.inset.1) + m.line_h * (self.cur.row.saturating_sub(self.scroll_row)) as f32,
         )
     }
 
@@ -447,17 +465,30 @@ impl Editor {
         height: Pixels,
         color: impl Fn(usize, &[char]) -> Vec<(std::ops::Range<usize>, Hsla)>,
     ) -> AnyElement {
-        let rows = (f32::from(height - px(INSET)) / f32::from(m.line_h)).floor() as usize;
-        let cols = (f32::from(width - px(INSET * 2.)) / f32::from(m.cell_w)).floor() as usize;
+        let (ix, iy) = self.inset;
+        let rows = (f32::from(height - px(iy * 2.)) / f32::from(m.line_h)).floor() as usize;
+        let cols = (f32::from(width - px(ix * 2.)) / f32::from(m.cell_w)).floor() as usize;
         self.follow(rows, cols);
         let sel = self.selection();
         let sel_fill = crate::ui::with_alpha(t.accent, if focused { 0.28 } else { 0.14 });
-        let x = |col: usize| px(INSET) + m.cell_w * col.saturating_sub(self.scroll_col) as f32;
+        let x = |col: usize| px(ix) + m.cell_w * col.saturating_sub(self.scroll_col) as f32;
         let mut layer = vec![];
         let mut text = vec![];
         let end = (self.scroll_row + rows + 1).min(self.lines.len());
         for row in self.scroll_row..end {
-            let y = px(INSET / 2.) + m.line_h * (row - self.scroll_row) as f32;
+            let y = px(iy) + m.line_h * (row - self.scroll_row) as f32;
+            if self.band.is_some_and(|(a, b)| row >= a && row <= b) {
+                layer.push(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(y)
+                        .h(m.line_h)
+                        .bg(crate::ui::with_alpha(t.fg, 0.045))
+                        .into_any_element(),
+                );
+            }
             let line = &self.lines[row];
             if let Some((a, b)) = sel {
                 if row >= a.row && row <= b.row {
@@ -481,7 +512,7 @@ impl Editor {
             let spans = color(row, line);
             let mut row_el = div()
                 .absolute()
-                .left(px(INSET))
+                .left(px(ix))
                 .top(y)
                 .h(m.line_h)
                 .flex()

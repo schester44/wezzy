@@ -19,7 +19,7 @@ seconds.
 | Leader s / Leader v | Split down / right |
 | Leader ⇧S / Leader ⇧V | Split up / left |
 | Leader ↵ or ⌘↵ | Zoom the pane |
-| Leader r | Resize mode: `hjkl` resize, `=` makes the panes in the tab equal size, esc to finish |
+| Leader r | Resize mode: `hjkl` resize, `=` makes the panes in the tab equal size and leaves resize mode, esc to finish |
 | Leader m | Swap the pane with another |
 | Leader [ / Leader ] | Previous / next tab |
 | ⌘1–9 | Go to tab |

@@ -114,7 +114,7 @@ impl Render for TermApp {
                 this.open_palette(crate::palette::Scope::All, cx)
             }))
             .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
-                if this.drag_split(ev, cx) || this.drag_selection(ev, cx) {
+                if this.drag_view(ev, cx) || this.drag_split(ev, cx) || this.drag_selection(ev, cx) {
                     return;
                 }
                 let Some(panel) = this.panel_drag else {
@@ -130,7 +130,10 @@ impl Render for TermApp {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                cx.listener(|this, ev: &gpui::MouseUpEvent, _, cx| {
+                    if this.end_view_drag(ev.position) {
+                        cx.notify();
+                    }
                     if this.selection.as_ref().is_some_and(|s| s.dragging) {
                         this.end_selection();
                         cx.notify();
@@ -182,6 +185,7 @@ impl Render for TermApp {
             .children(self.modal(&t, cx))
             .children(self.git_help_modal(&t, cx))
             .children(self.shortcuts_modal(&t, cx))
+            .children(self.view_shortcuts_modal(&t, cx))
     }
 }
 
@@ -1066,7 +1070,7 @@ impl TermApp {
                 72.,
                 card(460.).child(self.settings_view(state, t, cx)).into_any_element(),
             ),
-            Overlay::Shortcuts => return None,
+            Overlay::Shortcuts | Overlay::ViewShortcuts(_) => return None,
         };
 
         Some(

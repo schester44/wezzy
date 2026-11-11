@@ -44,14 +44,24 @@ pub trait PaneView {
     fn claims(&self, _ks: &Keystroke) -> bool {
         false
     }
-    /// A click at `pos`, relative to the view's top-left.
-    fn mouse_down(&mut self, _pos: Point<Pixels>, _mods: &Modifiers, _clicks: usize, _cx: &mut App) {}
+    /// A click at `pos`, relative to the view's top-left. `true` to get the
+    /// drag that follows (`mouse_drag`, then `mouse_up`).
+    fn mouse_down(&mut self, _pos: Point<Pixels>, _mods: &Modifiers, _clicks: usize, _cx: &mut App) -> bool {
+        false
+    }
+    fn mouse_drag(&mut self, _pos: Point<Pixels>) {}
+    fn mouse_up(&mut self, _pos: Point<Pixels>) {}
     /// The wheel over the view: `lines` up (positive) or down.
     fn scroll(&mut self, _pos: Point<Pixels>, _lines: isize) {}
     /// ⌘V
     fn paste(&mut self, _text: &str) {}
     /// ⌘C: the text to copy, if anything is selected.
     fn copy(&mut self) -> Option<String> {
+        None
+    }
+    /// The view's shortcut sheet: a title and columns of groups. A view
+    /// opens it by sending `AppEvent::ViewShortcuts`.
+    fn shortcuts(&self) -> Option<(&'static str, Vec<Vec<crate::shortcuts::Group>>)> {
         None
     }
 }
@@ -134,6 +144,10 @@ impl Views {
                 None => log::warn!("pane {id}: unknown view {s:?}"),
             }
         }
+    }
+
+    pub fn shortcuts(&self, pane_id: PaneId) -> Option<(&'static str, Vec<Vec<crate::shortcuts::Group>>)> {
+        self.views.get(&pane_id)?.1.shortcuts()
     }
 
     pub fn get_mut(&mut self, pane_id: PaneId) -> Option<&mut Box<dyn PaneView>> {

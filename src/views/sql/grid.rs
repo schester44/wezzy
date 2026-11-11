@@ -1,14 +1,17 @@
 //! The result grid: a page of rows with a cursor cell, a row selection, and
 //! copying. Only the rows that fit are drawn.
 
-use super::db::ResultSet;
+use super::db::{Editable, ResultSet};
+use crate::views::editor::Editor;
 use crate::render::Metrics;
 use crate::ui::{with_alpha, Theme};
 use gpui::{div, prelude::*, px, AnyElement, FontWeight, Hsla, Keystroke, Modifiers, Pixels, Point, Size};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const CELL_PAD: f32 = 8.;
 const MAX_COL_CHARS: usize = 48;
+/// how far from a column's edge a press grabs it
+const GRAB: f32 = 4.;
 
 /// What the view should do after a key or click.
 pub enum Action {
@@ -18,11 +21,23 @@ pub enum Action {
     Page(isize),
     /// back to the editor
     Editor,
+    /// toast this
+    Flash(String),
+    /// write the pending changes
+    Save,
+}
+
+/// A cell being typed into.
+struct CellEdit {
+    row: usize,
+    col: usize,
+    editor: Editor,
 }
 
 #[derive(Default)]
 struct Layout {
     row_h: f32,
+    cell_w: f32,
     /// (column, left, right), relative to the grid's left edge
     cols: Vec<(usize, f32, f32)>,
 }
@@ -43,6 +58,17 @@ pub struct Grid {
     /// `V`: the row a range selection started from, and what was selected before
     anchor: Option<(usize, BTreeSet<usize>)>,
     layout: Layout,
+    /// changed cells, (row, column) → new value (None = NULL), not saved yet
+    pub pending: BTreeMap<(usize, usize), Option<String>>,
+    /// each change, with what the cell's pending value was before it, for `u`
+    history: Vec<((usize, usize), Option<Option<String>>)>,
+    edit: Option<CellEdit>,
+    /// widths that fit each column's content, before any resizing
+    fitted: Vec<usize>,
+    /// widths you dragged, by column name; kept across queries
+    manual: HashMap<String, usize>,
+    /// a column edge being dragged: (column, where the drag started, width then)
+    resizing: Option<(usize, f32, usize)>,
 }
 
 fn tsv_value(v: &Option<String>) -> String {
@@ -63,7 +89,12 @@ impl Grid {
         if self.seq == seq {
             return;
         }
-        let widths = column_widths(set);
+        let fitted = column_widths(set);
+        let widths = fitted
+            .iter()
+            .zip(&set.columns)
+            .map(|(w, name)| self.manual.get(name).copied().unwrap_or(*w))
+            .collect::<Vec<_>>();
         let same_shape = widths.len() == self.widths.len();
         *self = Grid {
             seq,
@@ -71,6 +102,8 @@ impl Grid {
             left: if same_shape { self.left } else { 0 },
             page_rows: self.page_rows,
             widths,
+            fitted,
+            manual: std::mem::take(&mut self.manual),
             ..Default::default()
         };
     }
@@ -103,7 +136,7 @@ impl Grid {
             return None;
         }
         if !with_header && self.selected.is_empty() {
-            let v = set.rows.get(self.row)?.get(self.col)?;
+            let v = self.value(set, self.row, self.col)?;
             return Some(Action::Copy(v.clone().unwrap_or_default(), "Copied".into()));
         }
         let rows = self.target_rows();
@@ -112,11 +145,163 @@ impl Grid {
             lines.push(set.columns.join("\t"));
         }
         for r in &rows {
-            if let Some(row) = set.rows.get(*r) {
-                lines.push(row.iter().map(tsv_value).collect::<Vec<_>>().join("\t"));
+            if set.rows.get(*r).is_some() {
+                let cells: Vec<String> = (0..set.columns.len())
+                    .map(|c| self.value(set, *r, c).map(tsv_value).unwrap_or_default())
+                    .collect();
+                lines.push(cells.join("\t"));
             }
         }
         Some(Action::Copy(lines.join("\n"), format!("Copied {}", plural(rows.len(), "row"))))
+    }
+
+    /// The column whose right edge is under `pos` in the header.
+    fn edge_at(&self, pos: Point<Pixels>) -> Option<usize> {
+        let l = &self.layout;
+        if l.row_h <= 0. || f32::from(pos.y) >= l.row_h {
+            return None;
+        }
+        let x = f32::from(pos.x);
+        l.cols.iter().find(|(_, _, x1)| (x - x1).abs() <= GRAB).map(|(c, _, _)| *c)
+    }
+
+    /// A press on a header edge starts resizing that column; a double-click
+    /// fits it to its content. `true` if the press was on an edge.
+    pub fn header_down(&mut self, pos: Point<Pixels>, clicks: usize, set: &ResultSet) -> bool {
+        let Some(c) = self.edge_at(pos) else { return false };
+        if clicks == 2 {
+            self.widths[c] = self.fitted[c];
+            self.manual.remove(&set.columns[c]);
+            self.resizing = None;
+        } else {
+            self.resizing = Some((c, f32::from(pos.x), self.widths[c]));
+        }
+        true
+    }
+
+    pub fn drag(&mut self, pos: Point<Pixels>, set: &ResultSet) {
+        let Some((c, x0, w0)) = self.resizing else { return };
+        let cell = self.layout.cell_w.max(1.);
+        let w = (w0 as f32 + (f32::from(pos.x) - x0) / cell).round().clamp(3., 400.) as usize;
+        if let Some(slot) = self.widths.get_mut(c) {
+            *slot = w;
+            self.manual.insert(set.columns[c].clone(), w);
+        }
+    }
+
+    pub fn end_drag(&mut self) {
+        self.resizing = None;
+    }
+
+    pub fn editing(&self) -> bool {
+        self.edit.is_some()
+    }
+
+    /// The value shown for a cell: its pending change, or what came back.
+    fn value<'a>(&'a self, set: &'a ResultSet, row: usize, col: usize) -> Option<&'a Option<String>> {
+        self.pending.get(&(row, col)).or_else(|| set.rows.get(row)?.get(col))
+    }
+
+    /// Start typing into the cursor's cell.
+    fn begin_edit(&mut self, set: &ResultSet, edit: Option<&Editable>) -> Option<Action> {
+        let Some(edit) = edit else {
+            return Some(Action::Flash("Only results of a select can be edited".into()));
+        };
+        if let Err(why) = edit.check(self.col) {
+            return Some(Action::Flash(why.into()));
+        }
+        let text = self.value(set, self.row, self.col)?.clone().unwrap_or_default();
+        let mut editor = Editor::new(&text);
+        editor.inset = (CELL_PAD, 3.);
+        editor.key(&Keystroke::parse("cmd-down").unwrap());
+        self.edit = Some(CellEdit {
+            row: self.row,
+            col: self.col,
+            editor,
+        });
+        None
+    }
+
+    fn set_cell(&mut self, set: &ResultSet, row: usize, col: usize, value: Option<String>) {
+        let before = self.pending.get(&(row, col)).cloned();
+        let original = set.rows.get(row).and_then(|r| r.get(col));
+        let unchanged = match &before {
+            Some(v) => *v == value,
+            None => original == Some(&value),
+        };
+        if unchanged {
+            return;
+        }
+        self.history.push(((row, col), before));
+        if original == Some(&value) {
+            self.pending.remove(&(row, col));
+        } else {
+            self.pending.insert((row, col), value);
+        }
+    }
+
+    fn commit_edit(&mut self, set: &ResultSet) {
+        if let Some(e) = self.edit.take() {
+            self.set_cell(set, e.row, e.col, Some(e.editor.text()));
+        }
+    }
+
+    /// Keys while a cell is being typed into: ↵ keeps it, esc drops it, tab
+    /// keeps it and moves on.
+    fn edit_key(&mut self, ks: &Keystroke, set: &ResultSet, edit: Option<&Editable>) -> Option<Action> {
+        let e = self.edit.as_mut()?;
+        match ks.key.as_str() {
+            "enter" if !ks.modifiers.platform => self.commit_edit(set),
+            "escape" => self.edit = None,
+            "tab" => {
+                self.commit_edit(set);
+                let next = if ks.modifiers.shift {
+                    self.col.checked_sub(1)
+                } else {
+                    (self.col + 1 < set.columns.len()).then_some(self.col + 1)
+                };
+                if let Some(c) = next {
+                    self.col = c;
+                    if edit.is_some_and(|ed| ed.check(c).is_ok()) {
+                        return self.begin_edit(set, edit);
+                    }
+                }
+            }
+            _ => {
+                // one line: no newlines from ↵ variants
+                if ks.key != "enter" {
+                    e.editor.key(ks);
+                }
+            }
+        }
+        None
+    }
+
+    /// `u`: take back the last change, wherever it was, and go to its cell.
+    fn undo(&mut self) {
+        let Some(((row, col), before)) = self.history.pop() else { return };
+        match before {
+            Some(v) => self.pending.insert((row, col), v),
+            None => self.pending.remove(&(row, col)),
+        };
+        self.row = row;
+        self.col = col;
+    }
+
+    /// Discard: every change, and the history of them.
+    pub fn discard(&mut self) {
+        self.pending.clear();
+        self.history.clear();
+    }
+
+    pub fn paste(&mut self, text: &str) -> bool {
+        match self.edit.as_mut() {
+            Some(e) => {
+                e.editor.insert(text.lines().next().unwrap_or(""));
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn select_all(&mut self, set: &ResultSet) {
@@ -125,7 +310,10 @@ impl Grid {
     }
 
     /// `None` if the key isn't a grid key.
-    pub fn key(&mut self, ks: &Keystroke, set: &ResultSet) -> Option<Option<Action>> {
+    pub fn key(&mut self, ks: &Keystroke, set: &ResultSet, edit: Option<&Editable>) -> Option<Option<Action>> {
+        if self.edit.is_some() {
+            return Some(self.edit_key(ks, set, edit));
+        }
         let rows = set.rows.len();
         let cols = set.columns.len();
         let half = (self.page_rows / 2).max(1);
@@ -160,6 +348,20 @@ impl Grid {
                 }
             }
             ("y", false) => return Some(self.copy(set, m.shift)),
+            ("e", false) if !m.shift => return Some(self.begin_edit(set, edit)),
+            ("n", false) if m.shift => {
+                if let Some(Err(why)) = edit.map(|e| e.check(self.col)) {
+                    return Some(Some(Action::Flash(why.into())));
+                }
+                if edit.is_some() {
+                    self.set_cell(set, self.row, self.col, None);
+                }
+            }
+            ("u", false) if m.shift => {
+                self.pending.clear();
+                self.history.clear();
+            }
+            ("u", false) => self.undo(),
             ("[", false) => return Some(Some(Action::Page(-1))),
             ("]", false) => return Some(Some(Action::Page(1))),
             ("escape", false) => {
@@ -178,7 +380,26 @@ impl Grid {
     }
 
     /// A click at `pos`, relative to the grid's top-left.
-    pub fn click(&mut self, pos: Point<Pixels>, mods: &Modifiers, set: &ResultSet) {
+    pub fn click(
+        &mut self,
+        pos: Point<Pixels>,
+        mods: &Modifiers,
+        clicks: usize,
+        set: &ResultSet,
+        edit: Option<&Editable>,
+    ) -> Option<Action> {
+        // clicking elsewhere keeps what was typed
+        if self.edit.is_some() {
+            self.commit_edit(set);
+        }
+        self.click_cell(pos, mods, set);
+        if clicks == 2 && !mods.shift && !mods.platform {
+            return self.begin_edit(set, edit);
+        }
+        None
+    }
+
+    fn click_cell(&mut self, pos: Point<Pixels>, mods: &Modifiers, set: &ResultSet) {
         let l = &self.layout;
         if l.row_h <= 0. {
             return;
@@ -259,6 +480,7 @@ impl Grid {
         }
         self.layout = Layout {
             row_h: f32::from(row_h),
+            cell_w: f32::from(m.cell_w),
             cols: shown.clone(),
         };
 
@@ -289,7 +511,27 @@ impl Grid {
                 .text_color(t.fg_subtle)
                 .child(text)
         };
+        let resizing = self.resizing.map(|(c, _, _)| c);
+        let handles = shown.iter().map(|&(c, _, x1)| {
+            div()
+                .absolute()
+                .top_0()
+                .left(px(x1 - GRAB))
+                .w(px(GRAB * 2.))
+                .h(row_h)
+                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .w(px(1.))
+                        .h_full()
+                        .when(resizing == Some(c), |d| d.bg(with_alpha(t.accent, 0.6)))
+                        .when(resizing != Some(c), |d| d.bg(t.border)),
+                )
+        });
         let header = div()
+            .relative()
             .h(row_h)
             .flex()
             .border_b_1()
@@ -298,7 +540,8 @@ impl Grid {
             .child(gutter(String::new()))
             .children(shown.iter().map(|&(c, _, _)| {
                 cell(clip(&set.columns[c], self.widths[c]), self.widths[c], t.fg_muted)
-            }));
+            }))
+            .children(handles);
         let end = (self.top + page).min(set.rows.len());
         let rows = (self.top..end).map(|r| {
             let cursor = r == self.row;
@@ -320,22 +563,54 @@ impl Grid {
                 })
                 .child(gutter((first_row + r + 1).to_string()))
                 .children(shown.iter().map(|&(c, _, _)| {
-                    let (text, color) = match set.rows[r].get(c).cloned().flatten() {
+                    let changed = self.pending.contains_key(&(r, c));
+                    let (text, color) = match self.value(set, r, c).cloned().flatten() {
                         Some(v) => (clip(&v, self.widths[c]), t.fg),
                         None => ("NULL".to_string(), t.fg_subtle),
                     };
-                    cell(text, self.widths[c], color).when(cursor && c == self.col, |d| {
-                        d.bg(with_alpha(t.fg, if focused { 0.12 } else { 0.06 }))
-                    })
+                    cell(text, self.widths[c], color)
+                        .when(changed, |d| d.bg(with_alpha(t.warning, 0.16)))
+                        .when(cursor && c == self.col, |d| {
+                            d.bg(with_alpha(
+                                if changed { t.warning } else { t.fg },
+                                if focused { 0.24 } else { 0.12 },
+                            ))
+                        })
                 }))
+        }).collect::<Vec<_>>();
+        // the cell being typed into, drawn over the grid
+        let top = self.top;
+        let input = self.edit.as_mut().and_then(|e| {
+            let &(_, x0, x1) = shown.iter().find(|(c, _, _)| *c == e.col)?;
+            if e.row < top || e.row >= top + page {
+                return None;
+            }
+            let y = f32::from(row_h) * (1 + e.row - top) as f32;
+            let w = (x1 - x0).max(f32::from(m.cell_w) * 24. + CELL_PAD * 2.);
+            let w = w.min(f32::from(size.width) - x0).max(x1 - x0);
+            Some(
+                div()
+                    .absolute()
+                    .left(px(x0))
+                    .top(px(y))
+                    .w(px(w))
+                    .h(row_h)
+                    .bg(t.elevated)
+                    .border_1()
+                    .border_color(with_alpha(t.accent, 0.65))
+                    .rounded_sm()
+                    .child(e.editor.render(m, t, focused, px(w), row_h, |_, _| vec![])),
+            )
         });
         div()
+            .relative()
             .size_full()
             .overflow_hidden()
             .font_family(m.font.family.clone())
             .text_size(m.font_size)
             .child(header)
             .children(rows)
+            .children(input)
             .into_any_element()
     }
 }
@@ -406,11 +681,65 @@ mod tests {
         let mut g = Grid::default();
         g.sync(1, &s);
         let key = |k: &str| Keystroke::parse(k).unwrap();
-        g.key(&key("shift-v"), &s);
-        g.key(&key("j"), &s);
-        g.key(&key("j"), &s);
+        g.key(&key("shift-v"), &s, None);
+        g.key(&key("j"), &s, None);
+        g.key(&key("j"), &s, None);
         assert_eq!(g.selected.iter().copied().collect::<Vec<_>>(), vec![0, 1, 2]);
-        g.key(&key("k"), &s);
+        g.key(&key("k"), &s, None);
         assert_eq!(g.selected.iter().copied().collect::<Vec<_>>(), vec![0, 1]);
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::*;
+
+    #[test]
+    fn widths_survive_a_rerun_by_name() {
+        let set = ResultSet {
+            columns: vec!["id".into(), "email".into()],
+            rows: vec![vec![Some("1".into()), Some("a@x".into())]],
+            total: 1,
+        };
+        let mut g = Grid::default();
+        g.sync(1, &set);
+        g.layout.cell_w = 10.;
+        g.resizing = Some((1, 100., g.widths[1]));
+        g.drag(gpui::point(px(150.), px(5.)), &set);
+        assert_eq!(g.widths[1], 10);
+        g.sync(2, &set);
+        assert_eq!(g.widths[1], 10);
+    }
+}
+
+#[cfg(test)]
+mod undo_tests {
+    use super::*;
+
+    #[test]
+    fn u_takes_back_the_last_change_anywhere() {
+        let set = ResultSet {
+            columns: vec!["id".into(), "name".into()],
+            rows: vec![
+                vec![Some("1".into()), Some("a".into())],
+                vec![Some("2".into()), Some("b".into())],
+            ],
+            total: 2,
+        };
+        let mut g = Grid::default();
+        g.sync(1, &set);
+        g.set_cell(&set, 0, 1, Some("x".into()));
+        g.set_cell(&set, 0, 1, Some("y".into()));
+        g.set_cell(&set, 1, 1, None);
+        g.row = 0;
+        g.col = 0;
+        let u = Keystroke::parse("u").unwrap();
+        g.key(&u, &set, None);
+        assert_eq!((g.row, g.col), (1, 1));
+        assert!(!g.pending.contains_key(&(1, 1)));
+        g.key(&u, &set, None);
+        assert_eq!(g.pending.get(&(0, 1)), Some(&Some("x".into())));
+        g.key(&u, &set, None);
+        assert!(g.pending.is_empty());
     }
 }

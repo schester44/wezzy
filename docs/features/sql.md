@@ -22,7 +22,7 @@ zooms and moves between workspaces like any other pane.
 | | |
 |---|---|
 | ⌘↵ | Run the statement under the cursor, or the selection |
-| esc | Go to the result (or stop a query that's running) |
+| esc, ctrl+j | Go to the result (esc also stops a query that's running) |
 | ctrl+space | Show completions |
 | tab or ↵ | Take the completion |
 | ↑ ↓, ctrl+n ctrl+p | Move through completions |
@@ -30,7 +30,8 @@ zooms and moves between workspaces like any other pane.
 | ⌘A, ⌘X, ⌘C, ⌘V | Select all, cut, copy, paste |
 
 Statements are separated by `;`, so you can keep several queries in the editor
-and run whichever one the cursor is in.
+and run whichever one the cursor is in. When there's more than one, a faint band
+sits behind the statement ⌘↵ will run.
 
 Completions appear as you type a name:
 
@@ -58,10 +59,12 @@ Tables in your search path are completed bare (`users`), others with their schem
 | y or ⌘C | Copy the cell, or the selected rows |
 | Y | Copy the selected rows (or this row) with column names |
 | esc | Clear the selection, or go back to the editor |
-| i, ↵ | Back to the editor |
+| i, ↵, ctrl+k | Back to the editor |
 
 With the mouse: click a cell to move there, shift-click to select every row up
-to it, ⌘-click to add or remove a row. The wheel scrolls the rows; click in the
+to it, ⌘-click to add or remove a row. Drag the edge of a column's header to
+resize it, or double-click the edge to fit the column to its values. A resized
+column keeps its width when you run the query again. The wheel scrolls the rows; click in the
 editor to put the cursor there.
 
 Rows are copied tab-separated, one per line, so they paste into a spreadsheet
@@ -76,6 +79,36 @@ and several statements run together, comes back in one go, up to 10,000 rows.
 
 A statement that returns no rows shows how many it changed; an error shows
 Postgres's message.
+
+## Changing values
+
+Change a cell in place, then save every change at once.
+
+| | |
+|---|---|
+| double-click, or e | Edit the cell |
+| ↵ | Keep the new value |
+| tab, shift+tab | Keep it and edit the next or previous cell |
+| esc | Drop what you typed |
+| N | Set the cell to NULL |
+| u | Undo the last change, wherever it was |
+| U | Undo every change |
+| ⌘S | Save |
+
+Press `?` in the result to see all of these keys. Changed cells are tinted until you save. The line under the editor counts the
+changes and has Discard and Save buttons. Saving writes every change in one
+transaction, then reloads the page, so if any row can't be updated, nothing is.
+
+You can change a cell when its column comes straight from a table and the
+result includes that table's primary key, e.g. `select * from users`. Joins work
+too, as long as each table's key is in the result. Computed columns (`count(*)`,
+`a || b`) and tables without a primary key can't be changed.
+
+New values are sent as text, and Postgres turns them into the column's type, so
+type a number, date, `true` or JSON the way you'd write it in SQL, without quotes.
+
+While there are unsaved changes, running a query or turning the page asks you to
+save or discard them first.
 
 ## Setting it up
 

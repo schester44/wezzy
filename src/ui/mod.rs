@@ -4,6 +4,7 @@ mod git;
 mod help;
 mod panel;
 pub use panel::SidePanel;
+pub(crate) use help::group as shortcut_group;
 pub(crate) use view::{term_family, with_alpha};
 mod view;
 

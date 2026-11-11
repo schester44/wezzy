@@ -34,6 +34,8 @@ use wezterm_term::{StableRowIndex, TerminalSize};
 
 pub enum AppEvent {
     MuxChanged,
+    /// the active pane's view asked for its shortcut sheet
+    ViewShortcuts,
     WindowReady(WindowId),
     ConfigReloaded,
     Perform {
@@ -223,6 +225,8 @@ pub(crate) enum Overlay {
     Settings(crate::settings_ui::SettingsState),
     /// The global shortcut sheet (Leader ?); any key or click closes it.
     Shortcuts,
+    /// A view's own sheet (`?` in it), for the view in this pane.
+    ViewShortcuts(PaneId),
 }
 
 /// Where the terminal grid was last painted, for mouse hit-testing.
@@ -273,6 +277,8 @@ pub struct TermApp {
     pub(crate) panel_drag: Option<crate::ui::SidePanel>,
     /// The split divider being dragged (its `PositionedSplit::index`).
     pub(crate) split_drag: Option<usize>,
+    /// a view that took a mouse press, and where its pane's top-left is
+    pub(crate) view_drag: Option<(PaneId, Point<Pixels>)>,
     pub(crate) ws_cursor: usize,
     /// native views hosted in placeholder panes (`views.rs`)
     pub(crate) views: crate::views::Views,
@@ -411,6 +417,7 @@ impl TermApp {
             sidebar_width: 248.,
             panel_drag: None,
             split_drag: None,
+            view_drag: None,
             ws_cursor: 0,
             views: Default::default(),
             scroll_accum: 0.0,
@@ -514,6 +521,11 @@ impl TermApp {
             AppEvent::Clipboard(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
             AppEvent::Flash(msg) => self.flash(msg),
             AppEvent::Redraw => {}
+            AppEvent::ViewShortcuts => {
+                if let Some(id) = self.active_pane().map(|p| p.pane_id()) {
+                    self.overlay = Some(Overlay::ViewShortcuts(id));
+                }
+            }
             AppEvent::RebuildFinished { ok, dir } => self.rebuild_finished(ok, dir, window, cx),
             AppEvent::UserVar {
                 pane_id,
@@ -812,7 +824,7 @@ impl TermApp {
                     _ => {}
                 }
             }
-            Overlay::Shortcuts => self.overlay = None,
+            Overlay::Shortcuts | Overlay::ViewShortcuts(_) => self.overlay = None,
             Overlay::Palette(_) | Overlay::Settings(_) => {}
         }
     }
@@ -845,11 +857,14 @@ impl TermApp {
             }) {
                 tab.set_active_idx(p.index);
                 if let Some(view) = self.views.get_mut(p.pane.pane_id()) {
-                    let pos = point(
-                        ev.position.x - g.origin.x - g.cell_w * p.left as f32,
-                        ev.position.y - g.origin.y - g.line_h * p.top as f32,
+                    let origin = point(
+                        g.origin.x + g.cell_w * p.left as f32,
+                        g.origin.y + g.line_h * p.top as f32,
                     );
-                    view.mouse_down(pos, &ev.modifiers, ev.click_count, cx);
+                    let pos = point(ev.position.x - origin.x, ev.position.y - origin.y);
+                    if view.mouse_down(pos, &ev.modifiers, ev.click_count, cx) {
+                        self.view_drag = Some((p.pane.pane_id(), origin));
+                    }
                     cx.notify();
                     return;
                 }
@@ -913,6 +928,36 @@ impl TermApp {
 
     /// Mouse moved while dragging a divider: move it to the cell under the mouse,
     /// like WezTerm's drag_split. Returns false when no drag is in progress.
+    /// Feed a view the drag it asked for; `true` while one is going on.
+    pub(crate) fn drag_view(&mut self, ev: &gpui::MouseMoveEvent, cx: &mut Context<Self>) -> bool {
+        let Some((pane_id, origin)) = self.view_drag else {
+            return false;
+        };
+        let pos = point(ev.position.x - origin.x, ev.position.y - origin.y);
+        let Some(view) = self.views.get_mut(pane_id) else {
+            self.view_drag = None;
+            return false;
+        };
+        if ev.pressed_button == Some(gpui::MouseButton::Left) {
+            view.mouse_drag(pos);
+        } else {
+            view.mouse_up(pos);
+            self.view_drag = None;
+        }
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn end_view_drag(&mut self, position: Point<Pixels>) -> bool {
+        let Some((pane_id, origin)) = self.view_drag.take() else {
+            return false;
+        };
+        if let Some(view) = self.views.get_mut(pane_id) {
+            view.mouse_up(point(position.x - origin.x, position.y - origin.y));
+        }
+        true
+    }
+
     pub(crate) fn drag_split(&mut self, ev: &gpui::MouseMoveEvent, cx: &mut Context<Self>) -> bool {
         let Some(index) = self.split_drag else {
             return false;

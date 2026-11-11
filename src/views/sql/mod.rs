@@ -73,6 +73,9 @@ struct Layout {
 const STATUS_H: f32 = 26.;
 /// the ‹ › page buttons at the right of the status line
 const PAGE_BTN: f32 = 22.;
+/// the Discard / Save buttons that replace them while there are changes
+const SAVE_W: f32 = 64.;
+const DISCARD_W: f32 = 58.;
 
 impl SqlView {
     pub fn new(args: &str) -> Self {
@@ -140,7 +143,35 @@ impl SqlView {
         text.chars().skip(start).take(end - start).collect()
     }
 
+    /// With more than one statement, the rows of the one ⌘↵ would run.
+    fn active_statement_rows(&self) -> Option<(usize, usize)> {
+        if self.editor.selection().is_some() {
+            return None;
+        }
+        let text = self.editor.text();
+        let chars: Vec<char> = text.chars().collect();
+        let real = statements(&text)
+            .into_iter()
+            .filter(|(a, b)| !chars[*a..*b].iter().all(|c| c.is_whitespace() || *c == ';'))
+            .count();
+        if real < 2 {
+            return None;
+        }
+        let (mut a, mut b) = statement_at(&text, self.editor.offset(self.editor.cur));
+        while a < b && chars[a].is_whitespace() {
+            a += 1;
+        }
+        while b > a && chars[b - 1].is_whitespace() {
+            b -= 1;
+        }
+        (a < b).then(|| (self.editor.pos_of(a).row, self.editor.pos_of(b).row))
+    }
+
     fn run(&mut self) {
+        if !self.grid.pending.is_empty() {
+            unsaved();
+            return;
+        }
         self.save();
         let sql = self.statement();
         if sql.trim().is_empty() {
@@ -210,6 +241,10 @@ impl SqlView {
 
     // -- result grid ---------------------------------------------------------
 
+    fn has_result(&self) -> bool {
+        self.db.as_ref().is_some_and(|d| d.shared.lock().last.is_some())
+    }
+
     fn act(&mut self, action: Option<Action>, cx: &mut App) {
         match action {
             Some(Action::Copy(text, toast)) => {
@@ -218,11 +253,38 @@ impl SqlView {
             }
             Some(Action::Page(d)) => self.turn_page(d),
             Some(Action::Editor) => self.focus = Focus::Editor,
+            Some(Action::Flash(msg)) => crate::app::send_event(crate::app::AppEvent::Flash(msg)),
+            Some(Action::Save) => self.save_changes(),
             None => {}
         }
     }
 
+    /// Write the grid's changes back, one `update` per row, in a transaction.
+    fn save_changes(&mut self) {
+        let Some(db) = &self.db else { return };
+        if self.grid.editing() {
+            return;
+        }
+        let s = db.shared.lock();
+        if s.running.is_some() || self.grid.pending.is_empty() {
+            return;
+        }
+        let Some(run) = s.last.as_ref() else { return };
+        let (Outcome::Rows(set), Some(edit)) = (&run.outcome, run.edit.as_ref()) else { return };
+        match db::update_sql(edit, set, &self.grid.pending) {
+            Ok(updates) => {
+                drop(s);
+                db.save(updates);
+            }
+            Err(e) => crate::app::send_event(crate::app::AppEvent::Flash(e)),
+        }
+    }
+
     fn turn_page(&mut self, d: isize) {
+        if !self.grid.pending.is_empty() {
+            unsaved();
+            return;
+        }
         let Some(db) = &self.db else { return };
         let s = db.shared.lock();
         if s.running.is_some() {
@@ -241,7 +303,7 @@ impl SqlView {
     fn grid_key(&mut self, ks: &Keystroke, cx: &mut App) -> bool {
         let Some(db) = &self.db else { return false };
         let shared = db.shared.lock();
-        let Some(Outcome::Rows(set)) = shared.last.as_ref().map(|r| &r.outcome) else {
+        let Some(run) = shared.last.as_ref() else {
             drop(shared);
             if matches!(ks.key.as_str(), "escape" | "i" | "enter") {
                 self.focus = Focus::Editor;
@@ -249,11 +311,20 @@ impl SqlView {
             }
             return false;
         };
-        if ks.modifiers.platform && ks.key == "a" {
+        let Outcome::Rows(set) = &run.outcome else {
+            drop(shared);
+            if matches!(ks.key.as_str(), "escape" | "i" | "enter") {
+                self.focus = Focus::Editor;
+                return true;
+            }
+            return false;
+        };
+        let edit = run.edit.clone();
+        if ks.modifiers.platform && ks.key == "a" && !self.grid.editing() {
             self.grid.select_all(set);
             return true;
         }
-        let action = self.grid.key(ks, set);
+        let action = self.grid.key(ks, set, edit.as_deref());
         drop(shared);
         match action {
             Some(a) => {
@@ -301,6 +372,7 @@ impl SqlView {
             .unwrap_or_default();
         let mut right = div().flex().items_center().gap_2();
         let mut pages: Option<(bool, bool)> = None;
+        let changes = self.grid.pending.len();
         if let Some(db) = &self.db {
             let s = db.shared.lock();
             if let Some(started) = s.running {
@@ -351,6 +423,58 @@ impl SqlView {
                 .when(enabled, |d| d.hover(|s| s.bg(t.hover)))
                 .child(crate::ui::icon(icon, 12., if enabled { t.fg_muted } else { with_alpha(t.fg_subtle, 0.4) }))
         };
+        if changes > 0 {
+            let soft = |label: &str, w: f32, primary: bool| {
+                div()
+                    .w(px(w))
+                    .h(px(18.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(t.border)
+                    .when(primary, |d| d.bg(with_alpha(t.fg, 0.07)))
+                    .hover(|s| s.bg(with_alpha(t.fg, 0.12)))
+                    .text_color(t.fg)
+                    .child(label.to_string())
+            };
+            return div()
+                .h(px(STATUS_H))
+                .flex_none()
+                .pl(px(10.))
+                .pr(px(6.))
+                .flex()
+                .items_center()
+                .justify_between()
+                .border_t_1()
+                .border_b_1()
+                .border_color(t.border)
+                .font_family(m.font.family.clone())
+                .text_size(px(11.))
+                .text_color(t.fg_subtle)
+                .child(left)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .mr_1()
+                                .text_color(t.warning)
+                                .child(format!("{changes} change{}", if changes == 1 { "" } else { "s" })),
+                        )
+                        .child(soft("Discard", DISCARD_W, false))
+                        .child(
+                            soft("", SAVE_W, true)
+                                .child("Save")
+                                .child(div().text_color(t.fg_subtle).child("⌘S")),
+                        ),
+                )
+                .into_any_element();
+        }
         if let Some((prev, next)) = pages {
             right = right.child(
                 div()
@@ -446,6 +570,7 @@ impl PaneView for SqlView {
         let grid_h = vcx.size.height - editor_h - px(STATUS_H);
         let editor_focused = vcx.focused && self.focus == Focus::Editor;
         let grid_focused = vcx.focused && self.focus == Focus::Grid;
+        self.editor.band = self.active_statement_rows();
         let keyword = t.fg_muted;
         let comment = t.fg_subtle;
         let editor = self.editor.render(m, t, editor_focused, vcx.size.width, editor_h, |_, line| {
@@ -466,6 +591,22 @@ impl PaneView for SqlView {
 
     fn claims(&self, ks: &Keystroke) -> bool {
         let m = &ks.modifiers;
+        if m.platform && ks.key == "s" && !self.grid.pending.is_empty() {
+            return true;
+        }
+        // typing into a cell: every key but ⌘ chords is the cell's
+        if self.focus == Focus::Grid && self.grid.editing() {
+            return !m.platform || matches!(ks.key.as_str(), "a" | "z" | "x" | "left" | "right");
+        }
+        // ctrl+j / ctrl+k move between the editor and the result, like
+        // splits; past them, they move between panes as usual
+        if m.control && !m.platform && !m.alt && !m.shift {
+            return match (self.focus, ks.key.as_str()) {
+                (Focus::Editor, "j") => self.has_result(),
+                (Focus::Grid, "k") => true,
+                _ => false,
+            };
+        }
         if !m.platform || m.control {
             return false;
         }
@@ -475,33 +616,61 @@ impl PaneView for SqlView {
         }
     }
 
-    fn mouse_down(&mut self, pos: Point<Pixels>, mods: &Modifiers, _clicks: usize, cx: &mut App) {
-        let Some(l) = &self.layout else { return };
+    fn mouse_down(&mut self, pos: Point<Pixels>, mods: &Modifiers, clicks: usize, cx: &mut App) -> bool {
+        let Some(l) = &self.layout else { return false };
         let y = f32::from(pos.y);
         if y < l.editor_h {
             self.focus = Focus::Editor;
             self.menu = None;
             let m = l.metrics.clone();
             self.editor.click(&m, pos, mods.shift);
-            return;
+            return false;
         }
         if y < l.editor_h + STATUS_H {
-            // the ‹ › buttons sit at the right end
+            // the ‹ › buttons (or Discard / Save) sit at the right end
             let from_right = l.width - 6. - f32::from(pos.x);
-            if (0. ..PAGE_BTN).contains(&from_right) {
+            if !self.grid.pending.is_empty() {
+                if (0. ..SAVE_W).contains(&from_right) {
+                    self.act(Some(Action::Save), cx);
+                } else if (SAVE_W + 4. ..SAVE_W + 4. + DISCARD_W).contains(&from_right) {
+                    self.grid.discard();
+                }
+            } else if (0. ..PAGE_BTN).contains(&from_right) {
                 self.act(Some(Action::Page(1)), cx);
             } else if (PAGE_BTN..PAGE_BTN * 2.).contains(&from_right) {
                 self.act(Some(Action::Page(-1)), cx);
             }
-            return;
+            return false;
         }
+        let grid_pos = gpui::point(pos.x, pos.y - px(l.editor_h + STATUS_H));
+        let Some(db) = &self.db else { return false };
+        let s = db.shared.lock();
+        let Some(run) = s.last.as_ref() else { return false };
+        if let Outcome::Rows(set) = &run.outcome {
+            if self.grid.header_down(grid_pos, clicks, set) {
+                return true;
+            }
+            self.focus = Focus::Grid;
+            let edit = run.edit.clone();
+            let action = self.grid.click(grid_pos, mods, clicks, set, edit.as_deref());
+            drop(s);
+            self.act(action, cx);
+        }
+        false
+    }
+
+    fn mouse_drag(&mut self, pos: Point<Pixels>) {
+        let Some(l) = &self.layout else { return };
         let grid_pos = gpui::point(pos.x, pos.y - px(l.editor_h + STATUS_H));
         let Some(db) = &self.db else { return };
         let s = db.shared.lock();
         if let Some(Outcome::Rows(set)) = s.last.as_ref().map(|r| &r.outcome) {
-            self.focus = Focus::Grid;
-            self.grid.click(grid_pos, mods, set);
+            self.grid.drag(grid_pos, set);
         }
+    }
+
+    fn mouse_up(&mut self, _pos: Point<Pixels>) {
+        self.grid.end_drag();
     }
 
     fn scroll(&mut self, pos: Point<Pixels>, lines: isize) {
@@ -517,6 +686,30 @@ impl PaneView for SqlView {
     }
 
     fn key(&mut self, ks: &Keystroke, cx: &mut App) -> bool {
+        if ks.modifiers.platform && ks.key == "s" && !self.grid.pending.is_empty() {
+            self.save_changes();
+            return true;
+        }
+        if self.focus == Focus::Grid && self.grid.editing() {
+            return self.grid_key(ks, cx);
+        }
+        if self.focus == Focus::Grid && ks.key_char.as_deref() == Some("?") {
+            crate::app::send_event(crate::app::AppEvent::ViewShortcuts);
+            return true;
+        }
+        let ctrl = ks.modifiers.control && !ks.modifiers.platform;
+        match (self.focus, ks.key.as_str()) {
+            (Focus::Editor, "j") if ctrl && self.has_result() => {
+                self.menu = None;
+                self.focus = Focus::Grid;
+                return true;
+            }
+            (Focus::Grid, "k") if ctrl => {
+                self.focus = Focus::Editor;
+                return true;
+            }
+            _ => {}
+        }
         if self.focus == Focus::Grid {
             return self.grid_key(ks, cx);
         }
@@ -567,8 +760,67 @@ impl PaneView for SqlView {
         true
     }
 
+    fn shortcuts(&self) -> Option<(&'static str, Vec<Vec<crate::shortcuts::Group>>)> {
+        use crate::ui::shortcut_group as group;
+        let left = vec![
+            group(
+                "Results",
+                &[
+                    ("h j k l", "Move"),
+                    ("g G", "First / last row"),
+                    ("0 $", "First / last column"),
+                    ("⌃D ⌃U", "Half a page down / up"),
+                    ("[ ]", "Previous / next page"),
+                    ("⌃K i esc", "Back to the editor"),
+                ],
+            ),
+            group(
+                "Selecting",
+                &[
+                    ("V", "Select rows from here"),
+                    ("space", "Select / unselect row"),
+                    ("⌘A", "Select every row"),
+                    ("esc", "Clear the selection"),
+                ],
+            ),
+            group(
+                "Copying",
+                &[
+                    ("y", "Copy cell, or selected rows"),
+                    ("Y", "Copy rows with column names"),
+                ],
+            ),
+        ];
+        let right = vec![
+            group(
+                "Changing values",
+                &[
+                    ("e", "Edit cell (or double-click)"),
+                    ("enter", "Keep the new value"),
+                    ("tab", "Keep it, edit the next cell"),
+                    ("esc", "Drop what you typed"),
+                    ("N", "Set to NULL"),
+                    ("u", "Undo the last change"),
+                    ("U", "Undo every change"),
+                    ("⌘S", "Save changes"),
+                ],
+            ),
+            group(
+                "Editor",
+                &[
+                    ("⌘↵", "Run statement or selection"),
+                    ("⌃J esc", "To the results"),
+                    ("⌃space", "Completions"),
+                ],
+            ),
+        ];
+        Some(("SQL shortcuts", vec![left, right]))
+    }
+
     fn paste(&mut self, text: &str) {
-        if self.focus == Focus::Editor {
+        if self.focus == Focus::Grid {
+            self.grid.paste(text);
+        } else {
             self.menu = None;
             self.editor.insert(text);
         }
@@ -647,6 +899,24 @@ fn highlight(line: &[char], keyword: Hsla, comment: Hsla) -> Vec<(std::ops::Rang
 /// before it when nothing follows.
 fn statement_at(text: &str, at: usize) -> (usize, usize) {
     let chars: Vec<char> = text.chars().collect();
+    let parts = statements(text);
+    let blank = |a: usize, b: usize| chars[a..b].iter().all(|c| c.is_whitespace() || *c == ';');
+    // first match: a cursor right after a `;` belongs to that statement
+    for (i, &(a, b)) in parts.iter().enumerate() {
+        if at >= a && at <= b {
+            if blank(a, b) && i > 0 {
+                return parts[i - 1];
+            }
+            return (a, b);
+        }
+    }
+    (0, chars.len())
+}
+
+/// Char ranges of the `;`-separated statements, ignoring `;` inside quotes
+/// and comments. Each range ends after its `;`.
+fn statements(text: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
     let mut bounds = vec![0];
     let mut i = 0;
     let mut quote: Option<char> = None;
@@ -668,17 +938,8 @@ fn statement_at(text: &str, at: usize) -> (usize, usize) {
         i += 1;
     }
     bounds.push(chars.len());
-    let blank = |a: usize, b: usize| chars[a..b].iter().all(|c| c.is_whitespace() || *c == ';');
-    for w in (0..bounds.len() - 1).rev() {
-        let (a, b) = (bounds[w], bounds[w + 1]);
-        if at >= a && at <= b {
-            if blank(a, b) && w > 0 {
-                return (bounds[w - 1], a);
-            }
-            return (a, b);
-        }
-    }
-    (0, chars.len())
+    bounds.dedup();
+    bounds.windows(2).map(|w| (w[0], w[1])).collect()
 }
 
 #[cfg(test)]
@@ -699,8 +960,26 @@ mod tests {
     }
 
     #[test]
+    fn select_then_update() {
+        let t = "select * from neverwait.online_profiles;\n\nupdate neverwait.online_profiles set \"firstName\" = 'hello' where id = 3;";
+        let on_update = t.find("update").unwrap() + 3;
+        assert!(at(t, on_update).starts_with("update"));
+        assert!(at(t, 5).starts_with("select"));
+        // the end of the select line still runs the select
+        assert!(at(t, t.find(';').unwrap()).starts_with("select"));
+        assert!(at(t, t.find(';').unwrap() + 1).starts_with("select"));
+    }
+
+    #[test]
     fn cursor_after_last_semicolon() {
         let t = "select 1;\n";
         assert_eq!(at(t, t.len()), "select 1;");
     }
+}
+
+/// Pages and reruns would drop changes nobody saved.
+fn unsaved() {
+    crate::app::send_event(crate::app::AppEvent::Flash(
+        "Save (⌘S) or discard (U) your changes first".into(),
+    ));
 }
