@@ -1,0 +1,621 @@
+//! Command palette: one fuzzy list over everything you can jump to or run.
+//!
+//! Each `Kind` is fed by a provider below. New surfaces (browser, markdown,
+//! visualizers...) add a `Kind` + a provider and get search, ranking, keyboard
+//! nav and rendering for free.
+
+use crate::agents;
+use crate::app::{Overlay, TermApp};
+use crate::commands::AppCommand;
+use config::keyassignment::{
+    KeyAssignment, PaneDirection, SpawnCommand, SpawnTabDomain, SplitSize,
+};
+use gpui::{Context, KeyDownEvent, ScrollHandle, Window};
+use mux::pane::PaneId;
+use mux::tab::TabId;
+use mux::window::WindowId;
+use mux::Mux;
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Scope {
+    All,
+    Agents,
+    Tabs,
+    Workspaces,
+    Commands,
+    Recipes,
+}
+
+impl Scope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Scope::All => "",
+            Scope::Agents => "Agents",
+            Scope::Tabs => "Tabs",
+            Scope::Workspaces => "Workspaces",
+            Scope::Commands => "Commands",
+            Scope::Recipes => "Recipes",
+        }
+    }
+
+    fn admits(self, kind: Kind) -> bool {
+        match self {
+            Scope::All => true,
+            Scope::Agents => matches!(kind, Kind::Agent | Kind::Launch),
+            Scope::Tabs => matches!(kind, Kind::Tab | Kind::Window),
+            Scope::Workspaces => kind == Kind::Workspace,
+            Scope::Commands => matches!(kind, Kind::Command | Kind::Launch | Kind::Recipe),
+            Scope::Recipes => kind == Kind::Recipe,
+        }
+    }
+}
+
+/// Declaration order is section order when the query is empty.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Kind {
+    Agent,
+    Launch,
+    Recipe,
+    Tab,
+    Window,
+    Workspace,
+    Command,
+}
+
+impl Kind {
+    pub fn section(self) -> &'static str {
+        match self {
+            Kind::Agent => "Agents",
+            Kind::Launch => "New Agent",
+            Kind::Recipe => "Recipes",
+            Kind::Tab => "Tabs",
+            Kind::Window => "Windows",
+            Kind::Workspace => "Workspaces",
+            Kind::Command => "Commands",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum PaletteAction {
+    FocusPane(PaneId),
+    FocusTab { window: WindowId, tab: TabId },
+    FocusWindow(WindowId),
+    Workspace(String),
+    App(AppCommand),
+    Key(KeyAssignment),
+    /// Launch a harness: ↵ splits, ⌘↵ opens a tab.
+    Harness(String),
+    /// Run a recipe (by name): ↵ splits, ⌘↵ opens a tab.
+    Recipe(String),
+}
+
+#[derive(Clone)]
+pub struct Item {
+    pub kind: Kind,
+    pub title: String,
+    pub subtitle: String,
+    pub shortcut: Option<String>,
+    pub status: Option<agents::Status>,
+    pub action: PaletteAction,
+}
+
+pub struct PaletteState {
+    /// Picking an agent to send this pane's output to (Send Output to Agent).
+    pub send_from: Option<PaneId>,
+    /// Picking an agent to send the git panel's review comments to.
+    pub send_feedback: bool,
+    pub query: String,
+    pub scope: Scope,
+    pub selected: usize,
+    pub scroll: ScrollHandle,
+}
+
+impl PaletteState {
+    pub fn new(scope: Scope) -> Self {
+        Self {
+            send_from: None,
+            send_feedback: false,
+            query: String::new(),
+            scope,
+            selected: 0,
+            scroll: ScrollHandle::new(),
+        }
+    }
+}
+
+/// Built-in commands. `Key` entries reuse WezTerm actions so their shortcut
+/// labels come straight from the user's bindings.
+fn commands() -> Vec<(&'static str, PaletteAction)> {
+    use KeyAssignment::*;
+    use PaletteAction::{App, Key};
+    let split = |direction| {
+        Key(SplitPane(config::keyassignment::SplitPane {
+            direction,
+            size: SplitSize::Percent(50),
+            command: SpawnCommand {
+                domain: SpawnTabDomain::CurrentPaneDomain,
+                ..Default::default()
+            },
+            top_level: false,
+        }))
+    };
+    vec![
+        ("New Tab", Key(SpawnTab(SpawnTabDomain::CurrentPaneDomain))),
+        ("New Workspace…", App(AppCommand::NewWorkspace)),
+        ("Split Right", split(PaneDirection::Right)),
+        ("Split Down", split(PaneDirection::Down)),
+        ("Settings", App(AppCommand::OpenSettings)),
+        ("Restart Dekita", App(AppCommand::Restart)),
+        ("Rebuild & Restart", App(AppCommand::RebuildRestart)),
+        ("Open Editor", App(AppCommand::OpenEditor)),
+        ("Quick Select", Key(QuickSelect)),
+        ("Send Output to Agent", App(AppCommand::SendOutputToAgent)),
+        ("Run Recipe…", App(AppCommand::RunRecipe)),
+        ("Toggle Diff Panel", App(AppCommand::ToggleDiffPanel)),
+        ("Toggle Pane Zoom", Key(TogglePaneZoomState)),
+        ("Close Pane", Key(CloseCurrentPane { confirm: true })),
+        ("Close Tab", Key(CloseCurrentTab { confirm: true })),
+        ("Next Tab", Key(ActivateTabRelative(1))),
+        ("Previous Tab", Key(ActivateTabRelative(-1))),
+        ("Toggle Sidebar", App(AppCommand::ToggleSidebar)),
+        ("Find Agent…", App(AppCommand::FindAgent)),
+        ("Find Tab…", App(AppCommand::FindTab)),
+        ("Switch Workspace…", App(AppCommand::SwitchWorkspace)),
+        ("Install Claude Code Hooks", App(AppCommand::InstallAgentHooks)),
+        ("Reload Configuration", Key(ReloadConfiguration)),
+        ("Increase Font Size", Key(IncreaseFontSize)),
+        ("Decrease Font Size", Key(DecreaseFontSize)),
+        ("Reset Font Size", Key(ResetFontSize)),
+        ("Toggle Full Screen", Key(ToggleFullScreen)),
+        ("Quit", Key(QuitApplication)),
+    ]
+}
+
+impl TermApp {
+    pub(crate) fn open_palette(&mut self, scope: Scope, cx: &mut Context<Self>) {
+        self.ws_menu_open = false;
+        self.overlay = Some(Overlay::Palette(PaletteState::new(scope)));
+        cx.notify();
+    }
+
+    fn palette_items(&self) -> Vec<Item> {
+        let mux = Mux::get();
+        let mut items = vec![];
+
+        // agents
+        for a in agents::collect(self.active_pane().map(|p| p.pane_id())) {
+            items.push(Item {
+                kind: Kind::Agent,
+                title: format!("{} · {}", a.kind, a.project),
+                subtitle: {
+                    let pane = crate::session::remote_pane_id(a.pane_id)
+                        .map(|id| format!(" · pane {id}"))
+                        .unwrap_or_default();
+                    if a.title.is_empty() {
+                        format!("{}{pane}", a.workspace)
+                    } else {
+                        format!("{} — {}{pane}", a.title, a.workspace)
+                    }
+                },
+                shortcut: None,
+                status: Some(a.status),
+                action: PaletteAction::FocusPane(a.pane_id),
+            });
+        }
+
+        // harnesses
+        let settings = crate::settings::get();
+        let default = settings.default_harness_name();
+        for h in settings.harnesses() {
+            let is_default = h.name == default;
+            items.push(Item {
+                kind: Kind::Launch,
+                title: h.label(),
+                subtitle: String::new(),
+                shortcut: is_default
+                    .then(|| self.keys.shortcut_for(&AppCommand::NewAgent.action()))
+                    .flatten(),
+                status: None,
+                action: PaletteAction::Harness(h.name.clone()),
+            });
+        }
+
+        // recipes
+        for (i, r) in crate::recipes::all().into_iter().enumerate() {
+            let harness = r
+                .harness
+                .clone()
+                .unwrap_or_else(|| settings.default_harness_name());
+            let label = settings
+                .harness(&harness)
+                .map(|h| h.label())
+                .unwrap_or(harness);
+            let preview: String = r.prompt.lines().next().unwrap_or("").chars().take(60).collect();
+            items.push(Item {
+                kind: Kind::Recipe,
+                title: r.name.clone(),
+                subtitle: format!("{label} · {preview}"),
+                shortcut: (i == 0)
+                    .then(|| self.keys.shortcut_for(&AppCommand::RunRecipe.action()))
+                    .flatten(),
+                status: None,
+                action: PaletteAction::Recipe(r.name),
+            });
+        }
+
+        // tabs + windows, across every workspace
+        let windows = mux.iter_windows();
+        for window_id in &windows {
+            let Some(w) = mux.get_window(*window_id) else {
+                continue;
+            };
+            let ws = w.get_workspace().to_string();
+            let multi = mux.iter_windows_in_workspace(&ws).len() > 1;
+            if multi {
+                items.push(Item {
+                    kind: Kind::Window,
+                    title: format!("Window {window_id}"),
+                    subtitle: format!("{ws} · {} tabs", w.count_tabs()),
+                    shortcut: None,
+                    status: None,
+                    action: PaletteAction::FocusWindow(*window_id),
+                });
+            }
+            for (idx, tab) in w.iter_tabs().enumerate() {
+                let mut title = tab.get_title();
+                if title.is_empty() {
+                    title = tab
+                        .get_active_pane()
+                        .map(|p| p.get_title())
+                        .unwrap_or_default();
+                }
+                let place = if multi {
+                    format!("{ws} · window {window_id}")
+                } else {
+                    ws.clone()
+                };
+                items.push(Item {
+                    kind: Kind::Tab,
+                    title: format!("{}  {}", idx + 1, title),
+                    subtitle: place,
+                    shortcut: None,
+                    status: None,
+                    action: PaletteAction::FocusTab {
+                        window: *window_id,
+                        tab: tab.tab_id(),
+                    },
+                });
+            }
+        }
+
+        // workspaces
+        for ws in mux.iter_workspaces() {
+            let tabs: usize = mux
+                .iter_windows_in_workspace(&ws)
+                .iter()
+                .filter_map(|w| mux.get_window(*w).map(|w| w.count_tabs()))
+                .sum();
+            items.push(Item {
+                kind: Kind::Workspace,
+                title: ws.clone(),
+                subtitle: format!("{tabs} {}", if tabs == 1 { "tab" } else { "tabs" }),
+                shortcut: None,
+                status: None,
+                action: PaletteAction::Workspace(ws),
+            });
+        }
+
+        // commands
+        let hooks_installed = crate::hooks::claude_hooks_installed();
+        let dev_build = crate::restart::source_dir().is_some();
+        for (title, action) in commands() {
+            if hooks_installed
+                && matches!(action, PaletteAction::App(AppCommand::InstallAgentHooks))
+            {
+                continue;
+            }
+            if !dev_build && matches!(action, PaletteAction::App(AppCommand::RebuildRestart)) {
+                continue;
+            }
+            let shortcut = match &action {
+                PaletteAction::Key(k) => self.keys.shortcut_for(k),
+                PaletteAction::App(c) => self.keys.shortcut_for(&c.action()),
+                _ => None,
+            };
+            items.push(Item {
+                kind: Kind::Command,
+                title: title.into(),
+                subtitle: String::new(),
+                shortcut,
+                status: None,
+                action,
+            });
+        }
+        items
+    }
+
+    /// Items for the current query/scope, best match first.
+    pub(crate) fn palette_results(&self) -> Vec<Item> {
+        let Some(Overlay::Palette(state)) = &self.overlay else {
+            return vec![];
+        };
+        let items: Vec<Item> = self
+            .palette_items()
+            .into_iter()
+            .filter(|i| state.scope.admits(i.kind))
+            .collect();
+        let query = state.query.trim();
+        if query.is_empty() {
+            let mut items = items;
+            items.sort_by_key(|i| i.kind); // stable: keeps provider order within a section
+            return items;
+        }
+        let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        let mut buf = vec![];
+        let mut scored: Vec<(u32, Item)> = items
+            .into_iter()
+            .filter_map(|item| {
+                let hay = format!("{} {}", item.title, item.subtitle);
+                let score = pattern.score(Utf32Str::new(&hay, &mut buf), &mut matcher)?;
+                // a hit on the name outranks one on the subtitle (e.g. "default"
+                // finds the workspace before every pane that lives in it)
+                let title = pattern
+                    .score(Utf32Str::new(&item.title, &mut buf), &mut matcher)
+                    .map_or(0, |s| s * 2);
+                let bonus = if item.kind == Kind::Workspace { score / 2 } else { 0 };
+                Some((score.max(title) + bonus, item))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.kind.cmp(&b.1.kind)));
+        scored.into_iter().map(|(_, i)| i).collect()
+    }
+
+    pub(crate) fn palette_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ks = &ev.keystroke;
+        let m = &ks.modifiers;
+        let count = self.palette_results().len();
+        let Some(Overlay::Palette(state)) = self.overlay.as_mut() else {
+            return;
+        };
+        let mut moved = false;
+        match ks.key.as_str() {
+            "escape" => {
+                self.overlay = None;
+                return;
+            }
+            "enter" => {
+                let send_from = state.send_from;
+                let send_feedback = state.send_feedback;
+                let new_ws = (state.scope == Scope::Workspaces)
+                    .then(|| state.query.trim().to_string())
+                    .filter(|q| !q.is_empty());
+                let pick = self.palette_results().get(state_selected(&self.overlay)).cloned();
+                self.overlay = None;
+                match pick.map(|i| i.action) {
+                    Some(PaletteAction::FocusPane(to)) if send_feedback => {
+                        self.send_feedback_to(to, window, cx);
+                    }
+                    Some(PaletteAction::FocusPane(to)) if send_from.is_some() => {
+                        self.send_output(send_from.unwrap(), to, window, cx);
+                    }
+                    Some(PaletteAction::Harness(name)) => {
+                        let placement = if m.platform {
+                            crate::launch::Placement::Tab
+                        } else {
+                            crate::launch::Placement::Split
+                        };
+                        self.launch_harness(Some(&name), placement, window, cx);
+                        self.focus.focus(window);
+                    }
+                    Some(PaletteAction::Recipe(name)) => {
+                        let placement = if m.platform {
+                            crate::launch::Placement::Tab
+                        } else {
+                            crate::launch::Placement::Split
+                        };
+                        self.run_recipe(&name, placement, window, cx);
+                        self.focus.focus(window);
+                    }
+                    Some(action) => self.run_palette_action(action, window, cx),
+                    // no match in the workspace picker: create one with the typed name
+                    None => {
+                        if let Some(name) = new_ws {
+                            self.run_palette_action(PaletteAction::Workspace(name), window, cx);
+                        }
+                    }
+                }
+                return;
+            }
+            "up" => {
+                state.selected = state.selected.saturating_sub(1);
+                moved = true;
+            }
+            "down" | "tab" => {
+                state.selected = (state.selected + 1).min(count.saturating_sub(1));
+                moved = true;
+            }
+            "p" | "k" if m.control => {
+                state.selected = state.selected.saturating_sub(1);
+                moved = true;
+            }
+            "n" | "j" if m.control => {
+                state.selected = (state.selected + 1).min(count.saturating_sub(1));
+                moved = true;
+            }
+            "backspace" => {
+                if state.query.is_empty() {
+                    state.scope = Scope::All;
+                } else if m.alt || m.platform {
+                    state.query.clear();
+                } else {
+                    state.query.pop();
+                }
+                state.selected = 0;
+            }
+            "v" if m.platform => {
+                if let Some(t) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                    state.query.push_str(t.lines().next().unwrap_or(""));
+                    state.selected = 0;
+                }
+            }
+            _ if !m.control && !m.platform => {
+                if let Some(c) = &ks.key_char {
+                    if c == ">" && state.query.is_empty() {
+                        state.scope = Scope::Commands; // VS Code style
+                    } else {
+                        state.query.push_str(c);
+                    }
+                    state.selected = 0;
+                }
+            }
+            _ => {}
+        }
+        if moved {
+            let row = self.palette_row_of(state_selected(&self.overlay));
+            if let Some(Overlay::Palette(state)) = &self.overlay {
+                state.scroll.scroll_to_item(row);
+            }
+        }
+    }
+
+    /// Index of the selected result among the rendered children (section headers included).
+    pub(crate) fn palette_row_of(&self, selected: usize) -> usize {
+        let Some(Overlay::Palette(state)) = &self.overlay else {
+            return selected;
+        };
+        if !state.query.trim().is_empty() {
+            return selected;
+        }
+        let results = self.palette_results();
+        let mut row = 0;
+        let mut last = None;
+        for (i, item) in results.iter().enumerate() {
+            if last != Some(item.kind) {
+                row += 1; // header
+                last = Some(item.kind);
+            }
+            if i == selected {
+                return row;
+            }
+            row += 1;
+        }
+        row
+    }
+
+    pub(crate) fn run_palette_action(
+        &mut self,
+        action: PaletteAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            PaletteAction::FocusPane(id) => self.focus_pane(id, window, cx),
+            PaletteAction::FocusTab { window: wid, tab } => {
+                self.focus_window(wid);
+                if let Some(mut w) = Mux::get().get_window_mut(wid) {
+                    if let Some(idx) = w.get_tab_idx_for_id(tab) {
+                        w.remember_and_set_active_tab_idx(idx);
+                    }
+                }
+            }
+            PaletteAction::FocusWindow(wid) => self.focus_window(wid),
+            PaletteAction::Workspace(name) => self.switch_workspace(Some(name), None),
+            PaletteAction::App(c) => self.run_app_command(c, window, cx),
+            PaletteAction::Key(k) => self.perform(k, None, window, cx),
+            PaletteAction::Harness(name) => {
+                self.launch_harness(Some(&name), crate::launch::Placement::Split, window, cx)
+            }
+            PaletteAction::Recipe(name) => {
+                self.run_recipe(&name, crate::launch::Placement::Split, window, cx)
+            }
+        }
+        self.focus.focus(window);
+        cx.notify();
+    }
+
+    pub(crate) fn run_app_command(
+        &mut self,
+        c: AppCommand,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match c {
+            AppCommand::ToggleSidebar => {
+                // the git panel occupies the sidebar's slot: replace it with agents
+                if self.diff_open {
+                    self.close_diff_panel();
+                    self.sidebar_open = true;
+                } else {
+                    self.sidebar_open = !self.sidebar_open;
+                }
+                if !self.sidebar_open && self.region == crate::regions::Region::Sidebar {
+                    self.region = crate::regions::Region::Terminal;
+                }
+                let open = self.sidebar_open;
+                crate::settings::update(|s| s.show_sidebar = open);
+            }
+            AppCommand::OpenSettings => self.open_settings(cx),
+            AppCommand::Restart => self.restart(cx),
+            AppCommand::RebuildRestart => self.rebuild_and_restart(cx),
+            AppCommand::RunRecipe => self.open_palette(Scope::Recipes, cx),
+            AppCommand::CommandPalette => self.open_palette(Scope::All, cx),
+            AppCommand::FindAgent => self.open_palette(Scope::Agents, cx),
+            AppCommand::FindTab => self.open_palette(Scope::Tabs, cx),
+            AppCommand::SwitchWorkspace => self.open_palette(Scope::Workspaces, cx),
+            AppCommand::NewWorkspace => self.prompt_new_workspace(cx),
+            AppCommand::NewAgent => {
+                self.launch_harness(None, crate::launch::Placement::Split, _window, cx)
+            }
+            AppCommand::NewAgentTab => {
+                self.launch_harness(None, crate::launch::Placement::Tab, _window, cx)
+            }
+            AppCommand::ToggleDiffPanel => {
+                // one left slot: opening the git panel replaces the sidebar, and
+                // closing it leaves the slot empty (no falling back to agents)
+                if self.diff_open {
+                    self.close_diff_panel();
+                } else {
+                    self.diff_open = true;
+                    self.sidebar_open = false;
+                    self.region = crate::regions::Region::Diff;
+                }
+            }
+            AppCommand::SendOutputToAgent => self.send_output_to_agent(_window, cx),
+            AppCommand::OpenEditor => self.open_editor_here(_window, cx),
+            AppCommand::InstallAgentHooks => match crate::hooks::install_claude_hooks() {
+                Ok(()) => self.flash("Hooks installed"),
+                Err(e) => self.flash(format!("Couldn't install hooks: {e:#}")),
+            },
+        }
+        cx.notify();
+    }
+
+    fn focus_window(&mut self, window_id: WindowId) {
+        let mux = Mux::get();
+        if let Some(ws) = mux
+            .get_window(window_id)
+            .map(|w| w.get_workspace().to_string())
+        {
+            if ws != mux.active_workspace() {
+                mux.set_active_workspace(&ws);
+            }
+            self.mux_window_id = Some(window_id);
+        }
+    }
+}
+
+fn state_selected(overlay: &Option<Overlay>) -> usize {
+    match overlay {
+        Some(Overlay::Palette(s)) => s.selected,
+        _ => 0,
+    }
+}

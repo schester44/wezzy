@@ -1,0 +1,44 @@
+# Vendored from wezterm@e68a8ec with two small additions (src/pane/clientpane.rs):
+#  - SetUserVar alerts from the server are re-published as MuxNotifications, like
+#    local panes do, so the app can fire WezTerm's `user-var-changed` Lua event
+#    (smart-splits' nvim -> terminal requests depend on it).
+#  - ClientPane::seed_user_var, to fill in vars set before the client attached.
+[package]
+name = "wezterm-client"
+version = "0.1.0"
+authors = ["Wez Furlong <wez@wezfurlong.org>"]
+edition = "2018"
+publish = false
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+async-io = "2.3"
+async-trait = "0.1"
+async_ossl = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+codec = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+config = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+filedescriptor = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+futures = "0.3"
+lazy_static = "1.4"
+libc = "0.2"
+log = "0.4"
+lru = "0.16"
+metrics = "0.23"
+mux = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+openssl = "0.10.57"
+parking_lot = "0.12"
+portable-pty = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6", features = ["serde_support"] }
+promise = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+rangeset = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+ratelim = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+smol = "2.0"
+termwiz = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+textwrap = "0.16"
+thiserror = "2.0"
+umask = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+url = "2"
+wezterm-dynamic = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6", default-features = false }
+wezterm-ssh = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6", features = ["use_serde"] }
+wezterm-uds = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
