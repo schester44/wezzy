@@ -211,7 +211,7 @@ impl Settings {
     }
 }
 
-fn on_path(bin: &str) -> bool {
+pub(crate) fn on_path(bin: &str) -> bool {
     let home = config::HOME_DIR.clone();
     let extra = [home.join(".local/bin"), home.join(".cargo/bin"), home.join("go/bin")];
     std::env::var_os("PATH")

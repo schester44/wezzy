@@ -101,12 +101,27 @@ the whole UI follows the WezTerm color scheme.
 
 - **Detection** (`agents.rs`): foreground process name/argv matches a known
   harness, or a hook record exists.
-- **Status** (`hooks.rs`): `assets/hooks/agent-hook.sh`, registered as a
-  Claude Code hook, writes each lifecycle event to
-  `~/.local/state/wezzy/agents/<WEZTERM_PANE>.json`. The app polls the
-  directory, maps server pane ids to local ones and derives
-  Working / NeedsInput / Done / Idle. Without hooks, status is guessed from
-  title spinners, output and bells.
+- **Status** (`hooks.rs`): each supported harness writes its latest
+  lifecycle event to `~/.local/state/wezzy/agents/<WEZTERM_PANE>.json` as
+  `{"harness", "pane", "ts", "payload"}`. Two wirings:
+  - *Hook file* (Claude Code `~/.claude/settings.json`, Codex
+    `~/.codex/hooks.json`): `assets/hooks/agent-hook.sh <harness>` is merged
+    in as a command hook for each event; the payload is the harness's own
+    hook input.
+  - *Plugin* (pi `~/.pi/agent/extensions/wezzy.ts`, opencode
+    `~/.config/opencode/plugins/wezzy.js`): our file from `assets/hooks/`
+    writes the record itself, with `{"event", "cwd", "tool", "input", ...}`
+    using the harness's event names. Plugin files start with
+    `wezzy agent status`, which is how install, uninstall and the startup
+    refresh recognize them.
+
+  The app polls the directory, maps server pane ids to local ones and turns
+  the payload into Working / NeedsInput / Done / Idle with a per-harness
+  `interpret_*`, plus the tool detail and the agent's `cwd`. Every writer
+  is a no-op outside Wezzy panes (`WEZZY` + `WEZTERM_PANE`). Install merges
+  into existing config (other hooks untouched, a one-time `.wezzy-backup`
+  before the first change) and is idempotent. Without hooks, status is
+  guessed from title spinners, output and bells.
 - **Transitions:** state changes raise toasts, tab dots and the chime
   (`sound.rs`) when you're not looking at that pane.
 - **Notifications** (`notify.rs`): with the window inactive, a transition also
