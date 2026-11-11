@@ -11,8 +11,7 @@ on its own branch in a worktree, then reviewed and merged back here.
 | 4 | Status hooks for more harnesses (Codex, pi, opencode, Gemini, …) | Merged to main: Codex, pi, OpenCode (Gemini, Amp, Cursor, Aider, Goose skipped) | hooks agent |
 | 5 | System notifications when an agent needs you and Wezzy isn't focused | Merged to main; test in the bundled app | notify agent |
 | 6 | Rename agents | Merged to main | rename agent |
-| 7 | Agent overview: its own full view | Phase 1 merged to main (⌘O / ⌥⌘0); phases 2–3 in docs/roadmap/agent-overview.md | overview agent |
-| 8 | Task inbox: agents that pick up work without being managed | Parked: needs design | |
+| 7 | Task inbox: agents that pick up work without being managed | Parked: needs design | |
 
 ## Later
 

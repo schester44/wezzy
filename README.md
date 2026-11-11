@@ -24,8 +24,7 @@ macOS only for now. Download `Wezzy.dmg` from the
 
 - **Agents that report in.** A sidebar lists every agent across every workspace
   with its status: working, needs input, done. A chime when one needs you.
-  `⌥⌘1–9` jumps straight to one, and ⌘O shows them all as live cards you
-  can approve, reply to or interrupt from.
+  `⌥⌘1–9` jumps straight to one.
 - **Sessions that survive.** Shells and agents live in a background session
   server. Quit Wezzy, come back, everything's still running.
 - **A git panel for reviewing agent work.** Stage hunks, comment on lines, send
@@ -46,7 +45,6 @@ macOS only for now. Download `Wezzy.dmg` from the
 | ⌘N | New window |
 | ⌘A / ⌘⇧A | New agent in a split / tab |
 | ⌥⌘1–9 | Jump to agent 1–9 (numbers show in the sidebar while ⌥⌘ is held) |
-| ⌘O / ⌥⌘0 | Agent overview: every agent as a live card |
 | ⌘D | Git panel |
 | ⌘R | Recipes |
 | ⌘⇧S | SSH hosts |

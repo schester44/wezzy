@@ -19,7 +19,6 @@ mod keys;
 mod launch;
 mod luawin;
 mod notify;
-mod overview;
 mod palette;
 mod paneselect;
 mod paths;

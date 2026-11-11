@@ -58,7 +58,7 @@ pub fn sheet(keys: &KeyState) -> Vec<Vec<Group>> {
     }
 
     // ⌥⌘1–9 jumps to an agent unless the user bound those keys
-    if !other.iter().any(|(_, _, k)| k.starts_with("⌥⌘") && k.chars().last().is_some_and(|c| ('1'..='9').contains(&c))) {
+    if !other.iter().any(|(_, _, k)| k.starts_with("⌥⌘") && k.chars().last().is_some_and(|c| c.is_ascii_digit())) {
         other.push((Section::App, "Go to agent".into(), "⌥⌘1–9".into()));
     }
     other.sort();

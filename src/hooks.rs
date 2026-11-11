@@ -96,9 +96,6 @@ pub struct HookState {
     pub cwd: Option<PathBuf>,
     /// Subagents this agent has running, oldest first.
     pub subagents: Vec<Subagent>,
-    /// NeedsInput because of a permission prompt (not a question), so it can
-    /// be answered with the harness's allow / deny keys.
-    pub permission: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -110,8 +107,6 @@ pub struct Subagent {
     pub description: Option<String>,
     pub status: HookStatus,
     pub detail: Option<String>,
-    /// Waiting on a permission prompt (see `HookState::permission`).
-    pub permission: bool,
 }
 
 /// local pane id -> latest hook state
@@ -601,7 +596,6 @@ fn poll() {
                     description: meta.description,
                     status,
                     detail,
-                    permission: is_permission_prompt(&harness, p),
                 },
             ));
             continue;
@@ -618,7 +612,6 @@ fn poll() {
         };
         sessions.insert(local, session);
         let cwd = v["payload"]["cwd"].as_str().filter(|c| !c.is_empty()).map(PathBuf::from);
-        let permission = is_permission_prompt(&harness, p);
         next.insert(
             local,
             HookState {
@@ -627,7 +620,6 @@ fn poll() {
                 detail,
                 subagents: vec![],
                 cwd,
-                permission,
             },
         );
     }
@@ -653,7 +645,6 @@ fn poll() {
             if let Some(sub) = st.subagents.iter().find(|s| s.status == HookStatus::NeedsInput) {
                 st.status = HookStatus::NeedsInput;
                 st.detail = sub.detail.clone();
-                st.permission = sub.permission;
             }
         }
     }
@@ -752,21 +743,6 @@ fn interpret_claude(p: &Value) -> Interpreted {
         }
         _ => (HookStatus::Working, None),
     })
-}
-
-/// The event is a permission prompt the agent's own keys can answer. Only
-/// Claude's are recognized: its Notification says `permission_prompt` (older
-/// versions only say so in the message).
-fn is_permission_prompt(harness: &str, p: &Value) -> bool {
-    if Harness::from_id(harness) != Some(Harness::Claude) || p["hook_event_name"] != "Notification" {
-        return false;
-    }
-    match p["notification_type"].as_str() {
-        Some(kind) if !kind.is_empty() => kind == "permission_prompt",
-        _ => p["message"]
-            .as_str()
-            .is_some_and(|m| m.to_lowercase().contains("permission")),
-    }
 }
 
 fn interpret_codex(p: &Value) -> Interpreted {
@@ -893,16 +869,6 @@ mod tests {
 
     fn st(harness: &str, p: Value) -> Interpreted {
         interpret(harness, &p)
-    }
-
-    #[test]
-    fn permission_prompts() {
-        let n = |v: Value| is_permission_prompt("claude", &v);
-        assert!(n(json!({"hook_event_name": "Notification", "notification_type": "permission_prompt", "message": "Claude needs your permission to use Bash"})));
-        assert!(n(json!({"hook_event_name": "Notification", "message": "Claude needs your permission to use Bash"})));
-        assert!(!n(json!({"hook_event_name": "Notification", "notification_type": "elicitation_dialog", "message": "permission?"})));
-        assert!(!n(json!({"hook_event_name": "PreToolUse", "tool_name": "Bash"})));
-        assert!(!is_permission_prompt("codex", &json!({"hook_event_name": "Notification", "message": "permission"})));
     }
 
     #[test]

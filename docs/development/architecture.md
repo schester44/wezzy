@@ -46,7 +46,7 @@
 ## Input
 
 `on_key` routes a keystroke to, in order: QuickSelect, inline inputs, the
-workspace menu, overlays (palette, settings, prompts), the agent overview, a focused side panel
+workspace menu, overlays (palette, settings, prompts), a focused side panel
 (`regions.rs`), Ctrl+h/l edge navigation, and finally the keymap (`keys.rs`):
 
 - Leader and key tables are resolved like WezTerm does (`KeyState::lookup`).
@@ -166,32 +166,6 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
   without a bundle id, so `cargo run` builds skip notifications (badge only).
   Permission is asked on the first post. `notify::tests` checks every message
   signature against the runtime, since dev builds assert them at the call.
-
-## Agent overview (`overview.rs`, `ui/overview.rs`)
-
-- **A window-level mode,** `TermApp.overview`: while it's set, `render`
-  draws the overview instead of the side panel and terminal row. Not an
-  `Overlay` (those are modal) and not a pane view (those belong to one
-  workspace). `terminal_canvas` isn't painted meanwhile, so nothing resizes
-  the active tab.
-- **Order:** `agents::collect` sorts by (workspace, pane id), so cards, the
-  sidebar and ⌥⌘1–9 agree. `overview::rows` groups and wraps them.
-- **Cards** paint their pane with `render::bottom_snapshot` (the last rows
-  holding text or the cursor, at the pane's own columns, scrollback pulled in
-  when the screen is short) and `paint_pane` under a content mask, at
-  `font_scale * 0.75`, with `focused = false` for a hollow cursor. Panes are
-  never resized. Liveness comes from the usual `PaneOutput` redraws.
-- **Keys:** `overview_key` runs after overlays. Its own keys first; anything
-  else goes through the keymap (⌘ chords, leader), and unbound keys are
-  dropped, never sent to a pane. `focus_pane` clears the overview, so every
-  way of jumping to an agent closes it.
-- **Acting:** `overview::keymap` is the per-harness key table. Allow / always /
-  deny only exist for Claude (Enter / `2` / Esc) and only when
-  `HookState::permission` says the NeedsInput came from a `permission_prompt`
-  notification. Interrupt is Esc for Claude, ⌃C otherwise. A reply is
-  `send_paste` then Enter 80ms later.
-- **Seen:** the overview never marks agents seen; `render` and
-  `AgentStatusChanged` skip "you're looking at it" while it's open.
 
 ## Sidebar (`sidebar.rs`)
 

@@ -193,7 +193,6 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Next Tab", Key(ActivateTabRelative(1))),
         ("Previous Tab", Key(ActivateTabRelative(-1))),
         ("Toggle Sidebar", App(AppCommand::ToggleSidebar)),
-        ("Agent Overview", App(AppCommand::AgentOverview)),
         ("Find Agent…", App(AppCommand::FindAgent)),
         ("Rename Agent…", App(AppCommand::RenameAgent)),
         ("Find Tab…", App(AppCommand::FindTab)),
@@ -700,7 +699,6 @@ impl TermApp {
                 crate::settings::update(|s| s.show_sidebar = open);
             }
             AppCommand::OpenSettings => self.open_settings(cx),
-            AppCommand::AgentOverview => self.toggle_overview(),
             AppCommand::ShowShortcuts => {
                 self.overlay = Some(crate::app::Overlay::Shortcuts);
             }

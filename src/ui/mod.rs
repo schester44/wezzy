@@ -2,7 +2,6 @@
 
 mod git;
 mod help;
-mod overview;
 mod panel;
 pub use panel::SidePanel;
 pub(crate) use view::{term_family, with_alpha};

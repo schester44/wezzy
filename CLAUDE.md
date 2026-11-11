@@ -45,7 +45,6 @@ cargo test
 | `hosts.rs` | SSH hosts (⌘⇧S / "ssh …" in ⌘K): config + `~/.ssh/config` aliases |
 | `workspaces.rs` | saved workspaces (name + cwd), the running + saved list behind the picker and sidebar menu |
 | `sidebar.rs`, `actions.rs` | sidebar sources (agents, servers, actions): which show, their items, ↵ / `o`; GitHub Actions runs via `gh` |
-| `overview.rs`, `ui/overview.rs` | agent overview (⌘O / ⌥⌘0): live cards for every agent, answering permission prompts and replies from the card |
 | `servers.rs`, `sendout.rs`, `quickselect.rs`, `clipboard.rs` | dev servers, send output to agent, hints + ⌘-click, paste |
 | `paneselect.rs` | PaneSelect (Leader m): pane labels, swaps done on the server |
 | `settings.rs`, `paths.rs`, `sound.rs`, `restart.rs` | settings.json + Lua `setup()`, file locations, chime, restart |

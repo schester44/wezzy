@@ -422,11 +422,9 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
         ((WKey::Char('e'), s), AppCommand::OpenEditor.action()),
         ((WKey::Char('E'), s), AppCommand::SelectError.action()),
         ((WKey::Char(','), s), AppCommand::OpenSettings.action()),
-        ((WKey::Char('o'), s), AppCommand::AgentOverview.action()),
         ((WKey::Char('\r'), s | Mods::SHIFT), AppCommand::SendOutputToAgent.action()),
         // leader
         ((WKey::Char('?'), l), AppCommand::ShowShortcuts.action()),
-        ((WKey::Char('0'), AGENT_MODS), AppCommand::AgentOverview.action()),
         ((WKey::Char('s'), l), split(PaneDirection::Down)),
         ((WKey::Char('v'), l), split(PaneDirection::Right)),
         ((WKey::Char('S'), l), split(PaneDirection::Up)),
