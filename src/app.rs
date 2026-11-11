@@ -195,6 +195,8 @@ pub(crate) enum Overlay {
     },
     Palette(crate::palette::PaletteState),
     Settings(crate::settings_ui::SettingsState),
+    /// The global shortcut sheet (Leader ?); any key or click closes it.
+    Shortcuts,
 }
 
 /// Where the terminal grid was last painted, for mouse hit-testing.
@@ -227,7 +229,8 @@ pub struct TermApp {
     pub(crate) diff_width: f32,
     /// agents sidebar width (⌃←/⌃→ while it's focused)
     pub(crate) sidebar_width: f32,
-    pub(crate) diff_resizing: bool,
+    /// The side panel whose edge is being dragged.
+    pub(crate) panel_drag: Option<crate::ui::SidePanel>,
     /// The split divider being dragged (its `PositionedSplit::index`).
     pub(crate) split_drag: Option<usize>,
     pub(crate) ws_cursor: usize,
@@ -357,7 +360,7 @@ impl TermApp {
             git: Default::default(),
             diff_width: 460.,
             sidebar_width: 248.,
-            diff_resizing: false,
+            panel_drag: None,
             split_drag: None,
             ws_cursor: 0,
             scroll_accum: 0.0,
@@ -656,6 +659,7 @@ impl TermApp {
                     _ => {}
                 }
             }
+            Overlay::Shortcuts => self.overlay = None,
             Overlay::Palette(_) | Overlay::Settings(_) => {}
         }
     }
@@ -1246,6 +1250,8 @@ impl TermApp {
         if let Some(w) = mux.iter_windows_in_workspace(&name).first() {
             self.mux_window_id = Some(*w);
         } else {
+            // a saved workspace opens in its directory
+            let spawn = spawn.or_else(|| crate::workspaces::saved(&name).map(|w| w.spawn()));
             let domain = spawn
                 .as_ref()
                 .map(|s| s.domain.clone())
@@ -1333,7 +1339,7 @@ impl TermApp {
     /// j/k/↵ in the workspace menu.
     fn ws_menu_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
-        let names = Mux::get().iter_workspaces();
+        let names: Vec<String> = crate::workspaces::list().into_iter().map(|e| e.name).collect();
         let n = names.len() + 1; // + "New workspace"
         self.ws_cursor = self.ws_cursor.min(n - 1);
         match ks.key.as_str() {

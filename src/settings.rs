@@ -17,6 +17,9 @@
 //!   hosts = {                         -- SSH hosts for the palette (see hosts.rs)
 //!     { name = "devbox", ssh = "dev@10.0.0.5" },
 //!   },
+//!   workspaces = {                    -- pickable before they're open (see workspaces.rs)
+//!     { name = "neverwait", cwd = "~/work/neverwait" },
+//!   },
 //! })
 //! ```
 //!
@@ -82,6 +85,9 @@ pub struct Settings {
     /// settings.json hosts, then the Lua config's
     pub hosts: Vec<crate::hosts::Host>,
     file_hosts: Vec<crate::hosts::Host>,
+    /// settings.json saved workspaces, then the Lua config's
+    pub workspaces: Vec<crate::workspaces::Saved>,
+    file_workspaces: Vec<crate::workspaces::Saved>,
 }
 
 impl Settings {
@@ -97,6 +103,8 @@ impl Settings {
         file_recipes: Vec::new(),
         hosts: Vec::new(),
         file_hosts: Vec::new(),
+        workspaces: Vec::new(),
+        file_workspaces: Vec::new(),
     };
 
     pub fn sound(&self) -> Option<String> {
@@ -197,6 +205,14 @@ struct Stored {
     recipes: Option<Vec<StoredRecipe>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hosts: Option<Vec<StoredHost>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspaces: Option<Vec<StoredWorkspace>>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct StoredWorkspace {
+    name: String,
+    cwd: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -262,6 +278,13 @@ fn from_file() -> Settings {
             .collect();
         s.hosts = s.file_hosts.clone();
     }
+    if let Some(v) = st.workspaces {
+        s.file_workspaces = v
+            .into_iter()
+            .map(|w| crate::workspaces::Saved { name: w.name, cwd: w.cwd })
+            .collect();
+        s.workspaces = s.file_workspaces.clone();
+    }
     s
 }
 
@@ -297,6 +320,15 @@ pub fn update(f: impl FnOnce(&mut Settings)) {
                 .map(|h| StoredHost {
                     name: h.name.clone(),
                     ssh: h.ssh.clone(),
+                })
+                .collect()
+        }),
+        workspaces: (!s.file_workspaces.is_empty()).then(|| {
+            s.file_workspaces
+                .iter()
+                .map(|w| StoredWorkspace {
+                    name: w.name.clone(),
+                    cwd: w.cwd.clone(),
                 })
                 .collect()
         }),
@@ -407,6 +439,18 @@ pub fn lua_setup(_: &mlua::Lua, opts: mlua::Table) -> mlua::Result<()> {
             };
             s.hosts.retain(|x| x.name != name);
             s.hosts.push(crate::hosts::Host { name, ssh });
+        }
+    }
+    if let Some(t) = opts.get::<_, Option<mlua::Table>>("workspaces")? {
+        for (i, w) in t.sequence_values::<mlua::Table>().enumerate() {
+            let w = w?;
+            let name: Option<String> = w.get("name")?;
+            let cwd: Option<String> = w.get("cwd")?;
+            let (Some(name), Some(cwd)) = (name, cwd) else {
+                return Err(bad(&format!("workspaces[{}]", i + 1), "a table with name and cwd", "missing field"));
+            };
+            s.workspaces.retain(|x| x.name != name);
+            s.workspaces.push(crate::workspaces::Saved { name, cwd });
         }
     }
     *SETTINGS.lock() = s;

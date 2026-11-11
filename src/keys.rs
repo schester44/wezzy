@@ -189,6 +189,20 @@ impl KeyState {
         found.into_iter().next()
     }
 
+    /// The leader key, e.g. "⌃A", if one is configured.
+    pub fn leader_label(&self) -> Option<String> {
+        self.leader.as_ref().map(|(k, m, _)| format_combo(k, *m))
+    }
+
+    /// Every binding in the default table: whether it sits behind the leader,
+    /// the key as shown (without the leader), and the action.
+    pub fn bindings(&self) -> impl Iterator<Item = (bool, String, &KeyAssignment)> + '_ {
+        self.tables.default.iter().map(|((k, m), e)| {
+            let leader = m.contains(Mods::LEADER);
+            (leader, format_combo(k, *m - Mods::LEADER), &e.action)
+        })
+    }
+
     /// What a plain (non-leader, no key table) press is bound to, without
     /// touching leader/table state.
     pub fn peek(&self, key: &WKey, mods: Mods) -> Option<KeyAssignment> {
@@ -363,8 +377,10 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
         ((WKey::Char('S'), s), AppCommand::SshHost.action()),
         ((WKey::Char('D'), s), AppCommand::ToggleDiffPanel.action()),
         ((WKey::Char('e'), s), AppCommand::OpenEditor.action()),
+        ((WKey::Char('E'), s), AppCommand::SelectError.action()),
         ((WKey::Char(','), s), AppCommand::OpenSettings.action()),
         ((WKey::Char('\r'), s | Mods::SHIFT), AppCommand::SendOutputToAgent.action()),
+        ((WKey::Char('?'), Mods::LEADER), AppCommand::ShowShortcuts.action()),
     ];
     for i in 1..=9u8 {
         let c = (b'0' + i) as char;

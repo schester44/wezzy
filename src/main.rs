@@ -30,7 +30,9 @@ mod servers;
 mod session;
 mod settings;
 mod settings_ui;
+mod shortcuts;
 mod ui;
+mod workspaces;
 
 use anyhow::Context as _;
 use mux::domain::{Domain, LocalDomain};

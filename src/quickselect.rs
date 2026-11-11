@@ -6,6 +6,11 @@
 //!
 //! QuickSelect: every match gets a label; type it to copy (lowercase) or to
 //! copy + paste into the pane (uppercase). Esc cancels.
+//!
+//! Error select (⇧⌘E) uses the same labels, but each hint is an error and
+//! selecting it copies the whole block around it: the error line through the
+//! end of its paragraph (rustc's `-->` and code lines, a Python traceback, a
+//! panic message), stopping at a blank line, the next error, or a prompt.
 
 use crate::app::TermApp;
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
@@ -13,7 +18,7 @@ use mux::pane::{CachePolicy, Pane, PaneId};
 use regex::Regex;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
-use wezterm_term::StableRowIndex;
+use wezterm_term::{SemanticType, StableRowIndex};
 
 const DEFAULT_PATTERNS: &[&str] = &[
     // URLs
@@ -55,6 +60,31 @@ fn regexes(extra: &[String]) -> Vec<Regex> {
         out.extend(default_regexes().iter().cloned());
     }
     out
+}
+
+/// Lines that start an error block.
+const ERROR_PATTERNS: &[&str] = &[
+    r"(?i)\berror\b",
+    r"\w+(?:Error|Exception)\b",
+    r"(?i)\b(?:exception|fatal)\b",
+    r"^\s*Traceback \(most recent call last\)",
+    r"\bpanicked at\b",
+    r"\bFAIL(?:ED)?\b",
+];
+
+/// Longest block, in logical lines (a log full of errors shouldn't become one).
+const MAX_BLOCK: usize = 60;
+/// Rows read past each edge of the viewport so blocks aren't cut at the screen edge.
+const CONTEXT_ROWS: StableRowIndex = 100;
+
+fn error_regexes() -> &'static [Regex] {
+    static RE: OnceLock<Vec<Regex>> = OnceLock::new();
+    RE.get_or_init(|| {
+        ERROR_PATTERNS
+            .iter()
+            .map(|p| Regex::new(p).expect("valid pattern"))
+            .collect()
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -148,7 +178,136 @@ fn assign_labels(matches: &mut [Match], alphabet: &str) {
     }
 }
 
+/// A wrapped run of rows, as one line of text.
+struct Logical {
+    text: String,
+    /// first row (index into the rows it was built from)
+    row: usize,
+    /// last row
+    last: usize,
+    /// shell prompt or typed command (OSC 133): ends a block
+    prompt: bool,
+}
+
+fn logical_lines(rows: &[(String, bool, bool)]) -> Vec<Logical> {
+    let mut out: Vec<Logical> = vec![];
+    let mut joining = false;
+    for (i, (text, wrapped, prompt)) in rows.iter().enumerate() {
+        match out.last_mut() {
+            Some(l) if joining => {
+                l.text.push_str(text);
+                l.last = i;
+                l.prompt |= *prompt;
+            }
+            _ => out.push(Logical { text: text.clone(), row: i, last: i, prompt: *prompt }),
+        }
+        joining = *wrapped;
+    }
+    for l in &mut out {
+        l.text.truncate(l.text.trim_end().len());
+    }
+    out
+}
+
+/// Error blocks as (first, last) logical-line indices.
+fn error_blocks(lines: &[Logical]) -> Vec<(usize, usize)> {
+    let res = error_regexes();
+    let anchor = |l: &Logical| !l.prompt && res.iter().any(|re| re.is_match(&l.text));
+    let top_level = |l: &Logical| !l.text.starts_with(char::is_whitespace);
+    let mut out = vec![];
+    let mut i = 0;
+    while i < lines.len() {
+        if !anchor(&lines[i]) {
+            i += 1;
+            continue;
+        }
+        // a traceback runs through its exception line, which is itself an error
+        let mut traceback = lines[i].text.trim_start().starts_with("Traceback");
+        let mut end = i;
+        for (j, l) in lines.iter().enumerate().skip(i + 1) {
+            if j - i >= MAX_BLOCK || l.prompt || l.text.trim().is_empty() {
+                break;
+            }
+            if top_level(l) && anchor(l) {
+                if !traceback {
+                    break;
+                }
+                traceback = false;
+            }
+            end = j;
+        }
+        out.push((i, end));
+        i = end + 1;
+    }
+    out
+}
+
 impl TermApp {
+    /// QuickSelect over error blocks: the label copies the whole block.
+    pub(crate) fn start_error_select(&mut self, cx: &mut Context<Self>) {
+        let Some(pane) = self.active_pane() else {
+            return;
+        };
+        let dims = pane.get_dimensions();
+        let top = self
+            .viewports
+            .get(&pane.pane_id())
+            .copied()
+            .unwrap_or(dims.physical_top);
+        let bottom = dims.physical_top + dims.viewport_rows as StableRowIndex;
+        let start = (top - CONTEXT_ROWS).max(dims.scrollback_top);
+        let end = (top + dims.viewport_rows as StableRowIndex + CONTEXT_ROWS).min(bottom);
+        let (first, lines) = pane.get_lines(start..end);
+        let is_prompt = |l: &wezterm_term::Line| {
+            l.visible_cells()
+                .any(|c| matches!(c.attrs().semantic_type(), SemanticType::Prompt | SemanticType::Input))
+        };
+        let rows: Vec<(String, bool, bool)> = lines
+            .iter()
+            .map(|l| (row_text(l).0, l.last_cell_was_wrapped(), is_prompt(l)))
+            .collect();
+        let logical = logical_lines(&rows);
+        // viewport rows, as indices into `rows`
+        let vis_start = (top - first).max(0) as usize;
+        let vis_end = vis_start + dims.viewport_rows;
+
+        let mut matches = vec![];
+        for (a, b) in error_blocks(&logical) {
+            let (row0, row1) = (logical[a].row, logical[b].last);
+            if row1 < vis_start || row0 >= vis_end {
+                continue;
+            }
+            let row = row0.max(vis_start);
+            let (text, cols) = row_text(&lines[row]);
+            let s = text.len() - text.trim_start().len();
+            let e = text.trim_end().len().max(s);
+            let col = cols[s];
+            matches.push(Match {
+                row: row - vis_start,
+                col,
+                cells: cols[e].saturating_sub(col).max(1),
+                text: logical[a..=b]
+                    .iter()
+                    .map(|l| l.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                label: String::new(),
+            });
+        }
+        if matches.is_empty() {
+            self.flash("No errors");
+            cx.notify();
+            return;
+        }
+        assign_labels(&mut matches, &config::configuration().quick_select_alphabet);
+        self.quick_select = Some(QuickSelect {
+            pane_id: pane.pane_id(),
+            matches,
+            typed: String::new(),
+        });
+        cx.notify();
+    }
+
     pub(crate) fn start_quick_select(&mut self, extra_patterns: &[String], cx: &mut Context<Self>) {
         let Some(pane) = self.active_pane() else {
             return;
@@ -204,7 +363,10 @@ impl TermApp {
                     pane.send_paste(&m.text).ok();
                 }
             } else {
-                self.flash(format!("Copied {}", m.text));
+                match m.text.lines().count() {
+                    n if n > 1 => self.flash(format!("Copied {n} lines")),
+                    _ => self.flash(format!("Copied {}", m.text)),
+                }
             }
         } else if !any_prefix {
             self.quick_select = None;
@@ -332,6 +494,51 @@ mod tests {
         assert_eq!(split_location("src/a.rs:4:2"), ("src/a.rs".into(), Some(4), Some(2)));
         assert_eq!(split_location("src/a.rs:4"), ("src/a.rs".into(), Some(4), None));
         assert_eq!(split_location("src/a.rs"), ("src/a.rs".into(), None, None));
+    }
+
+    fn blocks(text: &str) -> Vec<String> {
+        let rows: Vec<(String, bool, bool)> = text
+            .lines()
+            .map(|l| (l.to_string(), false, l.starts_with('$')))
+            .collect();
+        let ls = logical_lines(&rows);
+        error_blocks(&ls)
+            .into_iter()
+            .map(|(a, b)| ls[a..=b].iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n"))
+            .collect()
+    }
+
+    #[test]
+    fn rustc_error_block() {
+        let b = blocks(
+            "   Compiling wezzy v0.1.0\nerror[E0308]: mismatched types\n  --> src/a.rs:1:2\n   |\n12 |     x\n\nerror: could not compile `wezzy`\n$ ",
+        );
+        assert_eq!(b.len(), 2, "{b:?}");
+        assert!(b[0].starts_with("error[E0308]") && b[0].ends_with("12 |     x"), "{b:?}");
+        assert_eq!(b[1], "error: could not compile `wezzy`");
+    }
+
+    #[test]
+    fn python_traceback_is_one_block() {
+        let b = blocks(
+            "Traceback (most recent call last):\n  File \"a.py\", line 1, in <module>\n    f()\nValueError: bad\nnext line\nKeyError: other",
+        );
+        assert_eq!(b.len(), 2, "{b:?}");
+        assert!(b[0].starts_with("Traceback") && b[0].ends_with("next line"), "{b:?}");
+        assert_eq!(b[1], "KeyError: other");
+    }
+
+    #[test]
+    fn wrapped_rows_join() {
+        let rows = vec![
+            ("error: a very long".to_string(), true, false),
+            (" message".to_string(), false, false),
+            ("  detail".to_string(), false, false),
+        ];
+        let ls = logical_lines(&rows);
+        assert_eq!(ls.len(), 2);
+        assert_eq!(ls[0].text, "error: a very long message");
+        assert_eq!(error_blocks(&ls), vec![(0, 1)]);
     }
 
     #[test]

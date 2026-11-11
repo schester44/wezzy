@@ -3,6 +3,7 @@
 //! and left with Ctrl+l / esc; vim keys inside.
 
 use crate::app::TermApp;
+use crate::ui::SidePanel;
 use gpui::{Context, KeyDownEvent, Window};
 use mux::pane::PaneId;
 
@@ -105,11 +106,14 @@ impl TermApp {
         let shrink = (m.control && ks.key == "left") || (!m.control && !m.platform && ch == Some("<"));
         if !m.alt && !m.platform && (grow || shrink) {
             let step = if grow { 24. } else { -24. };
-            let max = f32::from(window.viewport_size().width) * 0.8;
-            match self.region {
-                Region::Sidebar => self.sidebar_width = (self.sidebar_width + step).clamp(180., max),
-                Region::Diff => self.diff_width = (self.diff_width + step).clamp(260., max),
-                Region::Terminal => {}
+            let panel = match self.region {
+                Region::Sidebar => Some(SidePanel::Sidebar),
+                Region::Diff => Some(SidePanel::Git),
+                Region::Terminal => None,
+            };
+            if let Some(panel) = panel {
+                let w = self.panel_width(panel) + step;
+                self.set_panel_width(panel, w, f32::from(window.viewport_size().width));
             }
             cx.notify();
             return;

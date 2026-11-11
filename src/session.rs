@@ -137,7 +137,9 @@ async fn attach_and_restore() -> anyhow::Result<()> {
 
     if server_empty {
         let size = config::configuration().initial_size(0, None);
-        domain.spawn(size, None, None, placeholder).await?;
+        let cwd = crate::workspaces::saved(&workspace)
+            .map(|w| w.dir().to_string_lossy().to_string());
+        domain.spawn(size, None, cwd, placeholder).await?;
         send_event(AppEvent::WindowReady(placeholder));
         return Ok(());
     }

@@ -4033,7 +4033,6 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 [[package]]
 name = "mux"
 version = "0.1.0"
-source = "git+https://github.com/wezterm/wezterm?rev=e68a8ec27727fbbda15e07f0a0737cd5e16481f6#e68a8ec27727fbbda15e07f0a0737cd5e16481f6"
 dependencies = [
  "anyhow",
  "async-trait",

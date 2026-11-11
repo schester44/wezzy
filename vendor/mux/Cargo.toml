@@ -1,0 +1,57 @@
+# Vendored from wezterm@e68a8ec with one fix (src/tab.rs): adjust_x_size /
+# adjust_y_size stop when a pass makes no progress. Upstream they spin forever
+# when a split's children can't shrink as far as the parent asks, which happens
+# when the session server hands back a tab whose split sizes don't add up, and
+# that froze the UI thread inside Tab::resize.
+[package]
+name = "mux"
+version = "0.1.0"
+authors = ["Wez Furlong <wez@wezfurlong.org>"]
+edition = "2018"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+base64 = { version = "0.22", default-features = false }
+bintree = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+bitflags = "1.3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "unstable-locales", "serde"] }
+config = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+crossbeam = "0.8"
+downcast-rs = "1.0"
+fancy-regex = { version = "0.14", default-features = false }
+filedescriptor = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+finl_unicode = { version = "1.3", git = "https://github.com/wez/finl_unicode.git", branch = "no_std", default-features = false, features = ["categories", "grapheme_clusters"] }
+hostname = "0.4"
+lazy_static = "1.4"
+libc = "0.2"
+log = "0.4"
+luahelper = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+metrics = "0.23"
+mlua = "0.9"
+names = { version = "0.12", default-features = false }
+nix = { version = "0.29", features = ["term"] }
+parking_lot = "0.12"
+percent-encoding = "2.3"
+portable-pty = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6", features = ["serde_support"] }
+procinfo = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+promise = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+rangeset = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+serde = { version = "1.0", default-features = false, features = ["rc", "derive"] }
+serial2 = "0.2"
+shell-words = "1.1"
+smol = "2.0"
+terminfo = "0.9"
+termwiz-funcs = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+termwiz = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+textwrap = "0.16"
+thiserror = "2.0"
+url = "2"
+wezterm-dynamic = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6", default-features = false }
+wezterm-ssh = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6", features = ["use_serde"] }
+
+[target."cfg(windows)".dependencies]
+ntapi = "0.4"
+windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Networking_WinSock"] }

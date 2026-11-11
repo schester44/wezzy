@@ -1,6 +1,9 @@
 //! Visual layer: theme tokens derived from the WezTerm palette, icons, and the view.
 
 mod git;
+mod help;
+mod panel;
+pub use panel::SidePanel;
 mod view;
 
 use gpui::{px, svg, AssetSource, Hsla, IntoElement, Rgba, SharedString, Styled};

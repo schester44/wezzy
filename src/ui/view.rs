@@ -95,22 +95,22 @@ impl Render for TermApp {
                 if this.drag_split(ev, cx) {
                     return;
                 }
-                if !this.diff_resizing {
+                let Some(panel) = this.panel_drag else {
                     return;
-                }
+                };
                 if ev.pressed_button != Some(MouseButton::Left) {
-                    this.diff_resizing = false;
+                    this.panel_drag = None;
                 } else {
                     let w = f32::from(window.viewport_size().width);
-                    this.diff_width = f32::from(ev.position.x).clamp(260., w * 0.8);
+                    this.set_panel_width(panel, f32::from(ev.position.x), w);
                 }
                 cx.notify();
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
-                    if this.diff_resizing || this.split_drag.is_some() {
-                        this.diff_resizing = false;
+                    if this.panel_drag.is_some() || this.split_drag.is_some() {
+                        this.panel_drag = None;
                         this.split_drag = None;
                         cx.notify();
                     }
@@ -153,6 +153,7 @@ impl Render for TermApp {
             .children(self.toast(&t))
             .children(self.modal(&t, cx))
             .children(self.git_help_modal(&t, cx))
+            .children(self.shortcuts_modal(&t, cx))
     }
 }
 
@@ -170,15 +171,7 @@ impl TermApp {
         let leader = self.keys.leader_active();
         let term_font = term_family();
 
-        div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .w(px(self.sidebar_width))
-            .h_full()
-            .bg(t.chrome)
-            .border_r_1()
-            .border_color(t.border)
+        self.side_panel(super::panel::SidePanel::Sidebar, t, cx)
             .pt_1()
             .when(!agents.is_empty(), |d| {
                 d.child(section_header("Agents", Some(agents.len().to_string()), t))
@@ -281,16 +274,14 @@ impl TermApp {
                 cx.notify();
             }));
 
-        let n_ws = mux.iter_workspaces().len();
+        let all_ws = crate::workspaces::list();
+        let n_ws = all_ws.len();
         let menu = open.then(|| {
-            let rows = mux.iter_workspaces().into_iter().enumerate().map(|(i, ws)| {
-                let is_active = ws == active;
-                let tabs: usize = mux
-                    .iter_windows_in_workspace(&ws)
-                    .iter()
-                    .filter_map(|w| mux.get_window(*w).map(|w| w.count_tabs()))
-                    .sum();
-                let name = ws.clone();
+            let rows = all_ws.into_iter().enumerate().map(|(i, ws)| {
+                let is_active = ws.name == active;
+                let running = ws.tabs.is_some();
+                let detail = ws.detail();
+                let name = ws.name.clone();
                 menu_row(("ws", i), t)
                     .when(self.ws_cursor == i, |d| d.bg(with_alpha(t.fg, 0.07)))
                     .child(
@@ -306,13 +297,19 @@ impl TermApp {
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .child(ws),
+                            .when(!running, |d| d.text_color(t.fg_muted))
+                            .child(ws.name),
                     )
                     .child(
                         div()
+                            .flex_none()
+                            .max_w(px(120.))
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
                             .text_xs()
                             .text_color(t.fg_subtle)
-                            .child(format!("{tabs} {}", if tabs == 1 { "tab" } else { "tabs" })),
+                            .child(detail),
                     )
                     // mouse-down, not click: the container's mouse-down-out handler
                     // would otherwise close the menu before a click completes
@@ -835,6 +832,7 @@ impl TermApp {
                 72.,
                 card(460.).child(self.settings_view(state, t, cx)).into_any_element(),
             ),
+            Overlay::Shortcuts => return None,
         };
 
         Some(

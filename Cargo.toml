@@ -43,3 +43,4 @@ opt-level = 2
 # One-line fix in wezterm-client; see vendor/wezterm-client/Cargo.toml.
 [patch."https://github.com/wezterm/wezterm"]
 wezterm-client = { path = "vendor/wezterm-client" }
+mux = { path = "vendor/mux" }

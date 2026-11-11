@@ -10,8 +10,7 @@ use crate::app::TermApp;
 use crate::diff::{LineKind, Section, Snapshot};
 use crate::gitpanel::{GitPanel, Row};
 use gpui::{
-    div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, Hsla, MouseButton,
-    MouseDownEvent, SharedString,
+    div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, Hsla, SharedString,
 };
 use std::sync::Arc;
 
@@ -22,36 +21,7 @@ impl TermApp {
     pub(super) fn diff_panel(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let snap = crate::diff::snapshot().filter(|s| s.root.is_some());
         let focused = self.region == crate::regions::Region::Diff;
-        let panel = div()
-            .relative()
-            .w(px(self.diff_width))
-            .flex_none()
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(t.chrome)
-            .border_r_1()
-            .border_color(t.border)
-            // drag the right edge to resize
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .right(px(-3.))
-                    .w(px(6.))
-                    .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    .hover(|s| s.bg(with_alpha(t.accent, 0.35)))
-                    .when(self.diff_resizing, |d| d.bg(with_alpha(t.accent, 0.5)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.diff_resizing = true;
-                            cx.notify();
-                        }),
-                    ),
-            );
+        let panel = self.side_panel(super::panel::SidePanel::Git, t, cx);
 
         let Some(snap) = snap else {
             return panel.child(empty_state(Icon::GitBranch, "Not a git repository", None, t));
@@ -875,9 +845,9 @@ impl TermApp {
         if !(self.git.help && self.diff_open) {
             return None;
         }
-        type Group = (&'static str, &'static [(&'static str, &'static str)]);
-        let left: [Group; 3] = [
-            (
+        use super::help::group;
+        let left = vec![
+            group(
                 "Navigate",
                 &[
                     ("j k", "Move (lines too)"),
@@ -887,7 +857,7 @@ impl TermApp {
                     ("o", "Open in editor"),
                 ],
             ),
-            (
+            group(
                 "Changes",
                 &[
                     ("s", "Stage / unstage"),
@@ -895,7 +865,7 @@ impl TermApp {
                     ("d", "Discard"),
                 ],
             ),
-            (
+            group(
                 "Panel",
                 &[
                     ("< >", "Narrower / wider"),
@@ -905,8 +875,8 @@ impl TermApp {
                 ],
             ),
         ];
-        let right: [Group; 2] = [
-            (
+        let right = vec![
+            group(
                 "Feedback",
                 &[
                     ("f", "Comment on line (or hunk header)"),
@@ -916,7 +886,7 @@ impl TermApp {
                     ("d", "Delete comment"),
                 ],
             ),
-            (
+            group(
                 "Commit & agents",
                 &[
                     ("c", "Commit staged"),
@@ -925,99 +895,14 @@ impl TermApp {
                 ],
             ),
         ];
-        let column = |groups: &[Group]| {
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_5()
-                .children(groups.iter().map(|(title, keys)| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(t.fg_subtle)
-                                .child(*title),
-                        )
-                        .children(keys.iter().map(|(k, label)| {
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_3()
-                                .text_size(px(12.))
-                                .child(div().flex_1().min_w_0().text_color(t.fg_muted).child(*label))
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .flex()
-                                        .gap_1()
-                                        .children(k.split(' ').map(|k| kbd(k, t))),
-                                )
-                        }))
-                }))
-        };
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .bg(gpui::hsla(0., 0., 0., 0.35))
-                .flex()
-                .items_center()
-                .justify_center()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                        this.git.help = false;
-                        cx.notify();
-                    }),
-                )
-                .child(
-                    div()
-                        .w(px(600.))
-                        .max_w_full()
-                        .mx_6()
-                        .flex()
-                        .flex_col()
-                        .rounded_xl()
-                        .bg(t.elevated)
-                        .border_1()
-                        .border_color(t.border)
-                        .shadow_2xl()
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .h(px(48.))
-                                .px_5()
-                                .flex()
-                                .items_center()
-                                .border_b_1()
-                                .border_color(t.border)
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Git panel shortcuts"),
-                        )
-                        .child(
-                            div()
-                                .p_5()
-                                .flex()
-                                .gap_8()
-                                .child(column(&left))
-                                .child(column(&right)),
-                        )
-                        .child(
-                            div()
-                                .px_5()
-                                .pb_4()
-                                .text_size(px(11.))
-                                .text_color(t.fg_subtle)
-                                .child("Press any key to close"),
-                        ),
-                ),
-        )
+        Some(super::help::sheet(
+            "Git panel shortcuts",
+            vec![left, right],
+            600.,
+            t,
+            cx,
+            |this| this.git.help = false,
+        ))
     }
 }
 

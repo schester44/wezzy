@@ -155,10 +155,12 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Split Right", split(PaneDirection::Right)),
         ("Split Down", split(PaneDirection::Down)),
         ("Settings", App(AppCommand::OpenSettings)),
+        ("Keyboard Shortcuts", App(AppCommand::ShowShortcuts)),
         ("Restart Wezzy", App(AppCommand::Restart)),
         ("Rebuild & Restart", App(AppCommand::RebuildRestart)),
         ("Open Editor", App(AppCommand::OpenEditor)),
         ("Quick Select", Key(QuickSelect)),
+        ("Quick Select Errors", App(AppCommand::SelectError)),
         ("Send Output to Agent", App(AppCommand::SendOutputToAgent)),
         ("Run Recipe…", App(AppCommand::RunRecipe)),
         ("SSH…", App(AppCommand::SshHost)),
@@ -314,19 +316,14 @@ impl TermApp {
         }
 
         // workspaces
-        for ws in mux.iter_workspaces() {
-            let tabs: usize = mux
-                .iter_windows_in_workspace(&ws)
-                .iter()
-                .filter_map(|w| mux.get_window(*w).map(|w| w.count_tabs()))
-                .sum();
+        for ws in crate::workspaces::list() {
             items.push(Item {
                 kind: Kind::Workspace,
-                title: ws.clone(),
-                subtitle: format!("{tabs} {}", if tabs == 1 { "tab" } else { "tabs" }),
+                subtitle: ws.detail(),
+                title: ws.name.clone(),
                 shortcut: None,
                 status: None,
-                action: PaletteAction::Workspace(ws),
+                action: PaletteAction::Workspace(ws.name),
             });
         }
 
@@ -602,6 +599,9 @@ impl TermApp {
                 crate::settings::update(|s| s.show_sidebar = open);
             }
             AppCommand::OpenSettings => self.open_settings(cx),
+            AppCommand::ShowShortcuts => {
+                self.overlay = Some(crate::app::Overlay::Shortcuts);
+            }
             AppCommand::Restart => self.restart(cx),
             AppCommand::RebuildRestart => self.rebuild_and_restart(cx),
             AppCommand::RunRecipe => self.open_palette(Scope::Recipes, cx),
@@ -629,6 +629,7 @@ impl TermApp {
                 }
             }
             AppCommand::SendOutputToAgent => self.send_output_to_agent(_window, cx),
+            AppCommand::SelectError => self.start_error_select(cx),
             AppCommand::OpenEditor => self.open_editor_here(_window, cx),
             AppCommand::InstallAgentHooks => match crate::hooks::install_claude_hooks() {
                 Ok(()) => self.flash("Hooks installed"),

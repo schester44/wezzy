@@ -24,12 +24,14 @@ pub enum AppCommand {
     InstallAgentHooks,
     ToggleDiffPanel,
     SendOutputToAgent,
+    SelectError,
     OpenEditor,
     OpenSettings,
     RunRecipe,
     SshHost,
     Restart,
     RebuildRestart,
+    ShowShortcuts,
 }
 
 impl AppCommand {
@@ -45,12 +47,14 @@ impl AppCommand {
         Self::InstallAgentHooks,
         Self::ToggleDiffPanel,
         Self::SendOutputToAgent,
+        Self::SelectError,
         Self::OpenEditor,
         Self::OpenSettings,
         Self::RunRecipe,
         Self::SshHost,
         Self::Restart,
         Self::RebuildRestart,
+        Self::ShowShortcuts,
     ];
 
     /// Stable id, used in the event name.
@@ -67,12 +71,14 @@ impl AppCommand {
             Self::InstallAgentHooks => "install-agent-hooks",
             Self::ToggleDiffPanel => "toggle-diff-panel",
             Self::SendOutputToAgent => "send-output-to-agent",
+            Self::SelectError => "select-error",
             Self::OpenEditor => "open-editor",
             Self::OpenSettings => "open-settings",
             Self::RunRecipe => "run-recipe",
             Self::SshHost => "ssh-host",
             Self::Restart => "restart",
             Self::RebuildRestart => "rebuild-restart",
+            Self::ShowShortcuts => "show-shortcuts",
         }
     }
 
@@ -90,12 +96,39 @@ impl AppCommand {
             Self::InstallAgentHooks => "InstallAgentHooks",
             Self::ToggleDiffPanel => "ToggleDiffPanel",
             Self::SendOutputToAgent => "SendOutputToAgent",
+            Self::SelectError => "SelectError",
             Self::OpenEditor => "OpenEditor",
             Self::OpenSettings => "OpenSettings",
             Self::RunRecipe => "RunRecipe",
             Self::SshHost => "SshHost",
             Self::Restart => "Restart",
             Self::RebuildRestart => "RebuildRestart",
+            Self::ShowShortcuts => "ShowShortcuts",
+        }
+    }
+
+    /// How the shortcut sheet names it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ToggleSidebar => "Toggle sidebar",
+            Self::CommandPalette => "Command palette",
+            Self::FindAgent => "Find agent",
+            Self::FindTab => "Find tab",
+            Self::SwitchWorkspace => "Switch workspace",
+            Self::NewWorkspace => "New workspace",
+            Self::NewAgent => "New agent",
+            Self::NewAgentTab => "New agent in a tab",
+            Self::InstallAgentHooks => "Install agent hooks",
+            Self::ToggleDiffPanel => "Git panel",
+            Self::SendOutputToAgent => "Send output to agent",
+            Self::OpenEditor => "Open editor",
+            Self::OpenSettings => "Settings",
+            Self::RunRecipe => "Run recipe",
+            Self::SshHost => "SSH",
+            Self::Restart => "Restart",
+            Self::RebuildRestart => "Rebuild & restart",
+            Self::ShowShortcuts => "Keyboard shortcuts",
+            Self::SelectError => "Select an error",
         }
     }
 
