@@ -43,6 +43,12 @@ and `j`/`k` skip their rows.
 | Green dot | Finished while you were somewhere else, and you haven't been back to it |
 | Gray dot | Finished, and you've seen it; or idle |
 
+Claude's subagents show under the agent that started them, one line each:
+what it was asked to do and what it's doing now. A line goes away when that
+subagent finishes. Subagents running in the background stay listed after
+Claude finishes its turn, until they're done. When a subagent asks for
+permission, the agent it belongs to shows the warning icon.
+
 When an agent finishes or asks for you while you're in another pane, you hear
 the chime and a toast names it. Click the toast to go to that agent. Its dot
 stays green until you go to its pane, so you can see at a glance which ones
@@ -78,6 +84,9 @@ Actions uses the [GitHub CLI](https://cli.github.com), so install it and log in
 once with `gh auth login`.
 
 ## Good to know
+
+- Subagents only show for Claude, and only with Wezzy's agent hooks installed
+  (**Install Claude Code Hooks** in ⌘K).
 
 - Servers on ports below 1024 aren't listed, and neither are the ports agents
   open for themselves.

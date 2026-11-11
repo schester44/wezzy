@@ -126,6 +126,15 @@ the whole UI follows the WezTerm color scheme.
   hosts apply. The view sets the target (active pane's cwd) only while the
   sidebar is open with Actions on; the poller resolves repo root + branch
   (or commit when detached), `owner/repo` via `gh repo view` (cached;
+- **Subagents:** events fired inside a Claude subagent carry `agent_id`; the
+  script writes them to `<WEZTERM_PANE>.<agent_id>.json` so they don't
+  overwrite the main agent's status, and `HookState::subagents` collects them
+  per pane. Labels and the finished flag come from Claude's undocumented
+  `<session>/subagents/agent-<id>.meta.json`, read best-effort. A record goes
+  on `SubagentStop`, when the meta says finished, when the main session ends
+  or changes, or after 30 minutes without events. A subagent waiting on you
+  makes its agent NeedsInput. `hooks::start` re-registers hooks installed by a
+  build that subscribed to fewer events.
   unresolvable repos retried every 5 min), then `gh run list`, keeping each
   workflow's newest run. 10s while a run is active, 60s otherwise; results
   are cached per branch so switching back is instant. ↵ runs `gh run watch` /

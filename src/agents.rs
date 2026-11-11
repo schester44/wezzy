@@ -69,6 +69,8 @@ pub struct Agent {
     pub title: String,
     /// What it's doing / needs right now (from hooks), e.g. "Editing app.rs".
     pub detail: Option<String>,
+    /// Claude subagents it has running (from hooks).
+    pub subagents: Vec<hooks::Subagent>,
     pub project: String,
     pub workspace: String,
     pub status: Status,
@@ -134,6 +136,7 @@ pub fn collect(focused_pane: Option<PaneId>) -> Vec<Agent> {
             .trim()
             .to_string();
 
+        let subagents = hook.as_ref().map(|h| h.subagents.clone()).unwrap_or_default();
         let (status, detail) = match &hook {
             Some(h) => {
                 let s = match h.status {
@@ -161,6 +164,7 @@ pub fn collect(focused_pane: Option<PaneId>) -> Vec<Agent> {
             kind,
             title,
             detail,
+            subagents,
             project,
             workspace,
             status,

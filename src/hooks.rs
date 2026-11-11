@@ -5,6 +5,12 @@
 //! payload to ~/.local/state/wezzy/agents/<WEZTERM_PANE>.json. We poll that
 //! directory and turn the latest event per pane into a `HookState`.
 //!
+//! Events from inside a Claude subagent carry an `agent_id`; the script writes
+//! those to <WEZTERM_PANE>.<agent_id>.json instead, and they show up as the
+//! pane's `subagents`. Claude's own per-subagent meta file
+//! (<session>/subagents/agent-<id>.meta.json) gives the Agent tool's
+//! description and says when it finished; it's read best-effort.
+//!
 //! WEZTERM_PANE is the session server's pane id, so it's mapped to our local
 //! pane id via the client domain.
 
@@ -28,7 +34,13 @@ const CLAUDE_EVENTS: &[&str] = &[
     "PreCompact",
     "Stop",
     "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
 ];
+
+/// A subagent record with no events for this long is assumed dead (killed
+/// before SubagentStop fired).
+const SUBAGENT_STALE: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum HookStatus {
@@ -45,6 +57,19 @@ pub struct HookState {
     pub harness: String,
     pub status: HookStatus,
     /// Human-readable detail: "Editing app.rs", "needs permission to use Bash", ...
+    pub detail: Option<String>,
+    /// Subagents this agent has running, oldest first.
+    pub subagents: Vec<Subagent>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Subagent {
+    pub id: String,
+    /// "Explore", "general-purpose", ...
+    pub kind: String,
+    /// What it was asked to do, as the Agent tool described it.
+    pub description: Option<String>,
+    pub status: HookStatus,
     pub detail: Option<String>,
 }
 
@@ -122,6 +147,19 @@ fn check_claude_hooks() -> bool {
     CLAUDE_EVENTS.iter().all(|ev| has_command(&v["hooks"][ev], &cmd))
 }
 
+/// Registered for some of our events but not all: installed by an older build.
+fn claude_hooks_outdated() -> bool {
+    let Ok(text) = std::fs::read_to_string(claude_settings_path()) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    let cmd = hook_command();
+    let has = |ev: &&str| has_command(&v["hooks"][*ev], &cmd);
+    CLAUDE_EVENTS.iter().any(has) && !CLAUDE_EVENTS.iter().all(has)
+}
+
 fn has_command(groups: &Value, cmd: &str) -> bool {
     groups.as_array().is_some_and(|groups| {
         groups.iter().any(|g| {
@@ -191,13 +229,15 @@ pub fn start() {
     if let Err(e) = write_script() {
         log::warn!("couldn't write agent hook script: {e:#}");
     }
-    // hooks registered before the dekita -> wezzy rename point at the old path;
-    // re-register them at the new one (install replaces our old entries)
-    if std::fs::read_to_string(claude_settings_path())
-        .is_ok_and(|t| t.contains("/.local/share/dekita/bin/agent-hook"))
+    // hooks registered before the dekita -> wezzy rename point at the old path,
+    // and older builds subscribed to fewer events; re-register (install
+    // replaces our old entries)
+    if claude_hooks_outdated()
+        || std::fs::read_to_string(claude_settings_path())
+            .is_ok_and(|t| t.contains("/.local/share/dekita/bin/agent-hook"))
     {
         if let Err(e) = install_claude_hooks() {
-            log::warn!("couldn't move agent hooks to the new path: {e:#}");
+            log::warn!("couldn't update agent hooks: {e:#}");
         }
     }
     std::thread::spawn(|| loop {
@@ -210,7 +250,16 @@ fn poll() {
     let Ok(entries) = std::fs::read_dir(state_dir()) else {
         return;
     };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let mut next: HashMap<PaneId, HookState> = HashMap::new();
+    // main agent's session per pane, to drop subagents left over from an older one
+    let mut sessions: HashMap<PaneId, String> = HashMap::new();
+    let mut ended: Vec<u64> = vec![];
+    // (remote pane, session, started, file, subagent)
+    let mut subs: Vec<(u64, String, std::time::SystemTime, PathBuf, Subagent)> = vec![];
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -225,23 +274,90 @@ fn poll() {
         let Some(remote) = v["pane"].as_u64() else {
             continue;
         };
+        let p = &v["payload"];
+        let harness = v["harness"].as_str().unwrap_or("agent").to_string();
+        let session = p["session_id"].as_str().unwrap_or("").to_string();
+
+        if let Some(id) = p["agent_id"].as_str() {
+            let meta = subagent_meta(p, id);
+            let ts = v["ts"].as_u64().unwrap_or(0);
+            let gone = p["hook_event_name"].as_str() == Some("SubagentStop")
+                || meta.as_ref().is_some_and(|m| m.finished)
+                || now.saturating_sub(ts) > SUBAGENT_STALE.as_secs();
+            if gone {
+                std::fs::remove_file(&path).ok();
+                continue;
+            }
+            let (status, detail) = interpret(&harness, p).unwrap_or((HookStatus::Working, None));
+            let meta = meta.unwrap_or_default();
+            let kind = meta
+                .kind
+                .or_else(|| p["agent_type"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "agent".into());
+            let started = meta
+                .started
+                .or_else(|| entry.metadata().and_then(|m| m.created()).ok())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            subs.push((
+                remote,
+                session,
+                started,
+                path,
+                Subagent {
+                    id: id.to_string(),
+                    kind,
+                    description: meta.description,
+                    status,
+                    detail,
+                },
+            ));
+            continue;
+        }
+
         let Some(local) = crate::session::local_pane_id(remote as PaneId) else {
             continue;
         };
-        let harness = v["harness"].as_str().unwrap_or("agent").to_string();
-        let Some((status, detail)) = interpret(&harness, &v["payload"]) else {
-            // session ended: drop the record
+        let Some((status, detail)) = interpret(&harness, p) else {
+            // session ended: drop the record, and its subagents' below
             std::fs::remove_file(&path).ok();
+            ended.push(remote);
             continue;
         };
+        sessions.insert(local, session);
         next.insert(
             local,
             HookState {
                 harness,
                 status,
                 detail,
+                subagents: vec![],
             },
         );
+    }
+
+    subs.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.4.id.cmp(&b.4.id)));
+    for (remote, session, _, path, sub) in subs {
+        let ended = ended.contains(&remote);
+        let Some(pane) = crate::session::local_pane_id(remote as PaneId) else {
+            continue;
+        };
+        let stale = sessions.get(&pane).is_some_and(|s| !s.is_empty() && !session.is_empty() && *s != session);
+        if ended || stale {
+            std::fs::remove_file(&path).ok();
+            continue;
+        }
+        if let Some(st) = next.get_mut(&pane) {
+            st.subagents.push(sub);
+        }
+    }
+    // a subagent waiting on you means the agent is
+    for st in next.values_mut() {
+        if st.status != HookStatus::NeedsInput {
+            if let Some(sub) = st.subagents.iter().find(|s| s.status == HookStatus::NeedsInput) {
+                st.status = HookStatus::NeedsInput;
+                st.detail = sub.detail.clone();
+            }
+        }
     }
 
     let mut guard = STATES.lock();
@@ -254,9 +370,43 @@ fn poll() {
                 status: st.status.clone(),
                 detail: st.detail.clone(),
             });
+        } else if prev.get(pane).map(|p| &p.subagents) != Some(&st.subagents) {
+            send_event(AppEvent::MuxChanged);
         }
     }
     *guard = Some(next);
+}
+
+#[derive(Default)]
+struct SubagentMeta {
+    kind: Option<String>,
+    description: Option<String>,
+    finished: bool,
+    started: Option<std::time::SystemTime>,
+}
+
+/// Claude's meta file for a subagent, next to the session transcript:
+/// <transcript dir>/<session>/subagents/agent-<id>.meta.json. Not a documented
+/// format, so everything in it is optional.
+fn subagent_meta(p: &Value, id: &str) -> Option<SubagentMeta> {
+    let transcript = p["transcript_path"].as_str()?;
+    let session = p["session_id"].as_str()?;
+    let dir = std::path::Path::new(transcript)
+        .parent()?
+        .join(session)
+        .join("subagents");
+    let meta_path = dir.join(format!("agent-{id}.meta.json"));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&meta_path).ok()?).ok()?;
+    let started = std::fs::metadata(dir.join(format!("agent-{id}.jsonl")))
+        .or_else(|_| std::fs::metadata(&meta_path))
+        .and_then(|m| m.created())
+        .ok();
+    Some(SubagentMeta {
+        kind: v["agentType"].as_str().map(str::to_string),
+        description: v["description"].as_str().map(str::to_string),
+        finished: v["finished"].as_bool().unwrap_or(false),
+        started,
+    })
 }
 
 /// Map a harness event to a status. `None` means the session ended.

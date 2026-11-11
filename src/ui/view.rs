@@ -1446,6 +1446,16 @@ fn paint_pane_label(
     accent: Hsla,
     m: &render::Metrics,
     window: &mut Window,
+                })
+                .when(!a.subagents.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .pt_1()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .children(a.subagents.into_iter().map(|s| subagent_line(s, t))),
+                    )
     cx: &mut gpui::App,
 ) {
     use gpui::{fill, size, Bounds, TextRun};
@@ -1454,6 +1464,47 @@ fn paint_pane_label(
     font.weight = FontWeight::BOLD;
     let text: SharedString = label.to_string().into();
     let run = TextRun {
+/// One of an agent's running subagents, nested in its sidebar row: status,
+/// what it was asked to do, and what it's doing now.
+fn subagent_line(s: crate::hooks::Subagent, t: &Theme) -> impl IntoElement {
+    use crate::hooks::HookStatus;
+    let needs_you = s.status == HookStatus::NeedsInput;
+    let indicator = if needs_you {
+        icon(Icon::Alert, 11., t.warning).into_any_element()
+    } else {
+        spinner(10., t.fg_subtle).into_any_element()
+    };
+    let label = s.description.unwrap_or(s.kind);
+    div()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .text_xs()
+        .whitespace_nowrap()
+        .overflow_hidden()
+        .child(div().w(px(12.)).flex_none().flex().justify_center().child(indicator))
+        .child(
+            div()
+                .flex_none()
+                .max_w(px(140.))
+                .overflow_hidden()
+                .text_ellipsis()
+                .text_color(t.fg_muted)
+                .child(label),
+        )
+        .when_some(s.detail, |d, detail| {
+            d.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(if needs_you { t.warning } else { t.fg_subtle })
+                    .child(detail),
+            )
+        })
+}
+
         len: text.len(),
         font,
         color: gpui::black(),
