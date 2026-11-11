@@ -3,7 +3,7 @@
 A terminal-focused home for your AI agents, built for keyboard warriors who
 consider reaching for the mouse a moral failing.
 
-![Wezzy](docs/screenshot.png)
+![Wezzy](docs/assets/screenshot.png)
 
 Run a fleet of Claude Code / pi agents, see at a glance which one is working,
 which one needs you, and which one finished while you were getting coffee, then

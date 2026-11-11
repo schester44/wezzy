@@ -2,15 +2,25 @@
 
 ## Features
 
-| | |
-|---|---|
-| [ssh.md](ssh.md) | SSH hosts: the ⌘⇧S picker, config, `~/.ssh/config` aliases |
-| [workspaces.md](workspaces.md) | Workspaces, switching, saved workspaces |
-
-## Internals
+How to use Wezzy.
 
 | | |
 |---|---|
-| [architecture.md](architecture.md) | How the app, mux and session server fit together |
-| [design.md](design.md) | UI conventions: selection, rows, borders, spacing |
-| [roadmap/](roadmap) | Planned work: remote compute, mobile |
+| [SSH](features/ssh.md) | Open a shell on your machines from the palette |
+| [Workspaces](features/workspaces.md) | One workspace per project, and saved ones that open in the right folder |
+
+## Development
+
+How Wezzy is built.
+
+| | |
+|---|---|
+| [Architecture](development/architecture.md) | How the app, the mux and the session server fit together |
+| [Design](development/design.md) | UI rules: selection, rows, borders, spacing |
+
+## Roadmap
+
+| | |
+|---|---|
+| [Remote compute](roadmap/remote-compute.md) | Agents and shells on other machines |
+| [Mobile](roadmap/mobile.md) | Wezzy from your phone |

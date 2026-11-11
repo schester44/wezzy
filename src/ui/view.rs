@@ -907,7 +907,7 @@ impl TermApp {
                     })
                     .into_any_element()
             };
-            // full-width row; selection = faint fill + accent bar (docs/design.md)
+            // full-width row; selection = faint fill + accent bar (docs/development/design.md)
             div()
                 .id(("setting", i))
                 .w_full()
@@ -1007,7 +1007,7 @@ impl TermApp {
             };
             let action = item.action.clone();
             rows.push(
-                // full-width row; selection = faint fill + accent bar (docs/design.md)
+                // full-width row; selection = faint fill + accent bar (docs/development/design.md)
                 div()
                     .id(("palette-row", i))
                     .w_full()
@@ -1449,7 +1449,7 @@ fn section_header(title: &str, badge: Option<String>, t: &Theme) -> impl IntoEle
         }))
 }
 
-/// Sidebar row selection (docs/design.md): faint full-width fill + 2px left bar.
+/// Sidebar row selection (docs/development/design.md): faint full-width fill + 2px left bar.
 /// `cursor` is the keyboard cursor while the sidebar has focus (accent bar);
 /// `current` marks the pane you're in (quieter fill, no bar).
 fn row_selection(d: gpui::Stateful<gpui::Div>, cursor: bool, current: bool, t: &Theme) -> gpui::Stateful<gpui::Div> {
