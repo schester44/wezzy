@@ -43,6 +43,42 @@ Completions appear as you type a name:
 Tables in your search path are completed bare (`users`), others with their schema
 (`audit.events`). Names that need quoting get quotes.
 
+## Browsing the schema
+
+⌘O opens a list of the database's schemas and tables at the left of the editor.
+Open a table to see its columns and indexes, or press ↵ on it to see its rows.
+
+| | |
+|---|---|
+| ⌘O | Show the schema and go there; from the schema, hide it |
+| ctrl+h | From the editor or the result, go to the schema |
+| j k, ↑ ↓ | Move |
+| g, G | First row, last row |
+| l, →, ↵ | Expand |
+| h, ← | Collapse, or go up to the row above it |
+| ↵ on a table | Add `select * from` the table to the editor and run it |
+| / | Filter the tables by name |
+| y | Copy the name |
+| esc, ctrl+l | Back to the editor (esc clears the filter first) |
+| ? | All the SQL keys |
+
+With the mouse: click a row to select it and expand or collapse it, and
+double-click a table to run `select * from` it. The wheel scrolls the list.
+
+Schemas in your search path come first and start expanded. Each column shows its
+type, `pk` when it's part of the primary key, and where a foreign key points
+(`→ users.id`). A table's indexes are under "Indexes", with their columns and
+whether they're unique.
+
+The filter matches table names by their letters in order, so `oprf` finds
+`online_profiles`. Type a `.` to match the schema too (`audit.ev`). ↵ keeps the
+filter and goes back to the list; esc clears it.
+
+The query ↵ adds names the table the way completion does: bare when it's in your
+search path, with its schema otherwise. If it's already the last statement in
+the editor, it runs again instead of being added twice. After a `create`,
+`alter` or `drop`, the list updates.
+
 ## Reading the result
 
 | | |
