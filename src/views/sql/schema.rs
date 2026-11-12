@@ -350,15 +350,18 @@ impl Browser {
             "g" => self.move_by(n, -(n as isize)),
             "l" | "right" | "enter" => {
                 let row = row?;
-                match (&row.node, row.open, ks.key.as_str()) {
-                    (Node::Table(i), _, "enter") => return Some(Self::select_sql(schema, *i)),
-                    (_, Some(false), _) => self.toggle(schema, &row, true),
-                    (_, Some(true), "enter") => self.toggle(schema, &row, false),
-                    (_, Some(true), _) => self.move_by(n, 1),
+                match (row.open, ks.key.as_str()) {
+                    (Some(false), _) => self.toggle(schema, &row, true),
+                    (Some(true), "enter") => self.toggle(schema, &row, false),
+                    (Some(true), _) => self.move_by(n, 1),
                     _ => {}
                 }
             }
-            "h" | "left" => {
+            "s" => match row?.node {
+                Node::Table(i) => return Some(Self::select_sql(schema, i)),
+                _ => {}
+            },
+            "h" | "left" | "-" => {
                 let row = row?;
                 if row.open == Some(true) && (self.filter.is_empty() || row.depth > 0) {
                     self.toggle(schema, &row, false);
@@ -389,13 +392,9 @@ impl Browser {
         let i = self.top + ((y - self.list_top) / ROW_H) as usize;
         let Some(row) = rows.get(i).cloned() else { return Act::Nothing };
         self.cursor = i;
-        match (clicks, &row.node, row.open) {
-            // the first click toggled it; put it back and open the table
-            (2, Node::Table(t), Some(open)) => {
-                self.toggle(schema, &row, !open);
-                Self::select_sql(schema, *t)
-            }
-            (1, _, Some(open)) => {
+        match (clicks, row.open) {
+            // a double-click's first click already toggled it
+            (1, Some(open)) => {
                 self.toggle(schema, &row, !open);
                 Act::Nothing
             }
@@ -689,13 +688,17 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_table_opens_it() {
+    fn enter_toggles_a_table_and_s_selects_from_it() {
         let s = schema();
         let mut b = Browser::default();
         let ks = |k: &str| Keystroke::parse(k).unwrap();
         // app is open from the search path; the cursor starts on it
         b.key(&ks("j"), &s);
-        match b.key(&ks("enter"), &s) {
+        b.key(&ks("enter"), &s);
+        assert!(b.expanded.contains("t\0app\0posts"));
+        b.key(&ks("-"), &s);
+        assert!(!b.expanded.contains("t\0app\0posts"));
+        match b.key(&ks("s"), &s) {
             Some(Act::Open(sql)) => assert_eq!(sql, "select * from posts;"),
             _ => panic!("expected Open"),
         }

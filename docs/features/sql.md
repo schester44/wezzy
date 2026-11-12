@@ -54,16 +54,16 @@ Open a table to see its columns and indexes, or press ↵ on it to see its rows.
 | ctrl+h | From the editor or the result, go to the schema |
 | j k, ↑ ↓ | Move |
 | g, G | First row, last row |
-| l, →, ↵ | Expand |
-| h, ← | Collapse, or go up to the row above it |
-| ↵ on a table | Add `select * from` the table to the editor and run it |
+| ↵, l, → | Open a schema, table or index group |
+| -, h, ← | Close it, or go up to the row above it |
+| s on a table | Add `select * from` the table to the editor and run it |
 | / | Filter the tables by name |
 | y | Copy the name |
 | esc, ctrl+l | Back to the editor (esc clears the filter first) |
 | ? | All the SQL keys |
 
-With the mouse: click a row to select it and expand or collapse it, and
-double-click a table to run `select * from` it. The wheel scrolls the list.
+With the mouse: click a row to select it and open or close it. The wheel
+scrolls the list.
 
 Schemas in your search path come first and start expanded. Each column shows its
 type, `pk` when it's part of the primary key, and where a foreign key points

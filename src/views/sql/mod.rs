@@ -973,8 +973,9 @@ impl PaneView for SqlView {
                 &[
                     ("⌘O", "Show / hide the schema"),
                     ("/", "Filter tables"),
-                    ("l h", "Expand / collapse"),
-                    ("↵", "Select from the table"),
+                    ("↵ l", "Expand"),
+                    ("- h", "Collapse"),
+                    ("s", "Select from the table"),
                     ("y", "Copy the name"),
                     ("⌃H", "From the editor"),
                     ("⌃L esc", "Back to the editor"),
