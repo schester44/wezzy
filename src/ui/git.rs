@@ -5,6 +5,7 @@
 //! lines, status letters, +/− counts), hairline borders, generous rhythm.
 
 use super::widgets::{kbd, term_family, with_alpha};
+use super::textfield::{text_field, FieldElement, FieldStyle};
 use super::{icon, spinner, Icon, Theme};
 use crate::app::TermApp;
 use crate::diff::{LineKind, Section, Snapshot};
@@ -215,12 +216,8 @@ impl TermApp {
 
     fn git_composer(&self, snap: &Snapshot, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let c = self.git.composer.as_ref()?;
-        let subject_len = c.text.lines().next().unwrap_or("").chars().count();
-        let mut lines: Vec<&str> = c.text.split('\n').collect();
-        let hidden = lines.len().saturating_sub(10);
-        lines.drain(..hidden);
-        let n = lines.len();
-        let caret = || div().ml_px().w(px(1.5)).h(px(15.)).flex_none().bg(t.accent);
+        let subject_len = c.field.text().lines().next().unwrap_or("").chars().count();
+        let focused = self.region == crate::regions::Region::Diff;
         let context = if let Some(pr) = &c.pr {
             let base = pr.plan.base.as_deref().unwrap_or("");
             match pr.plan.commits {
@@ -253,36 +250,21 @@ impl TermApp {
                         .min_h(px(64.))
                         .flex()
                         .flex_col()
-                        .map(|d| {
-                            if c.text.is_empty() {
-                                d.child(
-                                    div()
-                                        .h(px(18.))
-                                        .flex()
-                                        .items_center()
-                                        .child(caret())
-                                        .child(div().ml_1().text_color(t.fg_subtle).child(if c.pr.is_some() {
-                                            "Pull request title"
-                                        } else {
-                                            "Commit message"
-                                        })),
-                                )
-                            } else {
-                                d.children(lines.into_iter().enumerate().map(|(i, l)| {
-                                    // long lines wrap inside the box; the caret
-                                    // follows the last line's end
-                                    div()
-                                        .min_h(px(18.))
-                                        .min_w_0()
-                                        .flex()
-                                        .items_end()
-                                        .when(i == 0 && hidden == 0, |d| d.font_weight(FontWeight::MEDIUM))
-                                        .when(i > 0 || hidden > 0, |d| d.text_color(t.fg_muted))
-                                        .child(div().min_w_0().flex_shrink().child(SharedString::from(l.to_string())))
-                                        .when(i + 1 == n, |d| d.child(div().mb(px(1.5)).child(caret())))
-                                }))
-                            }
-                        }),
+                        .child(git_field(
+                            &c.field,
+                            FieldStyle {
+                                color: t.fg_muted,
+                                first_line: Some((t.fg, FontWeight::MEDIUM)),
+                                placeholder: if c.pr.is_some() { "Pull request title" } else { "Commit message" }.into(),
+                                placeholder_color: t.fg_subtle,
+                                caret: focused.then_some(t.accent),
+                                selection: with_alpha(t.accent, 0.3),
+                                line_height: px(18.),
+                                max_rows: Some(10),
+                            },
+                            |this| this.git.composer.as_mut().map(|c| &mut c.field),
+                            cx,
+                        )),
                 )
                 .child(
                     div()
@@ -886,10 +868,6 @@ impl RowCtx<'_> {
                 let Some(d) = self.git.comment_draft.as_ref() else {
                     return div().into_any_element();
                 };
-                let text = &d.comment.text;
-                let lines: Vec<&str> = text.split('\n').collect();
-                let n = lines.len();
-                let caret = || div().ml_px().w(px(1.5)).h(px(15.)).flex_none().bg(t.accent);
                 base.py_1p5()
                     .pl(px(14.))
                     .pr_3()
@@ -911,32 +889,21 @@ impl RowCtx<'_> {
                                     .min_h(px(44.))
                                     .flex()
                                     .flex_col()
-                                    .map(|b| {
-                                        if text.is_empty() {
-                                            b.child(
-                                                div()
-                                                    .h(px(18.))
-                                                    .flex()
-                                                    .items_center()
-                                                    .child(caret())
-                                                    .child(
-                                                        div()
-                                                            .ml_1()
-                                                            .text_color(t.fg_subtle)
-                                                            .child("What should change?"),
-                                                    ),
-                                            )
-                                        } else {
-                                            b.children(lines.into_iter().enumerate().map(|(i, l)| {
-                                                div()
-                                                    .min_h(px(18.))
-                                                    .flex()
-                                                    .items_center()
-                                                    .child(SharedString::from(l.to_string()))
-                                                    .when(i + 1 == n, |d| d.child(caret()))
-                                            }))
-                                        }
-                                    }),
+                                    .child(git_field(
+                                        &d.field,
+                                        FieldStyle {
+                                            color: t.fg,
+                                            first_line: None,
+                                            placeholder: "What should change?".into(),
+                                            placeholder_color: t.fg_subtle,
+                                            caret: self.focused.then_some(t.accent),
+                                            selection: with_alpha(t.accent, 0.3),
+                                            line_height: px(18.),
+                                            max_rows: None,
+                                        },
+                                        |this| this.git.comment_draft.as_mut().map(|d| &mut d.field),
+                                        cx,
+                                    )),
                             )
                             .child(
                                 div()
@@ -1240,4 +1207,28 @@ fn empty_state(ic: Icon, title: &'static str, detail: Option<&'static str>, t: &
         )
         .child(div().text_color(t.fg_muted).child(title))
         .children(detail.map(|d| div().text_size(px(12.)).text_color(t.fg_subtle).child(d)))
+}
+
+/// A git panel text box's field. Clicking it focuses the panel; the mouse
+/// goes to whichever field `get` finds (it may have closed meanwhile).
+fn git_field(
+    field: &crate::textfield::TextField,
+    style: FieldStyle,
+    get: fn(&mut TermApp) -> Option<&mut crate::textfield::TextField>,
+    cx: &mut Context<TermApp>,
+) -> FieldElement {
+    let app = cx.entity().downgrade();
+    text_field(field, style, move |ev, window, cx| {
+        app.update(cx, |this, cx| {
+            if matches!(ev, crate::textfield::FieldMouse::Down { .. }) {
+                this.region = crate::regions::Region::Diff;
+                this.focus.focus(window);
+            }
+            if let Some(f) = get(this) {
+                f.mouse(ev);
+            }
+            cx.notify();
+        })
+        .ok();
+    })
 }

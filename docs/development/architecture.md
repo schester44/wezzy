@@ -300,6 +300,18 @@ from render. Git work happens on short-lived threads.
   with git's message instead of hanging.
 - **Review comments:** comments on hunks or lines are sent to an agent as one
   review message with `file:line` context.
+- **Text boxes** (`textfield.rs`, `ui/textfield.rs`): the commit / PR composer
+  and the comment box share one `TextField` (text, cursor and anchor as byte
+  offsets, undo snapshots) and one custom gpui `Element` that shapes the text
+  with `shape_text` (wrapped), paints the selection and caret, and hit-tests
+  the mouse into offsets. Keys still arrive through `region_key` →
+  `composer_key` / `comment_key` → `TextField::key`, with typing from
+  `key_char`; there's no `EntityInputHandler`, so no IME composition. Each
+  paint leaves the visual rows in the field's `Shared` cell, which ↑/↓ use
+  to move by wrapped row (logical lines until the first paint). The ⌘ keys
+  the field edits with are kept from the keymap in `app.rs` while a box is
+  open. The other single-line inputs (palette, prompts, sidebar rename)
+  still edit their own strings.
 - **Live layer** (`gitlive.rs`): `diff::publish` compares each snapshot with
   the previous one (`diff::freshness`), keying hunks by path + body hash so
   staging or shifted line numbers don't count as new; the first snapshot, a

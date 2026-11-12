@@ -20,13 +20,15 @@
 //!   w         follow the agent's edits (moving the cursor stops it)
 //!   ?         shortcut sheet
 //!
-//! Commit / comment / pull request boxes: enter submits, shift+enter adds a
+//! Commit / comment / pull request boxes are `TextField`s (src/textfield.rs,
+//! macOS editing keys and mouse selection): enter submits, shift+enter adds a
 //! line, esc cancels (the commit box keeps a draft). ^D toggles a PR's draft.
 
 use crate::app::TermApp;
 use crate::diff::{self, Op, Section, Snapshot};
 use crate::diff::FileDiff;
 use crate::feedback::Comment;
+use crate::textfield::{Edit, TextField};
 use gpui::{Context, Keystroke, Window};
 use mux::pane::{Pane, PaneId};
 use std::collections::{BTreeSet, HashSet};
@@ -93,56 +95,19 @@ impl Visual {
 pub struct CommentDraft {
     pub comment: Comment,
     pub editing: Option<usize>,
+    /// the text being written; goes into `comment.text` on save
+    pub field: TextField,
 }
 
-enum Edit {
-    Submit,
-    Cancel,
-    Changed,
-}
-
-/// Shared text editing for the commit and comment boxes.
-fn edit_text(text: &mut String, ks: &Keystroke, cx: &mut Context<TermApp>) -> Edit {
-    let m = &ks.modifiers;
-    match ks.key.as_str() {
-        "escape" => return Edit::Cancel,
-        "enter" if m.shift => text.push('\n'),
-        "enter" => return Edit::Submit,
-        "backspace" if m.platform => {
-            // delete the current line
-            let keep = text.rfind('\n').map(|i| i + 1).unwrap_or(0);
-            if keep == text.len() {
-                text.pop();
-            } else {
-                text.truncate(keep);
-            }
-        }
-        "backspace" if m.alt => {
-            let t = text.trim_end_matches(' ');
-            let keep = t.rfind([' ', '\n']).map(|i| i + 1).unwrap_or(0);
-            text.truncate(keep);
-        }
-        "backspace" => {
-            text.pop();
-        }
-        "v" if m.platform => {
-            if let Some(t) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                text.push_str(&t);
-            }
-        }
-        "tab" => text.push_str("    "),
-        _ if !m.control && !m.platform => {
-            if let Some(ch) = &ks.key_char {
-                text.push_str(ch);
-            }
-        }
-        _ => {}
+impl CommentDraft {
+    fn new(comment: Comment, editing: Option<usize>) -> Self {
+        let field = TextField::new(comment.text.clone());
+        Self { comment, editing, field }
     }
-    Edit::Changed
 }
 
 pub struct Composer {
-    pub text: String,
+    pub field: TextField,
     pub amend: bool,
     /// composing a pull request rather than a commit
     pub pr: Option<PrCompose>,
@@ -565,18 +530,12 @@ impl TermApp {
             "f" => match cur {
                 Some(Row::Hunk(sec, fi, hi)) => {
                     let f = &snap.files(sec)[fi];
-                    self.git.comment_draft = Some(CommentDraft {
-                        comment: Comment::for_hunk(sec, &f.path, &f.hunks[hi]),
-                        editing: None,
-                    });
+                    self.git.comment_draft = Some(CommentDraft::new(Comment::for_hunk(sec, &f.path, &f.hunks[hi]), None));
                     self.git.reveal_draft.set(true);
                 }
                 Some(Row::Line(sec, fi, hi, li)) => {
                     let f = &snap.files(sec)[fi];
-                    self.git.comment_draft = Some(CommentDraft {
-                        comment: Comment::for_lines(sec, &f.path, &f.hunks[hi], li, li),
-                        editing: None,
-                    });
+                    self.git.comment_draft = Some(CommentDraft::new(Comment::for_lines(sec, &f.path, &f.hunks[hi], li, li), None));
                     self.git.reveal_draft.set(true);
                 }
                 Some(Row::Comment(i)) => self.edit_comment(i),
@@ -768,7 +727,7 @@ impl TermApp {
         } else {
             std::mem::take(&mut self.git.draft)
         };
-        self.git.composer = Some(Composer { text, amend, pr: None });
+        self.git.composer = Some(Composer { field: TextField::new(text), amend, pr: None });
     }
 
     /// Keys while the commit composer is open. Always consumes the key.
@@ -781,11 +740,11 @@ impl TermApp {
                 return;
             }
         }
-        match edit_text(&mut c.text, ks, cx) {
+        match c.field.key(ks, cx) {
             Edit::Cancel => {
                 let c = self.git.composer.take().expect("open");
                 if !c.amend && c.pr.is_none() {
-                    self.git.draft = c.text;
+                    self.git.draft = c.field.into_text();
                 }
             }
             Edit::Submit if c.pr.is_some() => self.submit_pull_request(),
@@ -812,10 +771,7 @@ impl TermApp {
             "f" | "enter" => {
                 let (lo, hi) = v.range();
                 let path = &snap.files(v.sec)[v.fi].path;
-                self.git.comment_draft = Some(CommentDraft {
-                    comment: Comment::for_lines(v.sec, path, hunk, lo, hi),
-                    editing: None,
-                });
+                self.git.comment_draft = Some(CommentDraft::new(Comment::for_lines(v.sec, path, hunk, lo, hi), None));
                 self.git.visual = None;
                 self.git.reveal_draft.set(true);
                 return;
@@ -832,7 +788,7 @@ impl TermApp {
     /// Keys while a comment is being written. Always consumes the key.
     pub(crate) fn comment_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) {
         let Some(d) = self.git.comment_draft.as_mut() else { return };
-        match edit_text(&mut d.comment.text, ks, cx) {
+        match d.field.key(ks, cx) {
             Edit::Cancel => self.git.comment_draft = None,
             Edit::Submit => self.save_comment(),
             Edit::Changed => {}
@@ -840,7 +796,8 @@ impl TermApp {
     }
 
     pub(crate) fn save_comment(&mut self) {
-        let Some(d) = self.git.comment_draft.take() else { return };
+        let Some(mut d) = self.git.comment_draft.take() else { return };
+        d.comment.text = d.field.into_text();
         let empty = d.comment.text.trim().is_empty();
         match (d.editing, empty) {
             // clearing an existing comment's text deletes it
@@ -855,10 +812,7 @@ impl TermApp {
 
     fn edit_comment(&mut self, i: usize) {
         if let Some(c) = self.git.comments.get(i) {
-            self.git.comment_draft = Some(CommentDraft {
-                comment: c.clone(),
-                editing: Some(i),
-            });
+            self.git.comment_draft = Some(CommentDraft::new(c.clone(), Some(i)));
             self.git.reveal_draft.set(true);
         }
     }
@@ -867,7 +821,7 @@ impl TermApp {
         let Some(snap) = diff::snapshot() else { return };
         let Some(root) = snap.root.clone() else { return };
         let Some(c) = self.git.composer.as_ref() else { return };
-        if c.text.trim().is_empty() {
+        if c.field.text().trim().is_empty() {
             self.flash("Write a commit message first");
             return;
         }
@@ -878,7 +832,7 @@ impl TermApp {
         let c = self.git.composer.take().expect("open");
         self.git.committing = true;
         self.git.committing_run = (!c.amend).then(|| self.commit_ends_run(&snap)).flatten();
-        diff::commit(root, c.text, c.amend);
+        diff::commit(root, c.field.into_text(), c.amend);
     }
 
     /// `p` / `P`: pull or push the branch in the background (`on_synced`).
@@ -919,7 +873,7 @@ impl TermApp {
             }
             Err((err, text)) => {
                 // reopen with the message so nothing is lost
-                self.git.composer = Some(Composer { text, amend, pr: None });
+                self.git.composer = Some(Composer { field: TextField::new(text), amend, pr: None });
                 self.flash(format!("Commit failed: {err}"));
             }
         }
@@ -963,7 +917,7 @@ impl TermApp {
                     return;
                 }
                 self.git.composer = Some(Composer {
-                    text: plan.title.clone(),
+                    field: TextField::new(plan.title.clone()),
                     amend: false,
                     pr: Some(PrCompose { plan, draft: false }),
                 });
@@ -977,7 +931,7 @@ impl TermApp {
             PrEvent::Failed { error, plan, text, draft } => {
                 self.git.creating_pr = false;
                 self.git.composer = Some(Composer {
-                    text,
+                    field: TextField::new(text),
                     amend: false,
                     pr: Some(PrCompose { plan, draft }),
                 });
@@ -989,13 +943,13 @@ impl TermApp {
 
     pub(crate) fn submit_pull_request(&mut self) {
         let Some(c) = self.git.composer.as_ref() else { return };
-        if crate::pr::split_message(&c.text).0.is_empty() {
+        if crate::pr::split_message(c.field.text()).0.is_empty() {
             self.flash("Write a title first");
             return;
         }
         let c = self.git.composer.take().expect("open");
         let Some(pr) = c.pr else { return };
         self.git.creating_pr = true;
-        crate::pr::create(pr.plan, c.text, pr.draft);
+        crate::pr::create(pr.plan, c.field.into_text(), pr.draft);
     }
 }

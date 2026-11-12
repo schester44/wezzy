@@ -8,6 +8,7 @@ mod panel;
 mod queue;
 mod run_card;
 mod settings;
+mod textfield;
 mod sidebar;
 mod terminal;
 mod topbar;

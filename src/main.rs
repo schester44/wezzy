@@ -36,6 +36,7 @@ mod queue;
 mod render;
 mod sendout;
 mod sound;
+mod textfield;
 mod servers;
 mod session;
 mod settings;

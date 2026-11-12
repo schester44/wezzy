@@ -107,7 +107,34 @@ bar that opens the panel this way.
 
 `c` opens a box at the top of the panel. The first line is the subject. ↵
 commits, ⇧↵ adds a line, esc closes the box and keeps what you wrote for next
-time. `a` opens the box with the last commit's message to amend it.
+time. `a` opens the box with the last commit's message to amend it. Past 50
+characters the subject shows its length, in the warning color past 72. A long
+message scrolls inside the box, keeping the line you're on in view.
+
+### Editing text
+
+The commit box, the comment box and the pull request box edit like any macOS
+text field. Click to place the cursor, drag to select, double-click to select
+a word, triple-click for a line, and shift-click to extend the selection.
+
+| | |
+|---|---|
+| ← / → | Move by character (collapses a selection) |
+| ⌥← / ⌥→ | Move by word |
+| ⌘← / ⌘→, ⌃A / ⌃E | Start / end of the line |
+| ↑ / ↓ | Up / down a row, wrapped rows included |
+| ⌘↑ / ⌘↓ | Start / end of the text |
+| ⇧ with any of these | Select as you move |
+| ⌘A | Select all |
+| ⌘C / ⌘X / ⌘V | Copy / cut / paste |
+| ⌘Z / ⇧⌘Z | Undo / redo |
+| ⌫ / ⌥⌫ / ⌘⌫ | Delete a character / a word / to the start of the line |
+| fn⌫ | Delete the character after the cursor |
+| ⌃K | Delete to the end of the line |
+| tab | Insert four spaces |
+| ⇧↵ | New line |
+| ↵ | Commit, save the comment, or create the pull request |
+| esc | Close the box |
 
 ## Comments for the agent
 
@@ -117,6 +144,9 @@ numbers and the changed lines, pasted into the agent's prompt so you can add to
 it before pressing ↵. Comments on files one agent's run changed go to that
 agent. Otherwise, if more than one agent is open in the workspace, you pick
 which one.
+
+The comment box takes the same [editing keys](#editing-text) as the commit
+box: ↵ saves the comment and esc cancels it.
 
 ## Pulling and pushing
 
