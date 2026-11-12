@@ -1,5 +1,5 @@
 //! Settings panel (⌘, or ⌘K → Settings). Vim keys: j/k move, h/l change,
-//! ↵ toggle / edit / run, esc close.
+//! ↵ toggle / edit / run, / search, esc close.
 
 use crate::app::{Overlay, TermApp};
 use crate::settings::{self, AgentLayout, CloseConfirmation};
@@ -40,6 +40,26 @@ pub struct SettingsState {
     pub cursor: usize,
     /// Inline text edit in progress (Editor row).
     pub editing: Option<String>,
+    /// Filters the rows by name or value.
+    pub query: String,
+    /// Typing goes to `query` (after `/`).
+    pub searching: bool,
+}
+
+impl SettingsState {
+    /// The rows `query` leaves; `cursor` indexes into these.
+    pub fn rows(&self, sidebar_open: bool) -> Vec<Row> {
+        let words: Vec<String> = self.query.split_whitespace().map(str::to_lowercase).collect();
+        ROWS.iter()
+            .copied()
+            .filter(|r| {
+                words.is_empty() || {
+                    let hay = format!("{} {}", r.label(), r.value(sidebar_open)).to_lowercase();
+                    words.iter().all(|w| hay.contains(w.as_str()))
+                }
+            })
+            .collect()
+    }
 }
 
 impl Row {
@@ -138,6 +158,8 @@ impl TermApp {
         self.overlay = Some(Overlay::Settings(SettingsState {
             cursor: 0,
             editing: None,
+            query: String::new(),
+            searching: false,
         }));
         cx.notify();
     }
@@ -210,14 +232,20 @@ impl TermApp {
 
     /// Row clicked with the mouse.
     pub(crate) fn settings_click(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(Overlay::Settings(st)) = self.overlay.as_mut() {
-            st.cursor = idx;
+        let sidebar_open = self.sidebar_open;
+        let Some(Overlay::Settings(st)) = self.overlay.as_mut() else {
+            return;
+        };
+        st.cursor = idx;
+        st.searching = false;
+        if let Some(row) = st.rows(sidebar_open).get(idx).copied() {
+            self.change_setting(row, 1, window, cx);
         }
-        self.change_setting(ROWS[idx], 1, window, cx);
     }
 
     pub(crate) fn settings_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
+        let sidebar_open = self.sidebar_open;
         let Some(Overlay::Settings(st)) = self.overlay.as_mut() else {
             return;
         };
@@ -251,8 +279,67 @@ impl TermApp {
             return;
         }
 
-        let n = ROWS.len();
-        let row = ROWS[st.cursor.min(n - 1)];
+        let rows = st.rows(sidebar_open);
+        let n = rows.len();
+        let m = &ks.modifiers;
+
+        // `/` search: typing filters, ↑↓ move, ↵ acts on the row and keeps the filter
+        if st.searching {
+            match ks.key.as_str() {
+                "escape" => {
+                    st.searching = false;
+                    st.query.clear();
+                }
+                "[" if m.control => {
+                    st.searching = false;
+                    st.query.clear();
+                }
+                "enter" => {
+                    st.searching = false;
+                    if let Some(row) = rows.get(st.cursor).copied() {
+                        self.change_setting(row, 1, window, cx);
+                    }
+                }
+                "down" => st.cursor = (st.cursor + 1).min(n.saturating_sub(1)),
+                "n" if m.control => st.cursor = (st.cursor + 1).min(n.saturating_sub(1)),
+                "up" => st.cursor = st.cursor.saturating_sub(1),
+                "p" if m.control => st.cursor = st.cursor.saturating_sub(1),
+                "backspace" if st.query.is_empty() => st.searching = false,
+                "backspace" if m.alt || m.platform => {
+                    st.query.clear();
+                    st.cursor = 0;
+                }
+                "backspace" => {
+                    st.query.pop();
+                    st.cursor = 0;
+                }
+                _ if m.control || m.platform => {}
+                _ => {
+                    if let Some(c) = &ks.key_char {
+                        st.query.push_str(c);
+                        st.cursor = 0;
+                    }
+                }
+            }
+            return;
+        }
+
+        if ks.key_char.as_deref() == Some("/") {
+            st.searching = true;
+            return;
+        }
+        // esc clears a filter before it closes
+        if (ks.key == "escape" || (m.control && ks.key == "[")) && !st.query.is_empty() {
+            st.query.clear();
+            st.cursor = 0;
+            return;
+        }
+        let Some(row) = rows.get(st.cursor.min(n.saturating_sub(1))).copied() else {
+            if matches!(ks.key.as_str(), "escape" | "q") || (m.control && ks.key == "[") {
+                self.overlay = None;
+            }
+            return;
+        };
         match ks.key.as_str() {
             "escape" | "q" => self.overlay = None,
             "[" if ks.modifiers.control => self.overlay = None,

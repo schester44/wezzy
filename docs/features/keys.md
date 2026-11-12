@@ -2,7 +2,14 @@
 
 Wezzy comes with a full keymap: ⌘ shortcuts for the app, and a leader key for
 splitting, moving and renaming, tmux-style. Press **Leader ?** at any time to
-see every key, including your own.
+see every key, including your own. Start typing to narrow the sheet to what
+you're looking for: `split`, `tab` or a key like `⌘k`. esc clears what you
+typed, then closes. The git panel's sheet (**?**) and the SQL view's sheet
+work the same way.
+
+In Settings (⌘,), press **/** to search the settings by name or value. ↑ and ↓
+move through what's left, and ↵ changes the highlighted setting. esc clears the
+search.
 
 The leader is **⌃A**. Press it, let go, then press the next key within three
 seconds.
@@ -16,6 +23,7 @@ seconds.
 | ⌘I / ⌘⇧I | New agent in a split / a new tab |
 | Leader w | New window |
 | ⌘W | Close pane |
+| Leader x | Close another pane without leaving yours |
 | Leader s / Leader v | Split down / right |
 | Leader ⇧S / Leader ⇧V | Split up / left |
 | Leader ↵ or ⌘↵ | Zoom the pane |
@@ -121,7 +129,7 @@ unless you type a capital letter. Wrapped lines copy as one line.
 
 ## Quick select
 
-**Leader f** puts a label on every URL, path, git hash, IP and long number
+**Leader l** puts a label on every URL, path, git hash, IP and long number
 on screen. Type a label to copy that text, or type it in capitals to copy and
 paste it into the pane. esc cancels.
 
@@ -147,6 +155,14 @@ WezTerm's `PaneSelect` action does the rest of the job, in any mode:
 
 `alphabet` sets the letters (it defaults to `quick_select_alphabet`) and
 `show_pane_ids = true` adds each pane's `$WEZTERM_PANE` to its label.
+
+## Closing another pane
+
+**Leader x** puts a red × label on every pane in the tab. Type one and that
+pane closes, and you stay in your pane. esc cancels. If the pane is running
+something, you're asked first, the same as with ⌘W. It's also in the command
+palette as **Close a Pane…**. To bind it to another key in your config, use
+`require("wezzy").action.ClosePane`.
 
 ## Typing ⌃A
 

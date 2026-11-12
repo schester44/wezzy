@@ -136,7 +136,7 @@ impl TermApp {
                             .hover(|s| s.text_color(t.fg).bg(t.hover))
                             .child("?")
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.git.help = true;
+                                this.git.help = Some(String::new());
                                 this.region = crate::regions::Region::Diff;
                                 this.focus.focus(window);
                                 cx.notify();
@@ -961,11 +961,9 @@ pub(super) fn counts(adds: u32, dels: u32, t: &Theme) -> impl IntoElement {
 
 impl TermApp {
     /// The git panel's shortcut sheet (`?`), drawn over the whole window so it
-    /// has room regardless of how narrow the panel is. Any key or click closes it.
+    /// has room regardless of how narrow the panel is. Typing filters it.
     pub(super) fn git_help_modal(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        if !(self.git.help && self.diff_open) {
-            return None;
-        }
+        let query = self.git.help.as_deref().filter(|_| self.diff_open)?;
         use super::help::group;
         let left = vec![
             group(
@@ -1023,11 +1021,12 @@ impl TermApp {
         ];
         Some(super::help::sheet(
             "Git panel shortcuts",
+            query,
             vec![left, right],
             600.,
             t,
             cx,
-            |this| this.git.help = false,
+            |this| this.git.help = None,
         ))
     }
 }

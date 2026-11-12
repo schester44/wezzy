@@ -3,7 +3,7 @@
 use super::widgets::{term_family, with_alpha};
 use super::{icon, Icon, Theme};
 use crate::app::TermApp;
-use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight};
+use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context};
 
 impl TermApp {
     pub(super) fn settings_view(
@@ -12,8 +12,10 @@ impl TermApp {
         t: &Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        use crate::settings_ui::{Row, ROWS};
-        let rows = ROWS.iter().enumerate().map(|(i, row)| {
+        use crate::settings_ui::Row;
+        let visible = state.rows(self.sidebar_open);
+        let empty = visible.is_empty();
+        let rows = visible.iter().enumerate().map(|(i, row)| {
             let is_cur = i == state.cursor;
             let editing = is_cur && *row == Row::Editor && state.editing.is_some();
             let value: AnyElement = if editing {
@@ -85,17 +87,14 @@ impl TermApp {
         div()
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .h(px(48.))
-                    .px_4()
+            .child(super::help::search_header("Settings", &state.query, state.searching, t).px_4())
+            .child(div().py_1p5().children(rows).when(empty, |d| {
+                d.py_6()
                     .flex()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(t.border)
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("Settings"),
-            )
-            .child(div().py_1p5().children(rows))
+                    .justify_center()
+                    .text_size(px(12.))
+                    .text_color(t.fg_subtle)
+                    .child("No matches")
+            }))
     }
 }

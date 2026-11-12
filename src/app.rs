@@ -230,10 +230,10 @@ pub(crate) enum Overlay {
     Settings(crate::settings_ui::SettingsState),
     /// The attention queue (⌘J): agents waiting on you.
     Queue(crate::queue::QueueState),
-    /// The global shortcut sheet (Leader ?); any key or click closes it.
-    Shortcuts,
+    /// The global shortcut sheet (Leader ?), with what's typed to filter it.
+    Shortcuts(String),
     /// A view's own sheet (`?` in it), for the view in this pane.
-    ViewShortcuts(PaneId),
+    ViewShortcuts(PaneId, String),
 }
 
 /// Where the terminal grid was last painted, for mouse hit-testing.
@@ -595,7 +595,7 @@ impl TermApp {
             AppEvent::Redraw => {}
             AppEvent::ViewShortcuts => {
                 if let Some(id) = self.active_pane().map(|p| p.pane_id()) {
-                    self.overlay = Some(Overlay::ViewShortcuts(id));
+                    self.overlay = Some(Overlay::ViewShortcuts(id, String::new()));
                 }
             }
             AppEvent::RebuildFinished { ok, dir } => self.rebuild_finished(ok, dir, window, cx),
@@ -907,7 +907,11 @@ impl TermApp {
                     _ => {}
                 }
             }
-            Overlay::Shortcuts | Overlay::ViewShortcuts(_) => self.overlay = None,
+            Overlay::Shortcuts(query) | Overlay::ViewShortcuts(_, query) => {
+                if crate::shortcuts::sheet_key(query, ks, cx) {
+                    self.overlay = None;
+                }
+            }
             Overlay::Palette(_) | Overlay::Settings(_) | Overlay::Queue(_) => {}
         }
     }
@@ -2014,7 +2018,7 @@ pub(crate) fn strip_escapes(s: &str) -> String {
 }
 
 
-fn needs_confirmation(can_close_quietly: impl FnOnce() -> bool) -> bool {
+pub(crate) fn needs_confirmation(can_close_quietly: impl FnOnce() -> bool) -> bool {
     use crate::settings::CloseConfirmation::*;
     match crate::settings::get().close_confirmation {
         Never => false,
@@ -2024,7 +2028,7 @@ fn needs_confirmation(can_close_quietly: impl FnOnce() -> bool) -> bool {
 }
 
 /// "claude is still running" / "claude and node are still running"
-fn running_detail(panes: &[Arc<dyn Pane>]) -> String {
+pub(crate) fn running_detail(panes: &[Arc<dyn Pane>]) -> String {
     let mut names: Vec<String> = panes
         .iter()
         .filter(|p| !crate::views::is_view(p))

@@ -1,21 +1,23 @@
 //! Shortcut sheets: the git panel's (`?`) and the global one (Leader ?).
-//! Both are drawn over the whole window; any key or click closes them.
+//! Both are drawn over the whole window. Typing filters them; esc, ↵ or a
+//! click closes them.
 
 use super::widgets::kbd;
-use super::Theme;
+use super::{icon, Icon, Theme};
 use crate::app::{Overlay, TermApp};
 use crate::shortcuts::{Group, Row};
 use gpui::{div, prelude::*, px, relative, AnyElement, Context, FontWeight, MouseButton, MouseDownEvent};
 
 impl TermApp {
     pub(super) fn shortcuts_modal(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        if !matches!(self.overlay, Some(Overlay::Shortcuts)) {
+        let Some(Overlay::Shortcuts(query)) = &self.overlay else {
             return None;
-        }
+        };
         let columns = crate::shortcuts::sheet(&self.keys);
         let width = 300. * columns.len().max(2) as f32;
         Some(sheet(
             "Keyboard shortcuts",
+            query,
             columns,
             width,
             t,
@@ -28,12 +30,12 @@ impl TermApp {
 impl TermApp {
     /// A view's sheet (`?` inside it).
     pub(super) fn view_shortcuts_modal(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let Some(Overlay::ViewShortcuts(pane_id)) = self.overlay else {
+        let Some(Overlay::ViewShortcuts(pane_id, query)) = &self.overlay else {
             return None;
         };
-        let (title, columns) = self.views.shortcuts(pane_id)?;
+        let (title, columns) = self.views.shortcuts(*pane_id)?;
         let width = 300. * columns.len().max(2) as f32;
-        Some(sheet(title, columns, width, t, cx, |this| this.overlay = None))
+        Some(sheet(title, query, columns, width, t, cx, |this| this.overlay = None))
     }
 }
 
@@ -51,14 +53,48 @@ pub(crate) fn group(title: &str, rows: &[(&str, &str)]) -> Group {
     }
 }
 
+/// The search field that heads a sheet or a list: the title stands in until
+/// you type.
+pub(super) fn search_header(title: &'static str, query: &str, active: bool, t: &Theme) -> gpui::Div {
+    let caret = || div().w(px(1.5)).h(px(15.)).bg(t.accent);
+    div()
+        .flex_none()
+        .h(px(48.))
+        .flex()
+        .items_center()
+        .gap_2p5()
+        .border_b_1()
+        .border_color(t.border)
+        .child(icon(Icon::Search, 14., t.fg_subtle))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .map(|d| {
+                    if query.is_empty() {
+                        d.when(active, |d| d.child(caret()))
+                            .child(div().ml_px().font_weight(FontWeight::MEDIUM).child(title))
+                    } else {
+                        d.child(query.to_string()).when(active, |d| d.child(div().ml_px().child(caret())))
+                    }
+                }),
+        )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn sheet(
     title: &'static str,
+    query: &str,
     columns: Vec<Vec<Group>>,
     width: f32,
     t: &Theme,
     cx: &mut Context<TermApp>,
     close: fn(&mut TermApp),
 ) -> AnyElement {
+    let columns = crate::shortcuts::filter(columns, query);
+    let empty = columns.is_empty();
     let column = |groups: Vec<Group>| {
         div()
             .flex_1()
@@ -124,18 +160,7 @@ pub(super) fn sheet(
                 .border_color(t.border)
                 .shadow_2xl()
                 .overflow_hidden()
-                .child(
-                    div()
-                        .flex_none()
-                        .h(px(48.))
-                        .px_5()
-                        .flex()
-                        .items_center()
-                        .border_b_1()
-                        .border_color(t.border)
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(title),
-                )
+                .child(search_header(title, query, true, t).px_5())
                 .child(
                     div()
                         .id("shortcut-sheet")
@@ -145,16 +170,14 @@ pub(super) fn sheet(
                         .p_5()
                         .flex()
                         .gap_8()
-                        .children(columns.into_iter().map(column)),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .px_5()
-                        .pb_4()
-                        .text_size(px(11.))
-                        .text_color(t.fg_subtle)
-                        .child("Press any key to close"),
+                        .children(columns.into_iter().map(column))
+                        .when(empty, |d| {
+                            d.justify_center()
+                                .py_3()
+                                .text_size(px(12.))
+                                .text_color(t.fg_subtle)
+                                .child("No matches")
+                        }),
                 ),
         )
         .into_any_element()

@@ -53,7 +53,7 @@ cargo test
 | `paneselect.rs` | PaneSelect (Leader m): pane labels, swaps done on the server |
 | `settings.rs`, `paths.rs`, `sound.rs`, `restart.rs` | settings.json + Lua `setup()`, file locations, chime, restart |
 | `update.rs` | automatic updates: polls the release feed, verifies and swaps in the new bundle |
-| `scripts/bundle.sh`, `scripts/release.sh` | build Wezzy.app; cut a signed, notarized draft release (`docs/development/releasing.md`) |
+| `scripts/bundle.sh`, `scripts/rebuild.sh`, `scripts/release.sh` | build Wezzy.app; build + install in /Applications + restart the app; cut a signed, notarized draft release (`docs/development/releasing.md`) |
 | `vendor/wezterm-client` | patched copy; see its `Cargo.toml` for the diff |
 | `config/wezzy.lua` | default config written on first run (embedded) |
 | `assets/` | icons (SVG, embedded), app icon, agent hook script |

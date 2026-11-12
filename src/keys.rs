@@ -445,8 +445,9 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
                 ..Default::default()
             }),
         ),
+        ((WKey::Char('x'), l), AppCommand::ClosePane.action()),
         ((WKey::Char('y'), l), ActivateCopyMode),
-        ((WKey::Char('f'), l), QuickSelect),
+        ((WKey::Char('l'), l), QuickSelect),
         (
             (WKey::Char('r'), l),
             ActivateKeyTable {

@@ -53,7 +53,7 @@ macOS only for now. Download `Wezzy.dmg` from the
 | ⌘B | Sidebar |
 | ⌘, | Settings |
 | ⌘⇧↵ | Send last output to an agent |
-| Leader f | Quick select |
+| Leader l | Quick select |
 | ⌃h/j/k/l | Move between panes and panels |
 | ⌘W / Leader q | Close pane / tab |
 | Leader s / v | Split down / right |

@@ -2,6 +2,10 @@
 //! type one to activate it, swap it with the active pane, or move it out to
 //! its own tab or window. Esc cancels.
 //!
+//! Wezzy adds a close mode (Leader x, `AppCommand::ClosePane`): the labels
+//! turn danger-colored with a ×, and the picked pane closes without moving
+//! focus. It asks first like ⌘W does (`close_confirmation`).
+//!
 //! Swaps happen on the session server, so they survive a resync. The protocol
 //! has no swap, only "move this pane into a split of that one"
 //! (`SplitSource::MovePane`), so a swap is built from moves:
@@ -13,12 +17,13 @@
 //!   hands its area to its sibling, so each pane ends with the other's exact
 //!   rectangle.
 
-use crate::app::{send_event, AppEvent, TermApp};
-use config::keyassignment::{PaneSelectArguments, PaneSelectMode, SpawnTabDomain};
+use crate::app::{send_event, AppEvent, Overlay, TermApp};
+use config::keyassignment::{KeyAssignment, PaneSelectArguments, PaneSelectMode, SpawnTabDomain};
+use std::sync::Arc;
 use gpui::{Context, KeyDownEvent};
 use mux::domain::SplitSource;
-use mux::pane::PaneId;
-use mux::tab::{SplitDirection, SplitRequest, SplitSize, TabId};
+use mux::pane::{Pane, PaneId};
+use mux::tab::{SplitDirection, SplitRequest, SplitSize, Tab, TabId};
 use mux::Mux;
 use portable_pty::CommandBuilder;
 
@@ -29,11 +34,21 @@ pub struct PaneSelect {
     pub labels: Vec<(PaneId, String)>,
     pub typed: String,
     pub show_ids: bool,
+    /// close the picked pane instead of `mode`
+    pub close: bool,
     was_zoomed: bool,
 }
 
 impl TermApp {
     pub(crate) fn start_pane_select(&mut self, args: &PaneSelectArguments, cx: &mut Context<Self>) {
+        self.open_pane_select(args, false, cx);
+    }
+
+    pub(crate) fn start_close_pane_select(&mut self, cx: &mut Context<Self>) {
+        self.open_pane_select(&PaneSelectArguments::default(), true, cx);
+    }
+
+    fn open_pane_select(&mut self, args: &PaneSelectArguments, close: bool, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab() else {
             return;
         };
@@ -44,10 +59,11 @@ impl TermApp {
             cx.notify();
             return;
         }
-        let swap = matches!(
-            args.mode,
-            PaneSelectMode::SwapWithActive | PaneSelectMode::SwapWithActiveKeepFocus
-        );
+        let swap = !close
+            && matches!(
+                args.mode,
+                PaneSelectMode::SwapWithActive | PaneSelectMode::SwapWithActiveKeepFocus
+            );
         let picks: Vec<PaneId> = panes
             .iter()
             .filter(|p| !(swap && p.is_active))
@@ -68,6 +84,7 @@ impl TermApp {
             labels: picks.into_iter().zip(labels).collect(),
             typed: String::new(),
             show_ids: args.show_pane_ids,
+            close,
             was_zoomed,
         });
         cx.notify();
@@ -117,6 +134,10 @@ impl TermApp {
         let (Some(tab), Some(pane)) = (mux.get_tab(ps.tab_id), mux.get_pane(picked)) else {
             return;
         };
+        if ps.close {
+            self.close_picked_pane(&ps, &tab, &pane);
+            return;
+        }
         match ps.mode {
             PaneSelectMode::Activate => {
                 tab.set_active_pane(&pane);
@@ -159,6 +180,31 @@ impl TermApp {
                 })
                 .detach();
             }
+        }
+    }
+}
+
+impl TermApp {
+    /// Close mode: kill `pane`, asking first if it's running something.
+    fn close_picked_pane(&mut self, ps: &PaneSelect, tab: &Arc<Tab>, pane: &Arc<dyn Pane>) {
+        let picked = pane.pane_id();
+        let closing_active = tab.get_active_pane().is_some_and(|a| a.pane_id() == picked);
+        // the zoomed pane was the active one; zoom back unless it's the one going
+        if ps.was_zoomed && !closing_active {
+            tab.set_zoomed(true);
+        }
+        if crate::app::needs_confirmation(|| crate::procs::can_close_quietly(pane)) {
+            self.overlay = Some(Overlay::Confirm {
+                message: "Close this pane?".into(),
+                detail: crate::app::running_detail(&[pane.clone()]),
+                verb: "Close",
+                action: KeyAssignment::CloseCurrentPane { confirm: false },
+                cancel: None,
+                pane_id: picked,
+            });
+        } else {
+            tab.kill_pane(picked);
+            Mux::get().prune_dead_windows();
         }
     }
 }

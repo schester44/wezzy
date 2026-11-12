@@ -87,6 +87,58 @@ pub fn sheet(keys: &KeyState) -> Vec<Vec<Group>> {
     columns
 }
 
+/// Every word of `query` appears in the row's group title, label or keys
+/// (case ignored). Empty groups and columns drop out.
+pub fn filter(columns: Vec<Vec<Group>>, query: &str) -> Vec<Vec<Group>> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return columns;
+    }
+    columns
+        .into_iter()
+        .map(|col| {
+            col.into_iter()
+                .filter_map(|mut g| {
+                    let title = g.title.to_lowercase();
+                    g.rows.retain(|r| {
+                        let hay = format!("{title} {} {}", r.label.to_lowercase(), r.keys.join(" ").to_lowercase());
+                        words.iter().all(|w| hay.contains(w.as_str()))
+                    });
+                    (!g.rows.is_empty()).then_some(g)
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
+/// A key while a sheet is open: typing filters it. Returns true when the
+/// sheet should close (esc with nothing typed, ↵, `?` with nothing typed).
+pub fn sheet_key(query: &mut String, ks: &gpui::Keystroke, cx: &gpui::App) -> bool {
+    let m = &ks.modifiers;
+    match ks.key.as_str() {
+        "escape" if !query.is_empty() => query.clear(),
+        "escape" | "enter" => return true,
+        "[" if m.control => return true,
+        "backspace" if m.alt || m.platform => query.clear(),
+        "backspace" => {
+            query.pop();
+        }
+        "v" if m.platform => {
+            if let Some(t) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                query.push_str(t.lines().next().unwrap_or(""));
+            }
+        }
+        _ if m.control || m.platform => {}
+        _ => match ks.key_char.as_deref() {
+            Some("?") if query.is_empty() => return true,
+            Some(c) => query.push_str(c),
+            None => {}
+        },
+    }
+    false
+}
+
 /// Lowercase before uppercase, letters before punctuation: the order you'd scan for.
 fn sort_key(k: &str) -> (bool, String, bool) {
     let shifted = k.starts_with('⇧');
@@ -164,7 +216,13 @@ fn describe(action: &KeyAssignment) -> Option<(Section, String)> {
     use Section::*;
     let s = |sec: Section, l: &str| Some((sec, l.to_string()));
     match action {
-        EmitEvent(name) => AppCommand::from_event(name).and_then(|c| s(App, c.label())),
+        EmitEvent(name) => AppCommand::from_event(name).and_then(|c| {
+            let sec = match c {
+                AppCommand::ClosePane => Panes,
+                _ => App,
+            };
+            s(sec, c.label())
+        }),
         ActivateCommandPalette | ShowLauncher => s(App, "Command palette"),
         ShowLauncherArgs(a) if a.flags.contains(LauncherFlags::WORKSPACES) => {
             s(App, "Switch workspace")
@@ -249,7 +307,7 @@ fn describe(action: &KeyAssignment) -> Option<(Section, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::collapse;
+    use super::{collapse, filter, Group, Row};
 
     fn v(k: &[&str]) -> Vec<String> {
         k.iter().map(|s| s.to_string()).collect()
@@ -264,6 +322,22 @@ mod tests {
     #[test]
     fn shares_modifiers() {
         assert_eq!(collapse(v(&["⌥⌘←", "⌥⌘↑", "⌥⌘→"])), v(&["⌥⌘", "←", "↑", "→"]));
+    }
+
+    #[test]
+    fn filters_by_label_keys_and_group() {
+        let cols = || {
+            vec![vec![
+                Group { title: "Terminal".into(), rows: vec![Row { keys: v(&["⌘C"]), label: "Copy".into() }] },
+                Group { title: "Panes".into(), rows: vec![Row { keys: v(&["⌘W"]), label: "Close pane".into() }] },
+            ]]
+        };
+        let titles = |c: Vec<Vec<Group>>| c.into_iter().flatten().map(|g| g.rows[0].label.clone()).collect::<Vec<_>>();
+        assert_eq!(titles(filter(cols(), "copy")), v(&["Copy"]));
+        assert_eq!(titles(filter(cols(), "⌘w")), v(&["Close pane"]));
+        assert_eq!(titles(filter(cols(), "panes close")), v(&["Close pane"]));
+        assert!(filter(cols(), "zzz").is_empty());
+        assert_eq!(filter(cols(), " ").into_iter().flatten().count(), 2);
     }
 
     #[test]

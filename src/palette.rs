@@ -189,6 +189,7 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Create Pull Request", App(AppCommand::CreatePullRequest)),
         ("Toggle Pane Zoom", Key(TogglePaneZoomState)),
         ("Close Pane", Key(CloseCurrentPane { confirm: true })),
+        ("Close a Pane…", App(AppCommand::ClosePane)),
         ("Close Tab", Key(CloseCurrentTab { confirm: true })),
         ("Next Tab", Key(ActivateTabRelative(1))),
         ("Previous Tab", Key(ActivateTabRelative(-1))),
@@ -701,7 +702,7 @@ impl TermApp {
             }
             AppCommand::OpenSettings => self.open_settings(cx),
             AppCommand::ShowShortcuts => {
-                self.overlay = Some(crate::app::Overlay::Shortcuts);
+                self.overlay = Some(crate::app::Overlay::Shortcuts(String::new()));
             }
             AppCommand::Restart => self.restart(cx),
             AppCommand::RebuildRestart => self.rebuild_and_restart(cx),
@@ -728,6 +729,7 @@ impl TermApp {
                     }
                 }
             }
+            AppCommand::ClosePane => self.start_close_pane_select(cx),
             AppCommand::BalancePanes => {
                 if let Some(tab) = self.active_tab() {
                     crate::app::balance_panes(&tab);

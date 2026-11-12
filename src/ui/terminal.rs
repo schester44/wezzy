@@ -112,6 +112,9 @@ impl TermApp {
                 .filter(|(_, l)| l.starts_with(&ps.typed))
                 .map(|(id, l)| {
                     let mut l = l.to_uppercase();
+                    if ps.close {
+                        l = format!("× {l}");
+                    }
                     if ps.show_ids {
                         if let Some(remote) = crate::session::remote_pane_id(*id) {
                             l = format!("{l} {remote}");
@@ -122,6 +125,10 @@ impl TermApp {
                 .collect();
             labels
         });
+        let label_color = match &self.pane_select {
+            Some(ps) if ps.close => t.danger,
+            _ => hint_color,
+        };
         let copy = self
             .copy_mode
             .as_ref()
@@ -248,7 +255,7 @@ impl TermApp {
                                     paint_metrics.line_h * p.height as f32,
                                 ),
                             );
-                            paint_pane_label(rect, label, hint_color, &paint_metrics, window, cx);
+                            paint_pane_label(rect, label, label_color, &paint_metrics, window, cx);
                         }
                     }
                 }

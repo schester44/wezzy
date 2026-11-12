@@ -63,7 +63,7 @@ impl TermApp {
         }
         if self.region == Region::Diff
             && (self.git.confirm.is_some()
-                || self.git.help
+                || self.git.help.is_some()
                 || self.git.comment_draft.is_some()
                 || self.git.visual.is_some())
         {

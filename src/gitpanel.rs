@@ -169,8 +169,8 @@ pub struct GitPanel {
     /// message kept when the composer is dismissed
     pub draft: String,
     pub confirm: Option<PendingDiscard>,
-    /// the `?` shortcut sheet
-    pub help: bool,
+    /// the `?` shortcut sheet, with what's typed to filter it
+    pub help: Option<String>,
     pub committing: bool,
     /// a pull or push running in the background
     pub syncing: Option<diff::Sync>,
@@ -197,7 +197,7 @@ impl Default for GitPanel {
             composer: None,
             draft: String::new(),
             confirm: None,
-            help: false,
+            help: None,
             committing: false,
             syncing: None,
             creating_pr: false,
@@ -385,12 +385,14 @@ impl TermApp {
             self.comment_key(ks, cx);
             return;
         }
-        if self.git.help {
-            self.git.help = false;
+        if let Some(query) = self.git.help.as_mut() {
+            if crate::shortcuts::sheet_key(query, ks, cx) {
+                self.git.help = None;
+            }
             return;
         }
         if ks.key_char.as_deref() == Some("?") || ks.key == "?" {
-            self.git.help = true;
+            self.git.help = Some(String::new());
             return;
         }
         if self.git.visual.is_some() {
@@ -564,7 +566,7 @@ impl TermApp {
         self.git.comment_draft = None;
         self.git.visual = None;
         self.git.confirm = None;
-        self.git.help = false;
+        self.git.help = None;
         self.region = crate::regions::Region::Terminal;
     }
 
