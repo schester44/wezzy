@@ -81,14 +81,26 @@ impl MouseState {
             mouse.pending.store(true, Ordering::SeqCst);
             let remote_pane_id = mouse.remote_pane_id;
 
+            // The terminal writes one wheel report per event and ignores the
+            // count, so send a coalesced WheelUp(n) as n single ticks.
+            let (button, ticks) = match event.button {
+                MouseButton::WheelUp(n) => (MouseButton::WheelUp(1), n.max(1)),
+                MouseButton::WheelDown(n) => (MouseButton::WheelDown(1), n.max(1)),
+                MouseButton::WheelLeft(n) => (MouseButton::WheelLeft(1), n.max(1)),
+                MouseButton::WheelRight(n) => (MouseButton::WheelRight(1), n.max(1)),
+                b => (b, 1),
+            };
+
             promise::spawn::spawn(async move {
-                client
-                    .mouse_event(SendMouseEvent {
-                        pane_id: remote_pane_id,
-                        event,
-                    })
-                    .await
-                    .ok();
+                for _ in 0..ticks {
+                    client
+                        .mouse_event(SendMouseEvent {
+                            pane_id: remote_pane_id,
+                            event: MouseEvent { button, ..event },
+                        })
+                        .await
+                        .ok();
+                }
 
                 let mouse = state.lock();
                 mouse.pending.store(false, Ordering::SeqCst);

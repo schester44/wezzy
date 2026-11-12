@@ -19,6 +19,9 @@
 #    sizes disagreed (a pane wider than its tab), it resends every pane's size
 #    so the server rebuilds its splits and can split again.
 #    (src/domain.rs, ClientPane::send_size in src/pane/clientpane.rs)
+#  - Coalesced wheel events (WheelUp(n)) are sent as n single ticks: the
+#    terminal reports one wheel event regardless of n, so fast scrolling in
+#    mouse-reporting apps (nvim) dropped ticks and jumped. (src/pane/mousestate.rs)
 [package]
 name = "wezterm-client"
 version = "0.1.0"
