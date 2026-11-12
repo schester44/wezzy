@@ -4,7 +4,7 @@
 //! Visual rules: neutral chrome, color only where it carries meaning (diff
 //! lines, status letters, +/− counts), hairline borders, generous rhythm.
 
-use super::view::{kbd, term_family, with_alpha};
+use super::widgets::{kbd, term_family, with_alpha};
 use super::{icon, spinner, Icon, Theme};
 use crate::app::TermApp;
 use crate::diff::{LineKind, Section, Snapshot};

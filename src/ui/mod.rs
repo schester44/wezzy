@@ -2,11 +2,18 @@
 
 mod git;
 mod help;
+mod modal;
+mod palette;
 mod panel;
+mod settings;
+mod sidebar;
+mod terminal;
+mod topbar;
+mod view;
+mod widgets;
 pub use panel::SidePanel;
 pub(crate) use help::group as shortcut_group;
-pub(crate) use view::{term_family, with_alpha};
-mod view;
+pub(crate) use widgets::{term_family, with_alpha};
 
 use gpui::{px, svg, AssetSource, Hsla, IntoElement, Rgba, SharedString, Styled};
 use std::borrow::Cow;

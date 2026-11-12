@@ -6,7 +6,7 @@
 //!
 //! Adding a source: a `Source` variant (+ `ALL`, `id`, `title`), an `Item`
 //! variant, its items in `TermApp::source_items`, its keys in
-//! `TermApp::sidebar_activate`, and a row in `ui/view.rs`. Pollers that cost
+//! `TermApp::sidebar_activate`, and a row in `ui/sidebar.rs`. Pollers that cost
 //! something should check `settings::get().sidebar_enabled(..)` and idle
 //! while their source is off.
 

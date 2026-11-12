@@ -2,7 +2,7 @@
 //! fixed width, chrome background, hairline right border, and a drag handle on
 //! the right edge. Width changes (drag or ⌃←/⌃→) go through `set_panel_width`.
 
-use super::view::with_alpha;
+use super::widgets::with_alpha;
 use super::Theme;
 use crate::app::TermApp;
 use gpui::{div, prelude::*, px, Context, Div, MouseButton, MouseDownEvent};

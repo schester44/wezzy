@@ -29,7 +29,10 @@ cargo test
 |---|---|
 | `main.rs` | startup: env, settings, config, mux + session domain, gpui app |
 | `app.rs` | `TermApp` state, event plumbing (`AppEvent`), key routing, `perform()` (the KeyAssignment interpreter), spawning/splitting |
-| `ui/view.rs` | the main view: top bar, tabs, sidebar, terminal canvas, overlays |
+| `ui/view.rs` | the main view's `render`: lays out the regions below and the overlays |
+| `ui/topbar.rs`, `sidebar.rs`, `terminal.rs` | top bar + tabs, sidebar sections + rows, the terminal canvas + pane views |
+| `ui/modal.rs`, `palette.rs`, `settings.rs` | prompt / confirm modals + toast, the palette list, the settings rows |
+| `ui/widgets.rs` | shared components (`kbd`, `button`, `pill`, `row_selection`, …); reuse these before writing new ones |
 | `ui/git.rs`, `gitpanel.rs`, `diff.rs`, `feedback.rs`, `pr.rs` | git panel view, its state/keys, git polling + staging, hunk comments, branch PR lookup + creation via `gh` |
 | `ui/mod.rs` | `Theme` (derived from the terminal palette), icons |
 | `render.rs` | paints panes/cells/cursor into a gpui canvas |
@@ -103,7 +106,7 @@ cargo test
 - **A setting:** field + default in `Settings`, `Stored` + load/save in
   `settings.rs`, a `Row` in `settings_ui.rs`.
 - **A sidebar source:** a `Source` + `Item` variant in `sidebar.rs`, its items
-  and keys there, a row in `ui/view.rs`; its poller idles unless
+  and keys there, a row in `ui/sidebar.rs`; its poller idles unless
   `sidebar_enabled`.
 - **A palette source:** a `Kind` and items in `palette_items()`; ranking,
   sections and keys come for free.

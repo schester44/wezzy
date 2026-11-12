@@ -898,6 +898,26 @@ impl TermApp {
         }
     }
 
+    pub(crate) fn answer_confirm(&mut self, yes: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Overlay::Confirm {
+            action,
+            cancel,
+            pane_id,
+            ..
+        }) = self.overlay.take()
+        {
+            if yes && matches!(action, KeyAssignment::QuitApplication) {
+                cx.quit();
+            } else if yes {
+                self.perform(action, Some(pane_id), window, cx);
+            } else if let Some(c) = cancel {
+                self.perform(c, Some(pane_id), window, cx);
+            }
+        }
+        self.focus.focus(window);
+        cx.notify();
+    }
+
     pub(crate) fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window);
         self.region = crate::regions::Region::Terminal;

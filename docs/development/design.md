@@ -5,7 +5,7 @@ stays neutral and sits back, color only shows up where it means something, and
 the hierarchy comes from type weight and spacing rather than boxes and fills.
 
 The git panel (`src/ui/git.rs`), the command palette and the settings overlay
-(`palette_view` / `settings_view` in `src/ui/view.rs`) are the reference
+(`src/ui/palette.rs` and `src/ui/settings.rs`) are the reference
 implementations. Match them when building
 new UI.
 
@@ -79,7 +79,7 @@ Derived fills (via `with_alpha`):
 
 ## Components
 
-- **Key cap**: `kbd()` in `view.rs`. Mono 10px, 18px tall, `hover` fill, hairline border.
+- **Key cap**: `kbd()` in `ui/widgets.rs`. Mono 10px, 18px tall, `hover` fill, hairline border.
 - **Icons**: stroke SVGs in `assets/icons` (lucide style, 2px stroke), 11–15px,
   `fg_subtle` (or `fg` when the row is selected). Use `Icon::ChevronRight` and
   `Icon::ChevronDown` for disclosure, never text glyphs like ▸.
@@ -96,7 +96,7 @@ Derived fills (via `with_alpha`):
   pane / tab, Lua `Confirmation`) are a small modal: `MEDIUM` title and 12px
   `fg_muted` detail, then a recessed footer with a hairline above it holding
   Cancel `esc` (ghost) and the verb `↩`, which is destructive when it kills
-  something and a soft button otherwise (`button()` + `ButtonKind` in `view.rs`).
+  something and a soft button otherwise (`button()` + `ButtonKind` in `ui/widgets.rs`).
 - **Modal header**: 48px row with a `MEDIUM` 13px title (or the search field)
   and a hairline below; the list follows with 6px vertical padding.
 - **Setting row**: label in `fg` on the left, value in 12px `fg_muted` on the

@@ -56,7 +56,7 @@ workspace menu, overlays (palette, settings, prompts), a focused side panel
   `perform_action` comes back into `perform()`.
 - Unbound keys are encoded by the pane (kitty keyboard protocol when enabled).
 
-## Rendering (`render.rs`, `ui/view.rs`)
+## Rendering (`render.rs`, `ui/terminal.rs`)
 
 The terminal is a gpui `canvas`. Each frame it sizes the active tab to the
 canvas (cols/rows from font metrics and config padding), snapshots each
@@ -127,7 +127,7 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
   if it names a configured database.
 - **The app draws over it.** `Views::sync` (each frame) creates a `PaneView`
   for every pane announcing one and drops those whose pane is gone. The canvas
-  skips painting their cells, and `pane_views` in `ui/view.rs` places each
+  skips painting their cells, and `pane_views` in `ui/terminal.rs` places each
   view absolutely over its pane's rectangle, using the grid geometry from the
   previous paint.
 - **Keys:** the keymap still runs first (⌘ chords, leader, Ctrl+h/j/k/l);

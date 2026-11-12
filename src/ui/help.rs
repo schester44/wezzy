@@ -1,7 +1,7 @@
 //! Shortcut sheets: the git panel's (`?`) and the global one (Leader ?).
 //! Both are drawn over the whole window; any key or click closes them.
 
-use super::view::kbd;
+use super::widgets::kbd;
 use super::Theme;
 use crate::app::{Overlay, TermApp};
 use crate::shortcuts::{Group, Row};
