@@ -985,7 +985,7 @@ impl PaneView for SqlView {
             group(
                 "Changing values",
                 &[
-                    ("e", "Edit cell (or double-click)"),
+                    ("↵ e", "Edit cell (or double-click)"),
                     ("enter", "Keep the new value"),
                     ("tab", "Keep it, edit the next cell"),
                     ("esc", "Drop what you typed"),

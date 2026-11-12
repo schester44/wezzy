@@ -96,7 +96,7 @@ the editor, it runs again instead of being added twice. After a `create`,
 | Y | Copy the selected rows (or this row) with column names |
 | c | Copy the selected rows (or this row) as CSV, JSON and more |
 | esc | Clear the selection, or go back to the editor |
-| i, ↵, ctrl+k | Back to the editor |
+| i, ctrl+k | Back to the editor |
 
 With the mouse: click a cell to move there, shift-click to select every row up
 to it, ⌘-click to add or remove a row. Drag the edge of a column's header to
@@ -174,7 +174,7 @@ Change a cell in place, then save every change at once.
 
 | | |
 |---|---|
-| double-click, or e | Edit the cell |
+| ↵, e, or double-click | Edit the cell |
 | ↵ | Keep the new value |
 | tab, shift+tab | Keep it and edit the next or previous cell |
 | esc | Drop what you typed |

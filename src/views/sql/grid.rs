@@ -417,7 +417,7 @@ impl Grid {
             }
             ("y", false) => return Some(self.copy(set, m.shift)),
             ("c", false) if !m.shift && rows > 0 => self.copy_menu = Some(0),
-            ("e", false) if !m.shift => return Some(self.begin_edit(set, edit)),
+            ("e" | "enter", false) if !m.shift => return Some(self.begin_edit(set, edit)),
             ("n", false) if m.shift => {
                 if let Some(Err(why)) = edit.map(|e| e.check(self.col)) {
                     return Some(Some(Action::Flash(why.into())));
@@ -441,7 +441,7 @@ impl Grid {
                     return Some(Some(Action::Editor));
                 }
             }
-            ("i" | "enter", false) => return Some(Some(Action::Editor)),
+            ("i", false) => return Some(Some(Action::Editor)),
             _ => return None,
         }
         self.moved();
