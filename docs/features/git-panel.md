@@ -5,13 +5,13 @@ shows the changes in the repo you're working in, lets you stage, discard and
 commit them hunk by hunk, and sends your line comments back to the agent as
 one review.
 
-When the branch is ready, open a pull request from the same place.
+When the branch is ready, push it and open a pull request from the same place.
 
 ## Opening it
 
 | | |
 |---|---|
-| ⌘D | Open or close the git panel |
+| ⌘G | Open or close the git panel |
 | ⌃h | Move into the panel from the leftmost pane |
 | esc or ⌃l | Back to the terminal |
 | q | Close the panel |
@@ -53,10 +53,14 @@ Press `?` in the panel to see these.
 | o | Open the file at the cursor line in your editor |
 | s | Stage or unstage the file, hunk or section |
 | S | Stage everything; unstage everything if it's all staged |
-| d | Discard (press `d`, `y` or ↵ again to confirm) |
+| u | Unstage the file, hunk or section |
+| U | Unstage everything |
+| x or d | Discard (press `d`, `y` or ↵ again to confirm) |
 | c | Commit what's staged |
 | a | Amend the last commit |
-| p | Open the branch's pull request, or create one |
+| p | Pull |
+| P | Push |
+| N | Open the branch's pull request, or create one |
 | f | Comment on the line, or the whole hunk from its header |
 | V | Select lines from the cursor, then `f` to comment on them |
 | F | Send your comments to an agent |
@@ -79,9 +83,20 @@ numbers and the changed lines, pasted into the agent's prompt so you can add to
 it before pressing ↵. If more than one agent is open in the workspace, you pick
 which one.
 
+## Pulling and pushing
+
+`p` pulls the branch from its upstream and `P` pushes it. Both run in the
+background; a toast says how many commits came in or went out, or shows git's
+error. Pushing a branch that has no upstream yet pushes it to its remote
+(`origin` if it has no other) and sets the upstream.
+
+Pulling follows your git config (`pull.rebase`, `pull.ff`). If the branch and
+its upstream have diverged and git hasn't been told how to reconcile them, the
+pull fails with git's message.
+
 ## Pull requests
 
-Press `p` on a branch with commits to compose a pull request. The title starts
+Press `N` on a branch with commits to compose a pull request. The title starts
 as the commit's subject when the branch has one commit, or as the branch name
 in words (`steve/fix-login` becomes "Fix login"). Add a body on the lines below
 it with ⇧↵.
@@ -97,7 +112,7 @@ then creates the pull request against the repo's default branch. A toast says
 when it's done, and the header shows the new PR. Nothing opens in your
 browser.
 
-If the branch already has an open pull request, `p` opens it in your browser
+If the branch already has an open pull request, `N` opens it in your browser
 instead.
 
 ## Setting it up
@@ -125,16 +140,18 @@ end
 ## Details
 
 - The panel refreshes every couple of seconds, and right away after you
-  stage, discard or commit. It never locks the repo, so it won't get in the way
+  stage, discard, commit, pull or push. It never locks the repo, so it won't get in the way
   of an agent that's committing.
+- Pull and push never ask for a password. If git needs credentials it
+  can't find on its own, the toast shows the error.
 - The pull request in the header is checked about once a minute, when you
   switch branches, after a push, and when you press `R`.
 - Without `gh`, or when you're not logged in, the header shows no pull
-  request and `p` shows a toast.
-- `p` won't create a pull request from the default branch, from a detached
+  request and `N` shows a toast.
+- `N` won't create a pull request from the default branch, from a detached
   HEAD, in a repo with no remote, or when the branch has no commits the default
   branch doesn't have. A toast says which.
-- A merged or closed pull request doesn't stop `p`: it composes a new one.
+- A merged or closed pull request doesn't stop `N`: it composes a new one.
 - If creating fails, the box opens again with what you wrote, and a toast
   shows the error.
 - Very large diffs and binary files show up without hunks. You can still

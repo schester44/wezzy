@@ -172,6 +172,8 @@ pub struct GitPanel {
     /// the `?` shortcut sheet
     pub help: bool,
     pub committing: bool,
+    /// a pull or push running in the background
+    pub syncing: Option<diff::Sync>,
     /// pushing + `gh pr create` in the background
     pub creating_pr: bool,
     /// review comments waiting to be sent (`F`)
@@ -197,6 +199,7 @@ impl Default for GitPanel {
             confirm: None,
             help: false,
             committing: false,
+            syncing: None,
             creating_pr: false,
             comments: vec![],
             comment_draft: None,
@@ -515,6 +518,15 @@ impl TermApp {
                 Some(Row::Feedback | Row::Comment(_) | Row::Draft) | None => {}
                 Some(r) => self.git_op(&snap, toggle_op(r), r),
             },
+            "u" | "U" if shift || key == "U" => self.git_all(&snap, Op::Unstage),
+            "u" => match cur {
+                Some(r) if toggle_op(r) == Op::Unstage => self.git_op(&snap, Op::Unstage, r),
+                _ => {}
+            },
+            "x" => match cur {
+                Some(Row::Feedback | Row::Comment(_) | Row::Draft) | None => {}
+                Some(r) => self.ask_discard(&snap, r),
+            },
             "d" => match cur {
                 Some(Row::Comment(i)) => {
                     self.git.comments.remove(i);
@@ -524,7 +536,9 @@ impl TermApp {
                 Some(r) => self.ask_discard(&snap, r),
             },
             "c" | "a" => self.open_composer(&snap, key == "a"),
-            "p" => self.pull_request(),
+            "p" | "P" if shift || key == "P" => self.sync(&snap, diff::Sync::Push),
+            "p" => self.sync(&snap, diff::Sync::Pull),
+            "n" | "N" if shift || key == "N" => self.pull_request(),
             "r" | "R" if shift || key == "R" => {
                 crate::pr::forget(&snap);
                 std::thread::spawn(diff::refresh);
@@ -777,6 +791,28 @@ impl TermApp {
         diff::commit(root, c.text, c.amend);
     }
 
+    /// `p` / `P`: pull or push the branch in the background (`on_synced`).
+    fn sync(&mut self, snap: &Snapshot, op: diff::Sync) {
+        let Some(root) = snap.root.clone() else { return };
+        if self.git.syncing.is_some() || self.git.creating_pr {
+            return;
+        }
+        self.git.syncing = Some(op);
+        diff::sync(root, op);
+    }
+
+    pub(crate) fn on_synced(&mut self, op: diff::Sync, result: Result<String, String>) {
+        self.git.syncing = None;
+        match result {
+            Ok(summary) => self.flash(summary),
+            Err(e) => self.flash(match op {
+                diff::Sync::Pull => format!("Pull failed: {e}"),
+                diff::Sync::Push => format!("Push failed: {e}"),
+            }),
+        }
+        std::thread::spawn(diff::refresh);
+    }
+
     pub(crate) fn on_committed(&mut self, result: Result<String, (String, String)>, amend: bool) {
         self.git.committing = false;
         match result {
@@ -795,7 +831,7 @@ impl TermApp {
 }
 
 impl TermApp {
-    /// `p`: open the branch's pull request, or start composing one. The
+    /// `N`: open the branch's pull request, or start composing one. The
     /// checks shell out, so they run in the background (`on_pull_request`).
     pub(crate) fn pull_request(&mut self) {
         if self.git.creating_pr {
@@ -806,7 +842,7 @@ impl TermApp {
     }
 
     /// The palette's "Create Pull Request": open the git panel on the active
-    /// pane's repo, then do what `p` does.
+    /// pane's repo, then do what `N` does.
     pub(crate) fn pull_request_command(&mut self) {
         let Some(dir) = self.active_pane().and_then(|p| git_dir(&p)) else {
             self.flash("Not a git repository");

@@ -553,6 +553,65 @@ pub fn commit(root: PathBuf, message: String, amend: bool) {
     });
 }
 
+/// Pull or push the current branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sync {
+    Pull,
+    Push,
+}
+
+/// Pull / push in the background (the network may take a while); reports via
+/// AppEvent::Synced with a short summary or git's error.
+pub fn sync(root: PathBuf, op: Sync) {
+    std::thread::spawn(move || {
+        let r = match op {
+            Sync::Pull => pull(&root),
+            Sync::Push => push(&root),
+        };
+        *DIRTY.lock() = true;
+        send_event(AppEvent::Synced { op, result: r });
+    });
+}
+
+fn count(root: &Path, range: &str) -> usize {
+    git(root, &["rev-list", "--count", range])
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn commits(n: usize) -> String {
+    if n == 1 { "1 commit".into() } else { format!("{n} commits") }
+}
+
+fn pull(root: &Path) -> Result<String, String> {
+    if git(root, &["rev-parse", "--verify", "-q", "@{upstream}"]).is_none() {
+        return Err("No upstream to pull from".into());
+    }
+    let before = git(root, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string());
+    git_run(root, &["pull", "-q"], None)?;
+    let n = before.map(|b| count(root, &format!("{b}..HEAD"))).unwrap_or(0);
+    Ok(if n == 0 { "Already up to date".into() } else { format!("Pulled {}", commits(n)) })
+}
+
+fn push(root: &Path) -> Result<String, String> {
+    let Some(branch) = git(root, &["symbolic-ref", "--short", "-q", "HEAD"]).map(|s| s.trim().to_string())
+    else {
+        return Err("Not on a branch".into());
+    };
+    if git(root, &["rev-parse", "--verify", "-q", "@{upstream}"]).is_none() {
+        // first push: set the upstream, like `p` in the pull request flow
+        let remote = crate::pr::remote_for(root, &branch).ok_or("No remote to push to")?;
+        git_run(root, &["push", "-q", "-u", &remote, "HEAD"], None)?;
+        return Ok(format!("Pushed to {remote}/{branch}"));
+    }
+    let n = count(root, "@{upstream}..HEAD");
+    if n == 0 {
+        return Ok("Nothing to push".into());
+    }
+    git_run(root, &["push", "-q"], None)?;
+    Ok(format!("Pushed {}", commits(n)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

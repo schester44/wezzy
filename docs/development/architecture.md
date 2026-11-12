@@ -217,12 +217,16 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
 - **Pull requests** (`pr.rs`): each snapshot calls `pr::poll`, which runs
   `gh pr view` on its own thread when the (repo, branch) entry is missing,
   older than 60s, or the upstream sha moved; failures (no `gh`, no auth, no
-  PR) cache as "no PR". `p` / the palette command run `pr::begin` off the
+  PR) cache as "no PR". `N` / the palette command run `pr::begin` off the
   main thread (refresh, checks, default branch from `<remote>/HEAD`) and
   answer with `AppEvent::PullRequest`; creating pushes, then `gh pr create
   --base <default>` with `GH_PROMPT_DISABLED=1`.
 - **Mutations:** staging and discarding go through `git apply [--cached] [-R]`
   on single-hunk patches.
+- **Pull / push** (`diff::sync`): `git pull -q` / `git push -q` on their own
+  thread (a first push sets the upstream on `pr::remote_for`'s remote), then
+  `AppEvent::Synced`. `GIT_TERMINAL_PROMPT=0`, so missing credentials fail
+  with git's message instead of hanging.
 - **Review comments:** comments on hunks or lines are sent to an agent as one
   review message with `file:line` context.
 

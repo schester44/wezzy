@@ -152,7 +152,7 @@ fn has_gh() -> bool {
 
 // -- creating ----------------------------------------------------------------
 
-/// What `p` found out about the branch, in the background.
+/// What `N` found out about the branch, in the background.
 #[derive(Debug)]
 pub enum PrEvent {
     /// the branch already has an open PR: open it
@@ -179,7 +179,7 @@ pub struct Plan {
     pub title: String,
 }
 
-/// Refresh the panel's snapshot, look the branch over and decide what `p`
+/// Refresh the panel's snapshot, look the branch over and decide what `N`
 /// does; reports a `PrEvent`.
 pub fn begin() {
     std::thread::spawn(|| {
@@ -251,7 +251,7 @@ fn prepare(snap: &Snapshot) -> PrEvent {
 }
 
 /// The branch's push remote: its configured one, else `origin`, else the only one.
-fn remote_for(root: &Path, branch: &str) -> Option<String> {
+pub(crate) fn remote_for(root: &Path, branch: &str) -> Option<String> {
     if let Some(r) = git(root, &["config", &format!("branch.{branch}.remote")]) {
         let r = r.trim();
         if !r.is_empty() && r != "." {

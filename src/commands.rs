@@ -25,7 +25,7 @@ pub enum AppCommand {
     InstallAgentHooks,
     UninstallAgentHooks,
     RenameAgent,
-    ToggleDiffPanel,
+    ToggleGitPanel,
     SendOutputToAgent,
     SelectError,
     OpenEditor,
@@ -58,7 +58,7 @@ impl AppCommand {
         Self::InstallAgentHooks,
         Self::UninstallAgentHooks,
         Self::RenameAgent,
-        Self::ToggleDiffPanel,
+        Self::ToggleGitPanel,
         Self::SendOutputToAgent,
         Self::SelectError,
         Self::OpenEditor,
@@ -92,7 +92,7 @@ impl AppCommand {
             Self::InstallAgentHooks => "install-agent-hooks",
             Self::UninstallAgentHooks => "uninstall-agent-hooks",
             Self::RenameAgent => "rename-agent",
-            Self::ToggleDiffPanel => "toggle-diff-panel",
+            Self::ToggleGitPanel => "toggle-git-panel",
             Self::SendOutputToAgent => "send-output-to-agent",
             Self::SelectError => "select-error",
             Self::OpenEditor => "open-editor",
@@ -127,7 +127,7 @@ impl AppCommand {
             Self::InstallAgentHooks => "InstallAgentHooks",
             Self::UninstallAgentHooks => "UninstallAgentHooks",
             Self::RenameAgent => "RenameAgent",
-            Self::ToggleDiffPanel => "ToggleDiffPanel",
+            Self::ToggleGitPanel => "ToggleGitPanel",
             Self::SendOutputToAgent => "SendOutputToAgent",
             Self::SelectError => "SelectError",
             Self::OpenEditor => "OpenEditor",
@@ -162,7 +162,7 @@ impl AppCommand {
             Self::InstallAgentHooks => "Install agent hooks",
             Self::UninstallAgentHooks => "Uninstall agent hooks",
             Self::RenameAgent => "Rename agent",
-            Self::ToggleDiffPanel => "Git panel",
+            Self::ToggleGitPanel => "Git panel",
             Self::SendOutputToAgent => "Send output to agent",
             Self::OpenEditor => "Open editor",
             Self::OpenSettings => "Settings",
@@ -188,6 +188,8 @@ impl AppCommand {
 
     pub fn from_event(name: &str) -> Option<Self> {
         let id = name.strip_prefix("wezzy.")?;
+        // pre-rename configs
+        let id = if id == "toggle-diff-panel" { Self::ToggleGitPanel.id() } else { id };
         Self::ALL.iter().copied().find(|c| c.id() == id)
     }
 
@@ -206,6 +208,9 @@ pub fn register_lua() {
             t.set("EmitEvent", c.event_name())?;
             actions.set(c.lua_name(), t)?;
         }
+        // pre-rename name for the git panel
+        let git: mlua::Value = actions.get("ToggleGitPanel")?;
+        actions.set("ToggleDiffPanel", git)?;
         module.set("action", actions)?;
         module.set("setup", lua.create_function(crate::settings::lua_setup)?)?;
         let package: mlua::Table = lua.globals().get("package")?;

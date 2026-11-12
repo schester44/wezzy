@@ -72,6 +72,11 @@ pub enum AppEvent {
         result: Result<String, (String, String)>,
         amend: bool,
     },
+    /// A git-panel pull / push finished: Ok(summary) or Err(git's message).
+    Synced {
+        op: crate::diff::Sync,
+        result: Result<String, String>,
+    },
     AgentStatusChanged {
         pane_id: PaneId,
         status: crate::hooks::HookStatus,
@@ -606,6 +611,7 @@ impl TermApp {
                 }
             }
             AppEvent::Committed { result, amend } => self.on_committed(result, amend),
+            AppEvent::Synced { op, result } => self.on_synced(op, result),
             AppEvent::PullRequest(ev) => self.on_pull_request(ev, cx),
             AppEvent::AgentStatusChanged {
                 pane_id,

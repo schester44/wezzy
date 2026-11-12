@@ -64,6 +64,7 @@ impl TermApp {
             .when(
                 self.git.confirm.is_some()
                     || self.git.committing
+                    || self.git.syncing.is_some()
                     || self.git.creating_pr
                     || self.git.visual.is_some(),
                 |d| {
@@ -392,6 +393,13 @@ impl TermApp {
         }
         if self.git.committing {
             return footer.gap_2().child(spinner(12., t.fg_muted)).child("Committing…");
+        }
+        if let Some(op) = self.git.syncing {
+            let label = match op {
+                crate::diff::Sync::Pull => "Pulling…",
+                crate::diff::Sync::Push => "Pushing…",
+            };
+            return footer.gap_2().child(spinner(12., t.fg_muted)).child(label);
         }
         if self.git.creating_pr {
             return footer.gap_2().child(spinner(12., t.fg_muted)).child("Creating pull request…");
@@ -973,7 +981,9 @@ impl TermApp {
                 &[
                     ("s", "Stage / unstage"),
                     ("S", "Stage / unstage everything"),
-                    ("d", "Discard"),
+                    ("u", "Unstage"),
+                    ("U", "Unstage everything"),
+                    ("x d", "Discard"),
                 ],
             ),
             group(
@@ -1002,7 +1012,9 @@ impl TermApp {
                 &[
                     ("c", "Commit staged"),
                     ("a", "Amend last commit"),
-                    ("p", "Open or create pull request"),
+                    ("p", "Pull"),
+                    ("P", "Push"),
+                    ("N", "Open or create pull request"),
                     ("r", "Run a recipe (review, simplify…)"),
                 ],
             ),

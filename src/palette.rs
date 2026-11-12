@@ -185,7 +185,7 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Send Output to Agent", App(AppCommand::SendOutputToAgent)),
         ("Run Recipe…", App(AppCommand::RunRecipe)),
         ("SSH…", App(AppCommand::SshHost)),
-        ("Toggle Diff Panel", App(AppCommand::ToggleDiffPanel)),
+        ("Toggle Git Panel", App(AppCommand::ToggleGitPanel)),
         ("Create Pull Request", App(AppCommand::CreatePullRequest)),
         ("Toggle Pane Zoom", Key(TogglePaneZoomState)),
         ("Close Pane", Key(CloseCurrentPane { confirm: true })),
@@ -759,7 +759,7 @@ impl TermApp {
             AppCommand::NewAgentTab => {
                 self.launch_harness(None, crate::launch::Placement::Tab, _window, cx)
             }
-            AppCommand::ToggleDiffPanel => {
+            AppCommand::ToggleGitPanel => {
                 // one left slot: opening the git panel replaces the sidebar, and
                 // closing it leaves the slot empty (no falling back to agents)
                 if self.diff_open {
