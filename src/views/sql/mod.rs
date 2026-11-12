@@ -4,12 +4,14 @@
 //! result grid (`grid.rs`); `i`/esc go back. Read-only queries are fetched a
 //! page at a time (`db.rs`); `[` `]` or the ‹ › buttons turn pages.
 //! Completion pops up while you type a name; tab or ↵ takes it.
+//! ⌘⌥↵ explains the statement and shows the plan as a tree (`explain.rs`).
 //!
 //! The query text is kept per database in `~/.local/state/wezzy/sql/<name>.sql`.
 
 pub mod complete;
 pub mod conn;
 mod db;
+mod explain;
 mod grid;
 
 use super::editor::{Editor, Pos};
@@ -20,6 +22,7 @@ use complete::Candidate;
 use conn::Conn;
 use db::{Db, Outcome, Status};
 use gpui::{div, prelude::*, px, AnyElement, App, ClipboardItem, Hsla, Keystroke, Modifiers, Pixels, Point};
+use explain::PlanView;
 use grid::{Action, Grid};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -58,6 +61,7 @@ pub struct SqlView {
     focus: Focus,
     menu: Option<Menu>,
     grid: Grid,
+    plan: PlanView,
     scratch: Option<PathBuf>,
     saved: u64,
     /// from the last draw, for mouse hits
@@ -99,6 +103,7 @@ impl SqlView {
             focus: Focus::Editor,
             menu: None,
             grid: Grid::default(),
+            plan: PlanView::default(),
             scratch,
             saved: 0,
             layout: None,
@@ -179,6 +184,29 @@ impl SqlView {
         }
         if let Some(db) = &self.db {
             db.run(sql);
+        }
+    }
+
+    /// ⌘⌥↵: the statement's plan; ⌘⌥⇧↵ runs it too (EXPLAIN ANALYZE), so
+    /// only for statements that just read.
+    fn explain(&mut self, analyze: bool) {
+        if !self.grid.pending.is_empty() {
+            unsaved();
+            return;
+        }
+        self.save();
+        let sql = self.statement();
+        let q = sql.trim().trim_end_matches(';').trim_end();
+        if q.is_empty() {
+            return;
+        }
+        let Some(db) = &self.db else { return };
+        if q.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("explain")) {
+            db.run(sql);
+        } else if analyze && !db::read_only(q) {
+            crate::app::send_event(crate::app::AppEvent::Flash("Analyze would run this statement".into()));
+        } else {
+            db.explain(q.to_string(), analyze);
         }
     }
 
@@ -311,6 +339,17 @@ impl SqlView {
             }
             return false;
         };
+        if let Outcome::Plan(plan) = &run.outcome {
+            let action = self.plan.key(ks, plan);
+            drop(shared);
+            return match action {
+                Some(a) => {
+                    self.act(a, cx);
+                    true
+                }
+                None => false,
+            };
+        }
         let Outcome::Rows(set) = &run.outcome else {
             drop(shared);
             if matches!(ks.key.as_str(), "escape" | "i" | "enter") {
@@ -356,6 +395,10 @@ impl SqlView {
                     t.fg_muted,
                     m,
                 )
+            }
+            Outcome::Plan(plan) => {
+                self.plan.sync(shared.seq);
+                return self.plan.render(plan, m, t, focused, size);
             }
             Outcome::Rows(set) => set,
         };
@@ -406,9 +449,19 @@ impl SqlView {
                     (Outcome::Rows(set), _) => {
                         parts.push(format!("{} row{}", set.total, if set.total == 1 { "" } else { "s" }))
                     }
+                    (Outcome::Plan(p), _) => {
+                        if let Some(t) = p.planning_ms {
+                            parts.push(format!("planning {} ms", explain::ms(t)));
+                        }
+                        if let Some(t) = p.execution_ms {
+                            parts.push(format!("execution {} ms", explain::ms(t)));
+                        }
+                    }
                     _ => {}
                 }
-                parts.push(format!("{} ms", run.elapsed.as_millis()));
+                if !matches!(&run.outcome, Outcome::Plan(p) if p.execution_ms.is_some()) {
+                    parts.push(format!("{} ms", run.elapsed.as_millis()));
+                }
                 right = right.child(parts.join(" · "));
             }
         }
@@ -655,6 +708,9 @@ impl PaneView for SqlView {
             let action = self.grid.click(grid_pos, mods, clicks, set, edit.as_deref());
             drop(s);
             self.act(action, cx);
+        } else if let Outcome::Plan(plan) = &run.outcome {
+            self.focus = Focus::Grid;
+            self.plan.click(grid_pos, clicks, plan);
         }
         false
     }
@@ -680,8 +736,10 @@ impl PaneView for SqlView {
         }
         let Some(db) = &self.db else { return };
         let s = db.shared.lock();
-        if let Some(Outcome::Rows(set)) = s.last.as_ref().map(|r| &r.outcome) {
-            self.grid.scroll(lines, set);
+        match s.last.as_ref().map(|r| &r.outcome) {
+            Some(Outcome::Rows(set)) => self.grid.scroll(lines, set),
+            Some(Outcome::Plan(plan)) => self.plan.scroll(lines, plan),
+            _ => {}
         }
     }
 
@@ -718,6 +776,11 @@ impl PaneView for SqlView {
             return true;
         }
         match ks.key.as_str() {
+            "enter" if m.platform && m.alt => {
+                self.menu = None;
+                self.explain(m.shift);
+                return true;
+            }
             "enter" if m.platform => {
                 self.menu = None;
                 self.run();
@@ -809,8 +872,20 @@ impl PaneView for SqlView {
                 "Editor",
                 &[
                     ("⌘↵", "Run statement or selection"),
+                    ("⌘⌥↵", "Explain"),
+                    ("⌘⌥⇧↵", "Explain analyze (reads only)"),
                     ("⌃J esc", "To the results"),
                     ("⌃space", "Completions"),
+                ],
+            ),
+            group(
+                "Explain",
+                &[
+                    ("j k", "Move"),
+                    ("h l", "Fold / unfold"),
+                    ("enter", "Fold or show details"),
+                    ("y", "Copy the plan as JSON"),
+                    ("⌃K esc", "Back to the editor"),
                 ],
             ),
         ];
@@ -839,6 +914,10 @@ impl PaneView for SqlView {
                         }
                         _ => None,
                     },
+                    Some(Outcome::Plan(plan)) => {
+                        crate::app::send_event(crate::app::AppEvent::Flash("Copied the plan".into()));
+                        Some(plan.raw.clone())
+                    }
                     _ => None,
                 }
             }
