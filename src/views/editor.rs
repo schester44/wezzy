@@ -192,6 +192,24 @@ impl Editor {
         self.insert_raw(with);
     }
 
+    /// Replace chars `from..to` of `text()` with `with`, as one undo step.
+    /// The cursor ends up after it.
+    pub fn replace(&mut self, from: usize, to: usize, with: &str) {
+        self.snapshot(Edit::Other);
+        self.anchor = None;
+        self.goal = None;
+        let (a, b) = (self.pos_of(from), self.pos_of(to.max(from)));
+        self.delete_range(a, b);
+        self.insert_raw(with);
+    }
+
+    /// Put the cursor at char offset `at`, dropping the selection.
+    pub fn set_cursor(&mut self, at: usize) {
+        self.anchor = None;
+        self.goal = None;
+        self.cur = self.pos_of(at);
+    }
+
     fn newline(&mut self) {
         let indent: String = self.lines[self.cur.row]
             .iter()
@@ -594,6 +612,18 @@ mod tests {
         assert_eq!(e.text(), "d");
         e.restore(true);
         assert_eq!(e.text(), "aX\nYb\ncd");
+    }
+
+    #[test]
+    fn replace_is_one_undo_step() {
+        let mut e = Editor::new("a;\nselect 1 from t;");
+        e.cur = Pos { row: 1, col: 3 };
+        e.replace(3, 19, "select 1\nfrom t;");
+        assert_eq!(e.text(), "a;\nselect 1\nfrom t;");
+        assert_eq!(e.cur, Pos { row: 2, col: 7 });
+        e.restore(true);
+        assert_eq!(e.text(), "a;\nselect 1 from t;");
+        assert_eq!(e.cur, Pos { row: 1, col: 3 });
     }
 
     #[test]

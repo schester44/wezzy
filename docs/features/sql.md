@@ -22,6 +22,8 @@ zooms and moves between workspaces like any other pane.
 | | |
 |---|---|
 | ⌘↵ | Run the statement under the cursor, or the selection |
+| ⌘⇧F | Format the statement under the cursor, or the selection |
+| ⌘⌥⇧F | Format everything in the editor |
 | esc, ctrl+j | Go to the result (esc also stops a query that's running) |
 | ctrl+space | Show completions |
 | tab or ↵ | Take the completion |
@@ -32,6 +34,14 @@ zooms and moves between workspaces like any other pane.
 Statements are separated by `;`, so you can keep several queries in the editor
 and run whichever one the cursor is in. When there's more than one, a faint band
 sits behind the statement ⌘↵ will run.
+
+Formatting puts each clause (`select`, `from`, `where`, joins, `order by`) on
+its own line, lists the selected columns one per line, starts each `and` and
+`or` of a condition on a new line, and indents subqueries and `with` queries.
+Keywords come out lowercase, or in capitals if that's how you mostly wrote them.
+Only spacing and keyword case change: strings, quoted names and comments stay
+exactly as you wrote them. Statements are separated by a blank line, and ⌘Z
+puts back what you had.
 
 Completions appear as you type a name:
 
