@@ -87,7 +87,7 @@ Press `?` in the panel to see these.
 | f | Comment on the line, or the whole hunk from its header |
 | V | Select lines from the cursor, then `f` to comment on them |
 | F | Send your comments to an agent |
-| A | Only the files the agent's run changed, or everything |
+| A | Only the files an agent's run changed: each agent's in turn, then everything |
 | ↵ / d on a comment | Edit / delete it |
 | r | Run a recipe on this repo |
 | R | Refresh |
@@ -97,10 +97,11 @@ Press `?` in the panel to see these.
 
 When the agent in the pane you're in has finished a run with changes you
 haven't reviewed, ⌘G opens the panel on just the files that run changed. The
-header shows the agent's name; click it, or press `A`, to see everything. `A`
-again goes back to the run's files. The +/− counts, the section counts and
+header shows the agent's name; click it to see everything. `A` steps through
+the run of each agent that changed this repo (with more than one, the header
+shows its pane letter too), then back to everything. The +/− counts, the section counts and
 `S` / `U` only cover the files shown. See [Agent runs](agent-runs.md) for the
-card that opens the panel this way.
+bar that opens the panel this way.
 
 ## Committing
 

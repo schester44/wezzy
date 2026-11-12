@@ -88,6 +88,8 @@ same `gh release create` line from the script, or delete the tag
 `scripts/bundle.sh --dist` signs and notarizes into `target/release/dist/`
 without tagging or uploading. Plain `scripts/bundle.sh` makes an ad-hoc signed
 `target/release/Wezzy.app` that runs only on this Mac and never auto-updates.
+`scripts/rebuild.sh` builds that, replaces `/Applications/Wezzy.app` with it,
+and restarts the app. Your shells and agents keep running in the session server.
 
 ## Signing setup
 

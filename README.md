@@ -1,6 +1,6 @@
 # Wezzy
 
-A terminal-focused home for your AI agents, built keyboard-first.
+A keyboard-driven development environment built for working with coding agents.
 
 ![Wezzy](docs/assets/screenshot.png)
 
@@ -78,6 +78,7 @@ end
 ```sh
 cargo run
 scripts/bundle.sh           # Wezzy.app in target/release, for this Mac
+scripts/rebuild.sh          # bundle, install in /Applications, restart the app
 scripts/release.sh          # signed + notarized draft release (docs/development/releasing.md)
 ```
 

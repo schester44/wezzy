@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build Wezzy.app, install it in /Applications and restart the running app.
+# Build Wezzy.app, install it in /Applications and restart the running app:
+# the quickest way to try a change in the real bundle.
 #
 #   scripts/rebuild.sh
 #

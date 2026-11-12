@@ -87,7 +87,7 @@ pub fn markers(root: &Path) -> HashMap<String, Marker> {
 
 /// The letter PaneSelect shows on the pane: its position among the tab's
 /// panes, labeled from `quick_select_alphabet`.
-fn pane_label(pane: PaneId) -> Option<String> {
+pub(crate) fn pane_label(pane: PaneId) -> Option<String> {
     let mux = mux::Mux::get();
     let (_, _, tab_id) = mux.resolve_pane_id(pane)?;
     let panes = mux.get_tab(tab_id)?.iter_panes_ignoring_zoom();

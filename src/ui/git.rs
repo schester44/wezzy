@@ -208,7 +208,7 @@ impl TermApp {
                         }
                     })
                     .when(only.is_some(), |d| {
-                        d.child(div().flex_1()).children(self.git.run_filter.map(|p| run_chip(p, t, cx)))
+                        d.child(div().flex_1()).children(self.git.run_filter.map(|p| run_chip(p, self.run_panes_here().len() > 1, t, cx)))
                     }),
             )
     }
@@ -237,6 +237,8 @@ impl TermApp {
             div()
                 .flex_none()
                 .m_3()
+                .min_w_0()
+                .overflow_hidden()
                 .flex()
                 .flex_col()
                 .rounded_lg()
@@ -267,14 +269,17 @@ impl TermApp {
                                 )
                             } else {
                                 d.children(lines.into_iter().enumerate().map(|(i, l)| {
+                                    // long lines wrap inside the box; the caret
+                                    // follows the last line's end
                                     div()
                                         .min_h(px(18.))
+                                        .min_w_0()
                                         .flex()
-                                        .items_center()
+                                        .items_end()
                                         .when(i == 0 && hidden == 0, |d| d.font_weight(FontWeight::MEDIUM))
                                         .when(i > 0 || hidden > 0, |d| d.text_color(t.fg_muted))
-                                        .child(SharedString::from(l.to_string()))
-                                        .when(i + 1 == n, |d| d.child(caret()))
+                                        .child(div().min_w_0().flex_shrink().child(SharedString::from(l.to_string())))
+                                        .when(i + 1 == n, |d| d.child(div().mb(px(1.5)).child(caret())))
                                 }))
                             }
                         }),
@@ -1092,12 +1097,17 @@ fn pr_chip(pr: crate::pr::PullRequest, t: &Theme, cx: &mut Context<TermApp>) -> 
 }
 
 /// The run filter is on: the agent it's showing; click for everything.
-fn run_chip(pane: mux::pane::PaneId, t: &Theme, cx: &mut Context<TermApp>) -> impl IntoElement {
-    let name = crate::agents::collect(None)
+/// The run filter in the header: the agent's name, with its pane letter (as
+/// on the touch markers) when several agents changed this repo. Click clears.
+fn run_chip(pane: mux::pane::PaneId, several: bool, t: &Theme, cx: &mut Context<TermApp>) -> impl IntoElement {
+    let mut name = crate::agents::collect(None)
         .into_iter()
         .find(|a| a.pane_id == pane)
         .map(|a| a.display_name().to_string())
         .unwrap_or_else(|| "Agent".into());
+    if let Some(l) = several.then(|| crate::gitlive::pane_label(pane)).flatten() {
+        name = format!("{l} · {name}");
+    }
     div()
         .id("git-run-filter")
         .flex_none()

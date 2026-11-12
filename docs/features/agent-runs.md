@@ -1,9 +1,9 @@
 # Agent runs
 
-When an agent finishes and has changed files, a card shows up over the bottom
-of its pane: the branch, what the agent says it did, and how much it changed.
-From there you review the changes, send comments back, commit them, or undo
-the agent's last turn.
+When an agent finishes and has changed files, a slim bar opens along the
+bottom edge of its pane with how much it changed and a **Review changes**
+button. That opens the git panel on just the agent's files, where you comment,
+stage and commit as usual, or undo the agent's last turn from ⌘K.
 
 A run is everything the agent changed since you last reviewed its work, across
 as many prompts as that took. The sidebar shows its `+/−` on the agent's row
@@ -11,35 +11,33 @@ until you're done with it.
 
 ## Using it
 
-The card lists what you can do:
+The bar shows the run's `+/−` and how many files it changed:
 
 | | |
 |---|---|
 | **Review changes** | Go to the agent's pane and open the git panel on just the files the agent changed, cursor on the first one |
-| **Ask for changes** | The same, with the first file open at its first hunk: `f` to comment, `F` to send the comments to this agent |
-| **Commit** | Stage the agent's files, open the git panel on them and the commit box with the agent's summary as the message |
-| **Undo turn** | Put back the files the agent changed in its last turn, after you confirm |
-| × | Done with the run: the card and the sidebar's `+/−` go away |
+| × | Done with the run: the bar and the sidebar's `+/−` go away |
 
-The card is never in the way of your keys: they keep going to the terminal.
-Typing into the agent's pane puts the card away until the agent finishes its
-next turn; the run is still there, and so is its `+/−` in the sidebar.
+The bar is never in the way of your keys: they keep going to the terminal.
+It stays while you review, and typing into the agent's pane puts it away until
+the agent finishes its next turn; the run is still there, and so is its `+/−`
+in the sidebar.
 
 From ⌘K, for the agent in the pane you're in:
 
 | | |
 |---|---|
-| **Review Agent Changes** | What the card's Review changes does |
+| **Review Agent Changes** | What the bar's Review changes does |
 | **Undo Agent Turn** | Undo the last turn, after you confirm |
 | **Undo Agent Run** | Undo every turn of the run, after you confirm |
-| **Dismiss Agent Run** | What the card's × does |
+| **Dismiss Agent Run** | What the bar's × does |
 
 In the git panel:
 
 | | |
 |---|---|
 | ⌘G | Opens on the run's files when the agent in your pane has finished a run with changes; on everything otherwise |
-| A | Only the run's files, or everything again |
+| A | Step through the runs of the agents that changed this repo, then everything again |
 | Click the agent's name in the header | Everything again |
 
 ## Setting it up
@@ -68,20 +66,20 @@ end
   they were when the run started. Your own edits to other files don't show up
   in the run, and neither do files the agent changed by running commands in the
   shell (a formatter, `sed`, a code generator).
-- **When the card shows.** Each time a turn ends while the run has changes,
+- **When the bar shows.** Each time a turn ends while the run has changes,
   even a turn that only answered a question. If the agent's changes add up to
-  nothing (it put a file back the way it was), there's no card.
-- **Every pane.** Cards show over every pane in the tab, not just the one
+  nothing (it put a file back the way it was), there's no bar.
+- **Several agents.** With more than one agent changing the same repo, `A`
+  goes through their runs in the order of their panes, starting with the
+  agent in the pane you're in, and the header shows each one's pane letter
+  (the one on the file markers) next to its name.
+- **Every pane.** The bar shows on every pane in the tab, not just the one
   you're in, so you see which agent is done when you look over. A pane too
-  small to hold one doesn't get a card.
+  small to hold it doesn't get one.
 - **When a run starts and ends.** Your first prompt after you finish with a run
   starts the next one. Committing while the git panel shows the run ends it
   when the commit has only the run's files in it and none of them are left
   unstaged. ×, **Dismiss Agent Run** and **Undo Agent Run** end it too. Prompting the agent from a different repo starts a new run.
-- **Committing.** Commit stages the run's files and nothing else; anything you
-  had staged already stays staged and goes into the commit too. The message
-  starts as the agent's summary, which you can edit. Then `N` opens a pull
-  request as usual.
 - **Sending comments.** `F` in the git panel sends your comments to the agent
   whose run changed the commented files, without asking which agent. If the
   files aren't all from one run, you pick, as usual.

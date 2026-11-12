@@ -5,7 +5,7 @@
 use crate::activity::{self, Run};
 use crate::app::{send_event, AppEvent, Overlay, TermApp};
 use crate::diff::{self, Section, Snapshot};
-use crate::gitpanel::{Composer, Row};
+use crate::gitpanel::Row;
 use config::keyassignment::KeyAssignment;
 use gpui::{Context, Window};
 use mux::pane::PaneId;
@@ -45,11 +45,6 @@ pub fn reviewable(pane: PaneId) -> Option<Run> {
 
 pub fn files(n: usize) -> String {
     if n == 1 { "1 file".into() } else { format!("{n} files") }
-}
-
-/// A commit subject from the agent's summary: no trailing period.
-fn subject(summary: &str) -> String {
-    summary.trim().trim_end_matches('.').to_string()
 }
 
 fn rel(root: &Path, f: &Path) -> Option<String> {
@@ -101,12 +96,12 @@ impl TermApp {
     }
 
     /// Open the git panel filtered to `pane`'s run, on the agent's repo.
-    fn open_git_on_run(&mut self, pane: PaneId, root: PathBuf, ask: bool) {
+    fn open_git_on_run(&mut self, pane: PaneId, root: PathBuf) {
         self.diff_open = true;
         self.sidebar_open = false;
         self.region = crate::regions::Region::Diff;
         self.git.run_filter = Some(pane);
-        self.git.land = Some((root, ask));
+        self.git.land = Some(root);
         // render would set it too; set it now so the refresh looks at the right repo
         if let Some(p) = Mux::get().get_pane(pane) {
             diff::set_target(crate::gitpanel::git_dir(&p));
@@ -115,9 +110,8 @@ impl TermApp {
     }
 
     /// Review changes: go to the agent's pane, open the git panel on just its
-    /// run's files, cursor on the first one. `ask` (ask the agent to address
-    /// concerns) also opens that file onto its first hunk, ready for `f`.
-    pub(crate) fn review_run(&mut self, pane: PaneId, ask: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// run's files, cursor on the first one.
+    pub(crate) fn review_run(&mut self, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(run) = activity::run(pane) else {
             self.flash("No agent changes to review");
             return;
@@ -126,9 +120,7 @@ impl TermApp {
             self.focus_pane(pane, window, cx);
         }
         self.focus.focus(window);
-        // you're on it now; the card would only cover the pane
-        self.hide_run_card(pane);
-        self.open_git_on_run(pane, run.root, ask);
+        self.open_git_on_run(pane, run.root);
     }
 
     /// ⌘G opening the panel: filtered when the active pane's agent finished a
@@ -140,29 +132,53 @@ impl TermApp {
         self.git.run_filter = None;
         let pane = self.active_pane().map(|p| p.pane_id());
         if let Some((pane, run)) = pane.and_then(|p| reviewable(p).map(|r| (p, r))) {
-            self.open_git_on_run(pane, run.root, false);
+            self.open_git_on_run(pane, run.root);
         }
     }
 
-    /// `A` in the git panel: only the run's files, or everything again.
+    /// `A` in the git panel: cycle everything → each agent's run in this repo
+    /// (in pane order, the active tab's first) → everything again.
     pub(crate) fn toggle_run_filter(&mut self) {
-        if self.git.run_files().is_some() {
+        let panes = self.run_panes_here();
+        if panes.is_empty() {
             self.git.run_filter = None;
+            self.flash("No agent run here");
             return;
         }
-        match self.active_run_pane().and_then(|p| activity::run(p).map(|r| (p, r))) {
-            Some((pane, run)) => {
-                self.git.run_filter = Some(pane);
-                self.git.land = Some((run.root, false));
-            }
-            None => self.flash("No agent run here"),
+        let next = match self.git.run_filter.and_then(|p| panes.iter().position(|q| *q == p)) {
+            Some(i) => panes.get(i + 1).copied(),
+            // unfiltered: start with the active pane's run when it has one
+            None => Some(self.active_run_pane().filter(|p| panes.contains(p)).unwrap_or(panes[0])),
+        };
+        self.git.run_filter = next;
+        if let Some(run) = next.and_then(activity::run) {
+            self.git.land = Some(run.root);
         }
+    }
+
+    /// Panes whose runs changed files in the git panel's repo: the active
+    /// tab's in layout order, then any others.
+    pub(crate) fn run_panes_here(&self) -> Vec<PaneId> {
+        let Some(root) = diff::snapshot().and_then(|s| s.root.clone()) else {
+            return vec![];
+        };
+        let mut runs: Vec<PaneId> = activity::runs()
+            .into_iter()
+            .filter(|(_, r)| r.root == root && !r.files().is_empty())
+            .map(|(p, _)| p)
+            .collect();
+        let order: Vec<PaneId> = self
+            .active_tab()
+            .map(|t| t.iter_panes().into_iter().map(|p| p.pane.pane_id()).collect())
+            .unwrap_or_default();
+        runs.sort_by_key(|p| (order.iter().position(|q| q == p).unwrap_or(usize::MAX), *p));
+        runs
     }
 
     /// Once the reviewed repo's snapshot is in, put the cursor on the first
-    /// file (and for `ask`, open it onto its first hunk). Called from render.
+    /// file. Called from render.
     pub(crate) fn land_git_cursor(&mut self) {
-        let Some((root, ask)) = self.git.land.clone() else { return };
+        let Some(root) = self.git.land.clone() else { return };
         let Some(snap) = diff::snapshot() else { return };
         if snap.root.as_ref() != Some(&root) {
             return;
@@ -171,57 +187,7 @@ impl TermApp {
         let rows = self.git.rows(&snap);
         let Some(i) = rows.iter().position(|r| matches!(r, Row::File(..))) else { return };
         self.git.cursor = i;
-        if let (true, Row::File(sec, fi)) = (ask, rows[i]) {
-            self.git.expanded.insert((sec, snap.files(sec)[fi].path.clone()));
-            let rows = self.git.rows(&snap);
-            if let Some(j) = rows[i + 1..].iter().position(|r| matches!(r, Row::Hunk(..) | Row::Line(..))) {
-                self.git.cursor = i + 1 + j;
-            }
-        }
         self.scroll_to_cursor();
-    }
-
-    /// Commit: stage exactly the run's files, open the panel on them and the
-    /// commit box with the agent's summary. The commit ends the run.
-    pub(crate) fn commit_run(&mut self, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(run) = activity::run(pane) else {
-            self.flash("No agent changes to commit");
-            return;
-        };
-        if self.git.committing {
-            self.flash("Commit in progress…");
-            return;
-        }
-        self.review_run(pane, false, window, cx);
-        let root = run.root.clone();
-        let files = run.files();
-        std::thread::spawn(move || {
-            // a file the agent created and removed again is nowhere git knows
-            let rels: Vec<String> = files
-                .iter()
-                .filter_map(|f| {
-                    let r = rel(&root, f)?;
-                    let known = f.exists()
-                        || diff::git(&root, &["ls-files", "--", &r]).is_some_and(|o| !o.trim().is_empty());
-                    known.then_some(r)
-                })
-                .collect();
-            if !rels.is_empty() {
-                let mut args = vec!["add", "-A", "--"];
-                args.extend(rels.iter().map(String::as_str));
-                if let Err(e) = diff::git_run(&root, &args, None) {
-                    send_event(AppEvent::Flash(format!("Couldn't stage: {e}")));
-                }
-            }
-            diff::refresh();
-        });
-        if self.git.composer.is_none() {
-            self.git.composer = Some(Composer {
-                text: run.summary.as_deref().map(subject).unwrap_or_default(),
-                amend: false,
-                pr: None,
-            });
-        }
     }
 
     /// The run a commit finishes: the panel is filtered to it, everything
@@ -282,7 +248,7 @@ impl TermApp {
             return;
         };
         match c {
-            AppCommand::ReviewAgentRun => self.review_run(pane, false, window, cx),
+            AppCommand::ReviewAgentRun => self.review_run(pane, window, cx),
             AppCommand::UndoAgentTurn => self.ask_undo(pane, false),
             AppCommand::UndoAgentRun => self.ask_undo(pane, true),
             AppCommand::DismissAgentRun => self.end_run(pane),
@@ -323,8 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn subjects() {
-        assert_eq!(subject("Fixed the duplicate notifications."), "Fixed the duplicate notifications");
+    fn file_counts() {
         assert_eq!(files(1), "1 file");
         assert_eq!(files(3), "3 files");
     }

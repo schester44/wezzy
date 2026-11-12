@@ -1,33 +1,33 @@
-//! The run card: floats over the bottom of an agent's pane when its turn
-//! finished with changes (runs.rs). Non-modal: keys keep going to the
+//! The run card: a slim bar on the bottom edge of an agent's pane when its
+//! turn finished with changes (runs.rs): +/−, file count, Review changes. Non-modal: keys keep going to the
 //! terminal, and typing into the pane hides it until the next turn.
 
 use super::git::counts;
-use super::widgets::{menu_row, small_icon_button, term_family};
-use super::{icon, Icon, Theme};
+use super::widgets::{button, small_icon_button, term_family, ButtonKind};
+use super::{Icon, Theme};
 use crate::app::TermApp;
-use gpui::{div, point, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, MouseButton, MouseDownEvent, Window};
+use gpui::{div, point, prelude::*, px, AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent};
 use mux::pane::PaneId;
 
-const CARD_W: f32 = 380.;
-const INSET: f32 = 12.;
-
-#[derive(Clone, Copy)]
-enum Action {
-    Review,
-    Ask,
-    Commit,
-    Undo,
-}
+/// Panes smaller than this get no card: it would cover everything.
+const MIN_W: f32 = 320.;
+const MIN_H: f32 = 160.;
 
 impl TermApp {
-    /// A card over each pane of the active tab whose agent has a run to review.
+    /// A run card docked to the bottom of each pane of the active tab whose
+    /// agent has a run to review.
     pub(super) fn run_cards(&self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(tab) = self.active_tab() else {
             return Vec::new();
         };
         let g = self.grid.get();
         let area = point(g.origin.x - g.pad.x, g.origin.y - g.pad.y);
+        // flush with the pane: its bottom corners when panes are cards
+        let radius = if crate::settings::get().pane_cards {
+            g.card_radius() - px(1.)
+        } else {
+            px(0.)
+        };
         tab.iter_panes()
             .into_iter()
             .filter_map(|p| {
@@ -35,146 +35,82 @@ impl TermApp {
                 let run = self.run_card(pane)?;
                 let b = self.view_bounds(&tab, &p);
                 // too small to hold it without covering everything
-                if f32::from(b.size.width) < 260. || f32::from(b.size.height) < 220. {
+                if f32::from(b.size.width) < MIN_W || f32::from(b.size.height) < MIN_H {
                     return None;
                 }
-                let w = px(CARD_W.min(f32::from(b.size.width) - INSET * 2.));
                 Some(
-                    // the pane's box, bottom-right aligned; it takes no mouse
-                    // events itself, only the card does
+                    // the pane's box, the card at its bottom edge; the box
+                    // takes no mouse events itself, only the card does
                     div()
                         .absolute()
                         .left(b.origin.x - area.x)
                         .top(b.origin.y - area.y)
                         .w(b.size.width)
                         .h(b.size.height)
-                        .p(px(INSET))
                         .flex()
                         .flex_col()
                         .justify_end()
-                        .items_end()
-                        .child(self.run_card_view(pane, &run, w, t, cx))
+                        .child(self.run_card_view(pane, &run, radius, t, cx))
                         .into_any_element(),
                 )
             })
             .collect()
     }
 
+    /// A slim bar: the run's +/− and file count, Review changes, ×.
     fn run_card_view(
         &self,
         pane: PaneId,
         run: &crate::activity::Run,
-        w: gpui::Pixels,
+        radius: gpui::Pixels,
         t: &Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let stats = run.stats.clone().unwrap_or_default();
-        let undoable = run.turns.last().is_some_and(|turn| !turn.files.is_empty());
-        let actions = [
-            (Action::Review, Icon::Search, "Review changes"),
-            (Action::Ask, Icon::Message, "Ask for changes"),
-            (Action::Commit, Icon::GitCommit, "Commit"),
-            (Action::Undo, Icon::Undo, "Undo turn"),
-        ];
-        let rows = actions
-            .into_iter()
-            .filter(|(a, ..)| undoable || !matches!(a, Action::Undo))
-            .map(|(a, ic, label)| {
-                menu_row(("run-action", a as usize), t)
-                    .child(icon(ic, 13., t.fg_subtle))
-                    .child(div().flex_1().child(label))
-                    .child(icon(Icon::ChevronRight, 12., t.fg_subtle))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        this.run_card_action(pane, a, window, cx);
-                        cx.notify();
-                    }))
-            });
-
         div()
             .id(("run-card", pane))
-            .w(w)
+            .w_full()
+            .h(px(34.))
+            .pl_3()
+            .pr_1p5()
             .flex()
-            .flex_col()
-            .rounded_xl()
+            .items_center()
+            .gap_2()
             .bg(t.elevated)
-            .border_1()
+            .border_t_1()
             .border_color(t.border)
-            .shadow_lg()
-            .overflow_hidden()
-            // the card's clicks and hovers stay off the terminal underneath
+            .rounded_b(radius)
+            .text_size(px(12.))
+            // the bar's clicks and hovers stay off the terminal underneath
             .occlude()
             .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| cx.stop_propagation())
+            // finished: the done dot
+            .child(div().size(px(6.)).flex_none().rounded_full().bg(t.success))
+            .child(counts(stats.added, stats.removed, t))
             .child(
                 div()
-                    .px_4()
-                    .pt_3()
-                    .pb_3()
-                    .flex()
-                    .flex_col()
-                    .gap_1p5()
-                    .border_b_1()
-                    .border_color(t.border)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            // finished: the done dot
-                            .child(div().size(px(6.)).flex_none().rounded_full().bg(t.success))
-                            .child(div().w_0p5())
-                            .child(icon(Icon::GitBranch, 13., t.fg_subtle))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(run.branch.clone()),
-                            )
-                            .child(small_icon_button("run-dismiss", Icon::X, t).on_click(cx.listener(
-                                move |this, _: &ClickEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    this.end_run(pane);
-                                    cx.notify();
-                                },
-                            ))),
-                    )
-                    .children(run.summary.clone().map(|s| div().line_clamp(3).child(s)))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .text_size(px(12.))
-                            .text_color(t.fg_subtle)
-                            .child(counts(stats.added, stats.removed, t))
-                            .child(
-                                div()
-                                    .font_family(term_family())
-                                    .text_size(px(11.))
-                                    .child(format!("· {}", crate::runs::files(stats.files.len()))),
-                            ),
-                    ),
+                    .flex_1()
+                    .min_w_0()
+                    .font_family(term_family())
+                    .text_size(px(11.))
+                    .text_color(t.fg_subtle)
+                    .child(crate::runs::files(stats.files.len())),
             )
             .child(
-                div()
-                    .p_1()
-                    .flex()
-                    .flex_col()
-                    .text_color(t.fg)
-                    .children(rows),
+                button("run-review", "Review changes", "", t, ButtonKind::Ghost)
+                    .h(px(22.))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.review_run(pane, window, cx);
+                        cx.notify();
+                    })),
             )
-    }
-
-    fn run_card_action(&mut self, pane: PaneId, a: Action, window: &mut Window, cx: &mut Context<Self>) {
-        match a {
-            Action::Review => self.review_run(pane, false, window, cx),
-            Action::Ask => self.review_run(pane, true, window, cx),
-            Action::Commit => self.commit_run(pane, window, cx),
-            Action::Undo => self.ask_undo(pane, false),
-        }
+            .child(small_icon_button("run-dismiss", Icon::X, t).on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.end_run(pane);
+                    cx.notify();
+                },
+            )))
     }
 }

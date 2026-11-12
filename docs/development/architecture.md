@@ -239,14 +239,17 @@ from render. Git work happens on short-lived threads.
   through `AppEvent::Flash`. The confirm modal performs
   `EmitEvent("wezzy-run.undo-turn" | "wezzy-run.undo-run")`, which `perform`
   routes to `runs::undo` (not app commands, since those ask first).
-- **The card** (`ui/run_card.rs`, drawn after `pane_views` over each pane of
-  the active tab) shows while the run is `done && has_changes()`. Typing into
+- **The card** (`ui/run_card.rs`: a slim bar with +/−, file count, Review
+  changes and ×, docked to the bottom edge of each pane of the active tab,
+  drawn after `pane_views`) shows while the run is `done && has_changes()`. Typing into
   the pane records the run's `finished_at` in `TermApp::run_card_hidden`, so
   the card hides until the next `Stop` changes it. `activity::dismiss` ends the
   run.
 - **Git panel:** `GitPanel::run_filter` limits `rows()` (and section ops, `S`,
   `U`, the counts) to files whose `snap.root.join(path)` is in the run's
-  `files()`. `GitPanel::land` puts the cursor on the first file once the
+  `files()`. `A` (`toggle_run_filter`) cycles through `run_panes_here()`: the
+  runs in the panel's repo, the active tab's panes first in layout order, then
+  back to unfiltered. `GitPanel::land` puts the cursor on the first file once the
   snapshot of the run's repo arrives (`land_git_cursor`, from render). A commit
   submitted with the filter on, where everything staged is the run's and none
   of its files are left unstaged, sets `committing_run`; `on_committed` ends

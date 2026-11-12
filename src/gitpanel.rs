@@ -190,11 +190,12 @@ pub struct GitPanel {
     pub follow: Option<crate::gitlive::Follow>,
     /// a repaint loop is running for fading markers / glows
     pub ticking: std::cell::Cell<bool>,
-    /// show only the files this agent pane's run edited (`A`)
+    /// show only the files this agent pane's run edited (`A` cycles through
+    /// the repo's runs: `TermApp::run_panes_here`)
     pub run_filter: Option<PaneId>,
     /// move the cursor to the first file once the snapshot of this repo lands
-    /// (opening a review); `true` also opens the file onto its first hunk
-    pub land: Option<(PathBuf, bool)>,
+    /// (opening a review)
+    pub land: Option<PathBuf>,
     /// the commit in flight is of this run's files: end the run when it lands
     pub committing_run: Option<PaneId>,
 }
