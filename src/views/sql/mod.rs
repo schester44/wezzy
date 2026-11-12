@@ -3,13 +3,15 @@
 //! ⌘↵ runs the statement under the cursor (or the selection). esc moves to the
 //! result grid (`grid.rs`); `i`/esc go back. Read-only queries are fetched a
 //! page at a time (`db.rs`); `[` `]` or the ‹ › buttons turn pages.
-//! Completion pops up while you type a name; tab or ↵ takes it.
+//! Completion pops up while you type a name; tab or ↵ takes it. ⌘⇧F formats
+//! the statement (or selection), ⌘⌥⇧F the whole editor (`format.rs`).
 //!
 //! The query text is kept per database in `~/.local/state/wezzy/sql/<name>.sql`.
 
 pub mod complete;
 pub mod conn;
 mod db;
+mod format;
 mod grid;
 
 use super::editor::{Editor, Pos};
@@ -180,6 +182,34 @@ impl SqlView {
         if let Some(db) = &self.db {
             db.run(sql);
         }
+    }
+
+    /// Format the selection or the statement under the cursor; `all`, the
+    /// whole editor. One undo step; the cursor stays on the same token.
+    fn format(&mut self, all: bool) {
+        let text = self.editor.text();
+        let chars: Vec<char> = text.chars().collect();
+        let cursor = self.editor.offset(self.editor.cur);
+        let (mut a, mut b) = match self.editor.selection() {
+            _ if all => (0, chars.len()),
+            Some((p, q)) => (self.editor.offset(p), self.editor.offset(q)),
+            None => statement_at(&text, cursor),
+        };
+        while a < b && chars[a].is_whitespace() {
+            a += 1;
+        }
+        while b > a && chars[b - 1].is_whitespace() {
+            b -= 1;
+        }
+        let src: String = chars[a..b].iter().collect();
+        let out = format::format(&src);
+        if a == b || out == src {
+            return;
+        }
+        self.editor.replace(a, b, &out);
+        let new: Vec<char> = self.editor.text().chars().collect();
+        let at = cursor_after_format(&chars, &new, (a, b), cursor);
+        self.editor.set_cursor(at);
     }
 
     // -- completion ----------------------------------------------------------
@@ -611,7 +641,7 @@ impl PaneView for SqlView {
             return false;
         }
         match self.focus {
-            Focus::Editor => matches!(ks.key.as_str(), "enter" | "a" | "z" | "x"),
+            Focus::Editor => matches!(ks.key.as_str(), "enter" | "a" | "z" | "x") || (ks.key == "f" && m.shift),
             Focus::Grid => ks.key == "a",
         }
     }
@@ -723,6 +753,11 @@ impl PaneView for SqlView {
                 self.run();
                 return true;
             }
+            "f" if m.platform && m.shift => {
+                self.menu = None;
+                self.format(m.alt);
+                return true;
+            }
             "x" if m.platform => {
                 if let Some(s) = self.editor.cut() {
                     cx.write_to_clipboard(ClipboardItem::new_string(s));
@@ -809,6 +844,8 @@ impl PaneView for SqlView {
                 "Editor",
                 &[
                     ("⌘↵", "Run statement or selection"),
+                    ("⌘⇧F", "Format statement or selection"),
+                    ("⌘⌥⇧F", "Format everything"),
                     ("⌃J esc", "To the results"),
                     ("⌃space", "Completions"),
                 ],
@@ -894,6 +931,28 @@ fn highlight(line: &[char], keyword: Hsla, comment: Hsla) -> Vec<(std::ops::Rang
     out
 }
 
+/// Where the cursor goes when `old[a..b]` was formatted into `new`: on the
+/// same token (counting non-space chars), or after the text if it was there.
+fn cursor_after_format(old: &[char], new: &[char], (a, b): (usize, usize), cursor: usize) -> usize {
+    let end = b + new.len() - old.len();
+    if cursor <= a {
+        return cursor;
+    }
+    if cursor >= b {
+        return cursor + new.len() - old.len();
+    }
+    let keep = old[a..cursor].iter().filter(|c| !c.is_whitespace()).count();
+    // on a token's first char: stay there, not at the end of the one before
+    let on_token = !old[cursor].is_whitespace();
+    let mut at = a;
+    let mut n = 0;
+    while at < end && (n < keep || (on_token && new[at].is_whitespace())) {
+        n += !new[at].is_whitespace() as usize;
+        at += 1;
+    }
+    at
+}
+
 /// The `;`-separated statement around char offset `at`, ignoring `;` inside
 /// quotes and comments. A cursor past the last `;` belongs to the statement
 /// before it when nothing follows.
@@ -944,7 +1003,21 @@ fn statements(text: &str) -> Vec<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::statement_at;
+    use super::{cursor_after_format, statement_at};
+
+    #[test]
+    fn cursor_follows_its_token() {
+        let old: Vec<char> = "x; select a, b from t; y".chars().collect();
+        let new: Vec<char> = "x; select\n  a,\n  b\nfrom t; y".chars().collect();
+        let fmt = |cursor| cursor_after_format(&old, &new, (3, 21), cursor);
+        let at = |s: &str| new.iter().collect::<String>().find(s).unwrap();
+        assert_eq!(fmt(1), 1);
+        assert_eq!(fmt(13), at("b\n"));
+        assert_eq!(fmt(old.iter().position(|c| *c == 'f').unwrap()), at("from"));
+        // right after `a`: right after it still
+        assert_eq!(fmt(11), at(",\n  b"));
+        assert_eq!(fmt(22), at(" y"));
+    }
 
     fn at(text: &str, cursor: usize) -> String {
         let (a, b) = statement_at(text, cursor);
