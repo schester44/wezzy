@@ -67,7 +67,8 @@ impl AssetSource for Assets {
             "git-merge",
             "cloud-off",
             "code",
-            "shield"
+            "shield",
+            "eye"
         ))
     }
 
@@ -106,6 +107,7 @@ pub enum Icon {
     CloudOff,
     Code,
     Shield,
+    Eye,
 }
 
 /// A spinning loader, for "working" states.
@@ -153,6 +155,7 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> impl IntoElement {
         Icon::CloudOff => "icons/cloud-off.svg",
         Icon::Code => "icons/code.svg",
         Icon::Shield => "icons/shield.svg",
+        Icon::Eye => "icons/eye.svg",
     };
     svg()
         .path(path)

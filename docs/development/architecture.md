@@ -240,6 +240,15 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
   with git's message instead of hanging.
 - **Review comments:** comments on hunks or lines are sent to an agent as one
   review message with `file:line` context.
+- **Live layer** (`gitlive.rs`): `diff::publish` compares each snapshot with
+  the previous one (`diff::freshness`), keying hunks by path + body hash so
+  staging or shifted line numbers don't count as new; the first snapshot, a
+  different repo, or a gap over 6s marks nothing. File markers come from
+  `activity::touches`. Fades are computed from timestamps at render time, and
+  `git_tick` runs a 50ms repaint loop only while something is still fading.
+  Follow mode (`w`) runs on every `AppEvent::Redraw`: it remembers the file of
+  the latest Edit touch until the snapshot has it, preferring a hunk that
+  turned fresh after the edit.
 
 ## Persistence
 
