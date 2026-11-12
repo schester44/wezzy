@@ -150,17 +150,6 @@ pub fn touches() -> Vec<Touch> {
     with(|s| s.touches.clone())
 }
 
-/// The most recent touch of `path`, if it's younger than `within`.
-pub fn last_touch(path: &Path, within: Duration) -> Option<Touch> {
-    with(|s| {
-        s.touches
-            .iter()
-            .rev()
-            .find(|t| t.path == path && t.at.elapsed() < within)
-            .cloned()
-    })
-}
-
 /// You've seen the run's work: the next prompt starts a new run.
 pub fn dismiss(pane: PaneId) {
     with(|s| s.runs.remove(&pane));

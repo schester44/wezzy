@@ -11,7 +11,7 @@ When the branch is ready, push it and open a pull request from the same place.
 
 | | |
 |---|---|
-| ⌘G | Open or close the git panel |
+| ⌘G | Open or close the git panel; it opens on an agent's run when there's one to review (see below) |
 | ⌃h | Move into the panel from the leftmost pane |
 | esc or ⌃l | Back to the terminal |
 | q | Close the panel |
@@ -87,10 +87,20 @@ Press `?` in the panel to see these.
 | f | Comment on the line, or the whole hunk from its header |
 | V | Select lines from the cursor, then `f` to comment on them |
 | F | Send your comments to an agent |
+| A | Only the files the agent's run changed, or everything |
 | ↵ / d on a comment | Edit / delete it |
 | r | Run a recipe on this repo |
 | R | Refresh |
 | < / > | Narrower / wider |
+
+## An agent's run
+
+When the agent in the pane you're in has finished a run with changes you
+haven't reviewed, ⌘G opens the panel on just the files that run changed. The
+header shows the agent's name; click it, or press `A`, to see everything. `A`
+again goes back to the run's files. The +/− counts, the section counts and
+`S` / `U` only cover the files shown. See [Agent runs](agent-runs.md) for the
+card that opens the panel this way.
 
 ## Committing
 
@@ -103,7 +113,8 @@ time. `a` opens the box with the last commit's message to amend it.
 Leave comments with `f` on a line, a selection (`V`) or a hunk header, then
 press `F`. All of them go to the agent as one message, each with its file, line
 numbers and the changed lines, pasted into the agent's prompt so you can add to
-it before pressing ↵. If more than one agent is open in the workspace, you pick
+it before pressing ↵. Comments on files one agent's run changed go to that
+agent. Otherwise, if more than one agent is open in the workspace, you pick
 which one.
 
 ## Pulling and pushing

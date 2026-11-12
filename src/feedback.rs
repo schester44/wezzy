@@ -104,10 +104,16 @@ pub fn message(comments: &[Comment]) -> String {
 }
 
 impl TermApp {
-    /// `F`: send every comment to the agent in this workspace, or pick one.
+    /// `F`: send every comment to the agent whose run changed those files, else
+    /// to the agent in this workspace, or pick one.
     pub(crate) fn send_feedback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.git.comments.is_empty() {
             self.flash("No comments yet — press f on a hunk");
+            return;
+        }
+        // comments on an agent run's files go back to that agent
+        if let Some(pane) = self.run_for_comments() {
+            self.send_feedback_to(pane, window, cx);
             return;
         }
         let ws = Mux::get().active_workspace();

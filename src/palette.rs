@@ -187,6 +187,10 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("SSH…", App(AppCommand::SshHost)),
         ("Toggle Git Panel", App(AppCommand::ToggleGitPanel)),
         ("Create Pull Request", App(AppCommand::CreatePullRequest)),
+        ("Review Agent Changes", App(AppCommand::ReviewAgentRun)),
+        ("Undo Agent Turn", App(AppCommand::UndoAgentTurn)),
+        ("Undo Agent Run", App(AppCommand::UndoAgentRun)),
+        ("Dismiss Agent Run", App(AppCommand::DismissAgentRun)),
         ("Toggle Pane Zoom", Key(TogglePaneZoomState)),
         ("Close Pane", Key(CloseCurrentPane { confirm: true })),
         ("Close a Pane…", App(AppCommand::ClosePane)),
@@ -769,11 +773,13 @@ impl TermApp {
                 if self.diff_open {
                     self.close_diff_panel();
                 } else {
-                    self.diff_open = true;
-                    self.sidebar_open = false;
-                    self.region = crate::regions::Region::Diff;
+                    self.open_git_panel();
                 }
             }
+            AppCommand::ReviewAgentRun
+            | AppCommand::UndoAgentTurn
+            | AppCommand::UndoAgentRun
+            | AppCommand::DismissAgentRun => self.run_command(c, _window, cx),
             AppCommand::SendOutputToAgent => self.send_output_to_agent(_window, cx),
             AppCommand::SelectError => self.start_error_select(cx),
             AppCommand::OpenEditor => self.open_editor_here(_window, cx),

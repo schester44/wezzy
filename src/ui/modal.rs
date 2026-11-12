@@ -69,12 +69,14 @@ impl TermApp {
                 action,
                 ..
             } => {
-                let destructive = matches!(
-                    action,
+                let destructive = match action {
                     KeyAssignment::QuitApplication
-                        | KeyAssignment::CloseCurrentPane { .. }
-                        | KeyAssignment::CloseCurrentTab { .. }
-                );
+                    | KeyAssignment::CloseCurrentPane { .. }
+                    | KeyAssignment::CloseCurrentTab { .. } => true,
+                    // undoing an agent's work throws edits away
+                    KeyAssignment::EmitEvent(name) => crate::runs::confirmed_undo(name).is_some(),
+                    _ => false,
+                };
                 (
                     96.,
                     card(340.)

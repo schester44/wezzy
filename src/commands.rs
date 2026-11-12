@@ -44,6 +44,10 @@ pub enum AppCommand {
     BalancePanes,
     CreatePullRequest,
     AttentionQueue,
+    ReviewAgentRun,
+    UndoAgentTurn,
+    UndoAgentRun,
+    DismissAgentRun,
 }
 
 impl AppCommand {
@@ -79,6 +83,10 @@ impl AppCommand {
         Self::BalancePanes,
         Self::CreatePullRequest,
         Self::AttentionQueue,
+        Self::ReviewAgentRun,
+        Self::UndoAgentTurn,
+        Self::UndoAgentRun,
+        Self::DismissAgentRun,
     ];
 
     /// Stable id, used in the event name.
@@ -115,6 +123,10 @@ impl AppCommand {
             Self::BalancePanes => "balance-panes",
             Self::CreatePullRequest => "create-pull-request",
             Self::AttentionQueue => "attention-queue",
+            Self::ReviewAgentRun => "review-agent-run",
+            Self::UndoAgentTurn => "undo-agent-turn",
+            Self::UndoAgentRun => "undo-agent-run",
+            Self::DismissAgentRun => "dismiss-agent-run",
         }
     }
 
@@ -152,6 +164,10 @@ impl AppCommand {
             Self::BalancePanes => "BalancePanes",
             Self::CreatePullRequest => "CreatePullRequest",
             Self::AttentionQueue => "AttentionQueue",
+            Self::ReviewAgentRun => "ReviewAgentRun",
+            Self::UndoAgentTurn => "UndoAgentTurn",
+            Self::UndoAgentRun => "UndoAgentRun",
+            Self::DismissAgentRun => "DismissAgentRun",
         }
     }
 
@@ -189,6 +205,10 @@ impl AppCommand {
             Self::BalancePanes => "Balance panes",
             Self::CreatePullRequest => "Create pull request",
             Self::AttentionQueue => "Attention queue",
+            Self::ReviewAgentRun => "Review agent changes",
+            Self::UndoAgentTurn => "Undo agent turn",
+            Self::UndoAgentRun => "Undo agent run",
+            Self::DismissAgentRun => "Dismiss agent run",
         }
     }
 

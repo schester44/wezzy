@@ -6,6 +6,7 @@ mod modal;
 mod palette;
 mod panel;
 mod queue;
+mod run_card;
 mod settings;
 mod sidebar;
 mod terminal;
@@ -68,7 +69,8 @@ impl AssetSource for Assets {
             "cloud-off",
             "code",
             "shield",
-            "eye"
+            "eye",
+            "undo"
         ))
     }
 
@@ -108,6 +110,7 @@ pub enum Icon {
     Code,
     Shield,
     Eye,
+    Undo,
 }
 
 /// A spinning loader, for "working" states.
@@ -156,6 +159,7 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> impl IntoElement {
         Icon::Code => "icons/code.svg",
         Icon::Shield => "icons/shield.svg",
         Icon::Eye => "icons/eye.svg",
+        Icon::Undo => "icons/undo.svg",
     };
     svg()
         .path(path)
