@@ -174,8 +174,12 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
   next event other than a Notification: the file exists while the dialog is
   up. `HookState::request` (`hooks::Request`) carries it while NeedsInput,
   with `full()` text and an `is_risky()` heuristic.
-- **Attention queue** (`queue.rs`, `ui/queue.rs`): NeedsInput agents, then
-  unseen Done ones, each oldest first (`Agent::since`). Approve / reject send
+- **Agents overlay** (⌘J, `queue.rs`, `ui/queue.rs`; the command keeps its
+  old id, `AttentionQueue`): a flat `Vec<Entry>` of section headers and
+  selectable rows, keyed by `queue::Key` so the selection survives rows coming
+  and going. **Waiting** is NeedsInput agents, then
+  unseen Done ones, each oldest first (`Agent::since`). Below it, each live
+  agent's `activity::timeline`, newest first. Approve / reject send
   ↩ / esc to the pane, only for Claude and Codex approval dialogs
   (`Request::is_approval`). An answered item is hidden until the agent's
   record time (`Agent::hook_ts`) moves, since a rejection fires no hook.
@@ -225,6 +229,17 @@ from render. Git work happens on short-lived threads.
   Claude's transcript. A run lives in one repo; a prompt from another starts a
   new one. Runs are in memory only; `forget_closed_runs` (on `MuxChanged`) drops
   those of closed panes.
+- **Timeline** (`activity::timeline`, for ⌘J): separate from runs, because
+  runs only end when you dismiss them and most people don't. Each pane has an
+  open `Line` (first prompt line, summary, stats, times) with its own base
+  snapshot, files and starting HEAD. A prompt ends it (into `History::lines`,
+  up to 100) when HEAD moved, the agent has been done for `BREAK` (15 min), or
+  the repo changed; dismissing the run ends it too. Its stats come from the
+  same `snapshot_files` + `numstat` as a run's, after each `Stop` and undo.
+  The pane's history carries the agent's `session_id`; a prompt with another
+  one (a restarted agent, `/clear`) clears it. Saved to
+  `<WEZTERM_PANE>.runs.json` beside the log on every change, loaded when
+  `poll` first sees the pane's log, deleted with the log.
 - **Stats:** the run's first snapshot against that snapshot with only the
   agent's files taken from the working tree (`read-tree` + `add -A -- <files>`
   in a temp index), through `git diff --numstat`. Your own edits elsewhere

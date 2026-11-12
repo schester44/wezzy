@@ -195,6 +195,12 @@ impl Views {
         self.views.get(&pane_id)?.1.shortcuts()
     }
 
+    /// The kind of view a pane hosts (`"sql"`), if any.
+    pub fn kind(&self, pane_id: PaneId) -> Option<&str> {
+        let (spec, _) = self.views.get(&pane_id)?;
+        Some(spec.split_once(' ').map_or(spec.as_str(), |(k, _)| k))
+    }
+
     pub fn has(&self, pane_id: PaneId) -> bool {
         self.views.contains_key(&pane_id)
     }

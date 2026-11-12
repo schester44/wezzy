@@ -121,7 +121,9 @@ pub(crate) fn row_text(line: &wezterm_term::Line) -> (String, Vec<usize>) {
 fn viewport_lines(pane: &Arc<dyn Pane>, top: Option<StableRowIndex>) -> Vec<wezterm_term::Line> {
     let dims = pane.get_dimensions();
     let top = top.unwrap_or(dims.physical_top);
-    pane.get_lines(top..top + dims.viewport_rows as StableRowIndex).1
+    // a view lifted above a run card ends at the screen's last row
+    let end = (top + dims.viewport_rows as StableRowIndex).min(dims.physical_top + dims.viewport_rows as StableRowIndex);
+    pane.get_lines(top..end).1
 }
 
 /// Non-overlapping matches, earlier patterns win.
@@ -258,11 +260,7 @@ impl TermApp {
             return;
         };
         let dims = pane.get_dimensions();
-        let top = self
-            .viewports
-            .get(&pane.pane_id())
-            .copied()
-            .unwrap_or(dims.physical_top);
+        let top = self.view_top(pane.pane_id()).unwrap_or(dims.physical_top);
         let bottom = dims.physical_top + dims.viewport_rows as StableRowIndex;
         let start = (top - CONTEXT_ROWS).max(dims.scrollback_top);
         let end = (top + dims.viewport_rows as StableRowIndex + CONTEXT_ROWS).min(bottom);
@@ -321,7 +319,7 @@ impl TermApp {
         let Some(pane) = self.active_pane() else {
             return;
         };
-        let lines = viewport_lines(&pane, self.viewports.get(&pane.pane_id()).copied());
+        let lines = viewport_lines(&pane, self.view_top(pane.pane_id()));
         let mut matches = find(&lines, &regexes(extra_patterns));
         if matches.is_empty() {
             self.flash("Nothing to select");
@@ -391,7 +389,7 @@ impl TermApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let lines = viewport_lines(pane, self.viewports.get(&pane.pane_id()).copied());
+        let lines = viewport_lines(pane, self.view_top(pane.pane_id()));
         let Some(line) = lines.get(row) else {
             return false;
         };

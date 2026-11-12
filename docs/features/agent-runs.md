@@ -9,6 +9,9 @@ A run is everything the agent changed since you last reviewed its work, across
 as many prompts as that took. The sidebar shows its `+/−` on the agent's row
 until you're done with it.
 
+[Agents](agents.md) (⌘J) keeps a short line for each piece of the agent's
+work, for the rest of its session.
+
 ## Using it
 
 The bar shows the run's `+/−` and how many files it changed:
@@ -16,9 +19,11 @@ The bar shows the run's `+/−` and how many files it changed:
 | | |
 |---|---|
 | **Review changes** | Go to the agent's pane and open the git panel on just the files the agent changed, cursor on the first one |
-| × | Done with the run: the bar and the sidebar's `+/−` go away |
+| × or ⌘. | Done with the run: the bar and the sidebar's `+/−` go away |
 
 The bar is never in the way of your keys: they keep going to the terminal.
+It doesn't hide the pane's last lines either: while it shows, the pane's text
+moves up by the rows it would cover, so the agent's prompt stays above it.
 It stays while you review, and typing into the agent's pane puts it away until
 the agent finishes its next turn; the run is still there, and so is its `+/−`
 in the sidebar.
@@ -30,7 +35,7 @@ From ⌘K, for the agent in the pane you're in:
 | **Review Agent Changes** | What the bar's Review changes does |
 | **Undo Agent Turn** | Undo the last turn, after you confirm |
 | **Undo Agent Run** | Undo every turn of the run, after you confirm |
-| **Dismiss Agent Run** | What the bar's × does |
+| **Dismiss Agent Run** | What the bar's × does (⌘.) |
 
 In the git panel:
 

@@ -61,7 +61,12 @@ Claude finishes its turn, until they're done. When a subagent asks for
 permission, the agent it belongs to shows the warning icon.
 
 When an agent finishes or asks for you while you're in another pane, you hear
-the chime and a toast names it. Click the toast to go to that agent. Its dot
+the chime and a toast names it and its project. Below the name, the toast
+shows what the agent needs (the permission or question) or, when it's done,
+the first sentence of its last message, plus the lines and files it changed
+if it edited any. Click the toast to go to that agent. While Wezzy is in the
+background the toast stays up, and it goes away a few seconds after you come
+back. The agent's dot
 stays green until you go to its pane, so you can see at a glance which ones
 finished since you last looked.
 
@@ -92,8 +97,8 @@ if ok then
 end
 ```
 
-To work through every agent that's waiting on you in one place, press ⌘J for
-the [attention queue](attention-queue.md).
+To work through every agent that's waiting on you in one place, and see what
+each one has done, press ⌘J for [Agents](agents.md).
 
 ### When Wezzy is in the background
 
@@ -101,7 +106,8 @@ If you're in another app, you also get a macOS notification. Its title is the
 agent and project, such as **Claude · wezzy**, or the agent's name if you gave
 it one (**auth refactor · wezzy**). When the agent asks for you, it says what
 it wants, such as Claude's permission prompt; when it finishes, it shows the
-agent's task. Click it to bring Wezzy to the front on that agent's
+first sentence of the agent's last message, or its task if that isn't
+available. Click it to bring Wezzy to the front on that agent's
 pane.
 
 The Dock icon shows how many agents are waiting on you: ones that asked for

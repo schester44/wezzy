@@ -93,7 +93,9 @@ pub fn snapshot(
     let pane: &Arc<dyn Pane> = &pos.pane;
     let dims = pane.get_dimensions();
     let top = viewport_top.unwrap_or(dims.physical_top);
-    let (first_row, lines) = pane.get_lines(top..top + pos.height as StableRowIndex);
+    // a view lifted above a run card ends at the screen's last row
+    let end = (top + pos.height as StableRowIndex).min(dims.physical_top + dims.viewport_rows as StableRowIndex);
+    let (first_row, lines) = pane.get_lines(top..end);
     let cursor = pane.get_cursor_position();
     PaneSnap {
         left: pos.left,

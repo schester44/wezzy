@@ -673,6 +673,8 @@ fn poll(since: u64) {
     let mut ended: Vec<u64> = vec![];
     // when each pane's record was written
     let mut written: HashMap<PaneId, u64> = HashMap::new();
+    // payloads of finished turns, for the agent's closing words
+    let mut finished: HashMap<PaneId, Value> = HashMap::new();
     // (remote pane, session, started, file, subagent)
     let mut subs: Vec<(u64, String, std::time::SystemTime, PathBuf, Subagent)> = vec![];
     // a subagent's pending permission request and its record time, by subagent id
@@ -750,6 +752,9 @@ fn poll(since: u64) {
         written.insert(local, ts);
         let cwd = v["payload"]["cwd"].as_str().filter(|c| !c.is_empty()).map(PathBuf::from);
         let request = (status == HookStatus::NeedsInput).then(|| read_request(&path)).flatten();
+        if status == HookStatus::Done {
+            finished.insert(local, p.clone());
+        }
         next.insert(
             local,
             HookState {
@@ -802,10 +807,15 @@ fn poll(since: u64) {
             None => written.get(pane).is_some_and(|&ts| ts >= since),
         };
         if changed {
+            // only on the change: it may read the transcript
+            let said = (st.status == HookStatus::Done)
+                .then(|| finished.get(pane).and_then(crate::activity::summary))
+                .flatten();
             send_event(AppEvent::AgentStatusChanged {
                 pane_id: *pane,
                 status: st.status.clone(),
                 detail: st.detail.clone(),
+                said,
             });
         } else if prev
             .get(pane)

@@ -180,7 +180,20 @@ impl TermApp {
 
     pub(super) fn toast(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let (msg, _) = self.flash.as_ref()?;
-        let target = self.flash_pane;
+        let agent = self.flash_agent.as_ref();
+        let target = agent.map(|a| a.pane);
+        // done: green; needs you: amber; anything else: accent
+        let dot = match agent {
+            Some(a) if a.done => t.success,
+            Some(a) if a.body.is_some() => t.warning,
+            _ => t.accent,
+        };
+        let body = agent.and_then(|a| a.body.clone());
+        // the turn's changes; stats land a moment after the toast does
+        let run = agent
+            .filter(|a| a.done)
+            .and_then(|a| crate::runs::reviewable(a.pane))
+            .and_then(|r| r.stats);
         Some(
             div()
                 .id("toast")
@@ -191,20 +204,58 @@ impl TermApp {
                 .px_3()
                 .py_2()
                 .flex()
-                .items_center()
+                .items_start()
                 .gap_2()
                 .rounded_lg()
                 .bg(t.elevated)
                 .border_1()
                 .border_color(t.border)
                 .shadow_lg()
-                .child(div().size(px(6.)).flex_none().rounded_full().bg(t.accent))
-                .child(msg.clone())
+                .child(
+                    // centered on the first line
+                    div()
+                        .h(px(20.))
+                        .flex()
+                        .items_center()
+                        .child(div().size(px(6.)).flex_none().rounded_full().bg(dot)),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_0p5()
+                        .child(
+                            div()
+                                .truncate()
+                                .when(agent.is_some(), |d| d.font_weight(FontWeight::MEDIUM))
+                                .child(msg.clone()),
+                        )
+                        .when_some(body, |d, b| {
+                            d.child(div().text_size(px(12.)).text_color(t.fg_muted).line_clamp(3).child(b))
+                        })
+                        .when_some(run, |d, s| {
+                            d.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(super::git::counts(s.added, s.removed, t))
+                                    .child(
+                                        div()
+                                            .font_family(term_family())
+                                            .text_size(px(11.))
+                                            .text_color(t.fg_subtle)
+                                            .child(crate::runs::files(s.files.len())),
+                                    ),
+                            )
+                        }),
+                )
                 .when_some(target, |d, pane_id| {
                     d.cursor_pointer().on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
                         this.flash = None;
-                        this.flash_pane = None;
+                        this.flash_agent = None;
                         this.region = crate::regions::Region::Terminal;
                         this.focus_pane(pane_id, window, cx);
                     }))

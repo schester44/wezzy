@@ -1,13 +1,18 @@
-//! The attention queue (⌘J): every agent waiting on you, in one list.
+//! The agents overlay (⌘J): what's waiting on you, and what each agent has
+//! done this session.
 //!
-//! Agents blocked on you (a permission dialog, a question) come first, then
-//! the ones that finished while you were elsewhere; each group oldest first.
+//! **Waiting** comes first: agents blocked on you (a permission dialog, a
+//! question), then the ones that finished while you were elsewhere; each group
+//! oldest first. Below it, each agent's timeline (`activity::timeline`),
+//! newest first, one line per piece of work.
+//!
 //! A Claude or Codex permission dialog can be answered from here: approving
 //! sends ↩ to the agent's pane (its first option, "Yes"), rejecting sends esc.
 //! The dialog's full input (from the `PermissionRequest` hook, `hooks.rs`) is
 //! shown on the selected row, and a risky one (`Request::is_risky`) asks once
 //! more before it goes.
 
+use crate::activity;
 use crate::agents::{self, Agent, Status};
 use crate::app::{Overlay, TermApp};
 use crate::hooks::Request;
@@ -27,9 +32,17 @@ fn answered(a: &Agent) -> bool {
     ANSWERED.lock().as_ref().and_then(|m| m.get(&a.pane_id)) == Some(&a.hook_ts)
 }
 
+/// A selectable row, stable while others come and go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Wait(PaneId),
+    /// a pane's run, by its start time
+    Run(PaneId, u64),
+}
+
 pub struct QueueState {
-    /// The selected item's pane; follows the item when others come and go.
-    pub selected: Option<PaneId>,
+    /// The selected row; follows it when others come and go.
+    pub selected: Option<Key>,
     /// Waiting for a second ↩ before approving this pane's risky request.
     pub confirm: Option<PaneId>,
     pub scroll: ScrollHandle,
@@ -68,11 +81,119 @@ pub struct Item {
     pub risky: bool,
 }
 
-/// The queue's items, in order.
+/// One line of an agent's history.
+#[derive(Clone)]
+pub struct RunRow {
+    pub pane_id: PaneId,
+    pub started: u64,
+    pub title: String,
+    /// what you asked, when the title is something else
+    pub prompt: Option<String>,
+    /// (added, removed, files)
+    pub stats: Option<(u32, u32, usize)>,
+    /// unix secs, once a turn of it finished
+    pub ended: Option<u64>,
+    /// the agent is on it now
+    pub working: bool,
+    pub reviewable: bool,
+}
+
+#[derive(Clone)]
+pub enum Entry {
+    /// "Waiting", above the items
+    WaitHeader(usize),
+    Wait(Item),
+    /// an agent's name and project, above its runs
+    Agent { name: String, project: String },
+    Run(RunRow),
+}
+
+impl Entry {
+    pub fn key(&self) -> Option<Key> {
+        match self {
+            Entry::Wait(it) => Some(Key::Wait(it.pane_id)),
+            Entry::Run(r) => Some(Key::Run(r.pane_id, r.started)),
+            _ => None,
+        }
+    }
+}
+
+/// The waiting items, in order.
 pub fn items() -> Vec<Item> {
     let mut agents: Vec<Agent> = agents::collect(None).into_iter().filter(queued).collect();
     agents.sort_by_key(|a| (a.status != Status::NeedsInput, a.since));
     agents.into_iter().map(item).collect()
+}
+
+/// Everything the overlay lists, in order.
+pub fn entries() -> Vec<Entry> {
+    let items = items();
+    let mut out = vec![];
+    if !items.is_empty() {
+        out.push(Entry::WaitHeader(items.len()));
+        out.extend(items.into_iter().map(Entry::Wait));
+    }
+    let mut agents = agents::collect(None);
+    // the agent in the pane you're in first
+    agents.sort_by_key(|a| !a.focused);
+    for a in agents {
+        let rows = runs(&a);
+        if rows.is_empty() {
+            continue;
+        }
+        out.push(Entry::Agent {
+            name: a.display_name().to_string(),
+            project: a.project.clone(),
+        });
+        out.extend(rows.into_iter().map(Entry::Run));
+    }
+    out
+}
+
+/// The agent's timeline, newest first.
+fn runs(a: &Agent) -> Vec<RunRow> {
+    // Review changes works on the run the bar shows
+    let reviewable = activity::run(a.pane_id).is_some_and(|r| r.done && r.has_changes());
+    activity::timeline(a.pane_id)
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            // an interrupted turn never reports; trust the agent's status
+            let working = l.working && matches!(a.status, Status::Working | Status::NeedsInput);
+            let title = if working {
+                l.prompt.clone().or_else(|| a.detail.clone())
+            } else {
+                l.summary.clone().or_else(|| l.prompt.clone())
+            };
+            RunRow {
+                pane_id: a.pane_id,
+                started: l.started,
+                prompt: l.prompt.clone().filter(|p| Some(p) != title.as_ref()),
+                title: title.unwrap_or_else(|| a.display_name().to_string()),
+                stats: (l.files > 0).then_some((l.added, l.removed, l.files)),
+                ended: (!working && l.ended > 0).then_some(l.ended),
+                working,
+                reviewable: i == 0 && reviewable,
+            }
+        })
+        .collect()
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// "now", "12m", "3h", "2d" since `secs`.
+pub fn ago(secs: u64) -> String {
+    let d = now().saturating_sub(secs);
+    match d {
+        0..60 => "now".into(),
+        60..3600 => format!("{}m", d / 60),
+        3600..86400 => format!("{}h", d / 3600),
+        _ => format!("{}d", d / 86400),
+    }
 }
 
 /// In the queue: blocked on you (and not just answered here), or finished
@@ -149,12 +270,23 @@ fn approvable(kind: &str) -> bool {
     matches!(kind, "Claude" | "Codex")
 }
 
-/// The selected item's index in `items`.
-pub fn selected_index(state: &QueueState, items: &[Item]) -> usize {
+/// The selected row's index in `entries`: the selection, else the first
+/// selectable row. `None` when nothing can be selected.
+pub fn selected_index(state: &QueueState, entries: &[Entry]) -> Option<usize> {
     state
         .selected
-        .and_then(|p| items.iter().position(|i| i.pane_id == p))
-        .unwrap_or(0)
+        .and_then(|k| entries.iter().position(|e| e.key() == Some(k)))
+        .or_else(|| entries.iter().position(|e| e.key().is_some()))
+}
+
+/// The selectable row `step` rows from `from` (clamped).
+fn step(entries: &[Entry], from: usize, down: bool) -> Option<usize> {
+    let sel = |i: &usize| entries[*i].key().is_some();
+    if down {
+        (from + 1..entries.len()).find(sel)
+    } else {
+        (0..from).rev().find(sel)
+    }
 }
 
 impl TermApp {
@@ -165,65 +297,84 @@ impl TermApp {
 
     pub(crate) fn queue_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
-        let items = items();
+        let entries = entries();
         let Some(Overlay::Queue(state)) = self.overlay.as_mut() else {
             return;
         };
-        let idx = selected_index(state, &items);
-        let current = items.get(idx).cloned();
+        let idx = selected_index(state, &entries);
+        let current = idx.map(|i| entries[i].clone());
+        let item = match &current {
+            Some(Entry::Wait(it)) => Some(it.clone()),
+            _ => None,
+        };
 
         // a risky approval waits for ↩ (or a again); anything else backs out
         if let Some(pane) = state.confirm.take() {
             if matches!(ks.key.as_str(), "enter" | "a" | "y") {
-                if let Some(it) = items.iter().find(|i| i.pane_id == pane) {
-                    self.answer(it, true, cx);
+                if let Some(it) = items().into_iter().find(|i| i.pane_id == pane) {
+                    self.answer(&it, true, cx);
                 }
             }
             return;
         }
 
-        let select = |state: &mut QueueState, i: usize| {
-            if let Some(it) = items.get(i) {
-                state.selected = Some(it.pane_id);
+        let select = |state: &mut QueueState, i: Option<usize>| {
+            if let Some(i) = i {
+                state.selected = entries[i].key();
                 state.scroll.scroll_to_item(i);
             }
         };
+        let first = entries.iter().position(|e| e.key().is_some());
+        let last = entries.iter().rposition(|e| e.key().is_some());
         match ks.key.as_str() {
             "escape" | "q" => {
                 self.overlay = None;
                 self.focus.focus(window);
             }
-            "j" | "down" => select(state, (idx + 1).min(items.len().saturating_sub(1))),
-            "k" | "up" => select(state, idx.saturating_sub(1)),
-            "g" | "home" => select(state, 0),
-            "G" | "end" => select(state, items.len().saturating_sub(1)),
+            "j" | "down" => select(state, idx.and_then(|i| step(&entries, i, true)).or(idx)),
+            "k" | "up" => select(state, idx.and_then(|i| step(&entries, i, false)).or(idx)),
+            "g" | "home" => select(state, first),
+            "G" | "end" => select(state, last),
             k if k.len() == 1 && k.as_bytes()[0].is_ascii_digit() && k != "0" => {
-                select(state, (k.as_bytes()[0] - b'1') as usize)
+                let n = (k.as_bytes()[0] - b'1') as usize;
+                let i = entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| matches!(e, Entry::Wait(_)))
+                    .nth(n)
+                    .map(|(i, _)| i);
+                select(state, i)
             }
-            "enter" | "o" => {
-                if let Some(it) = current {
-                    self.open_queue_item(it.pane_id, window, cx);
+            "enter" | "o" => match current.as_ref().and_then(Entry::key) {
+                Some(Key::Wait(p) | Key::Run(p, _)) => self.open_queue_item(p, window, cx),
+                None => {}
+            },
+            "v" => {
+                if let Some(Entry::Run(r)) = current {
+                    if r.reviewable {
+                        self.overlay = None;
+                        self.review_run(r.pane_id, window, cx);
+                    }
                 }
             }
-            "a" | "y" => match current {
-                Some(it @ Item { ask: Ask::Approve(_), .. }) => {
+            "a" | "y" => {
+                if let Some(it @ Item { ask: Ask::Approve(_), .. }) = item {
                     if it.risky {
                         state.confirm = Some(it.pane_id);
                     } else {
                         self.answer(&it, true, cx);
                     }
                 }
-                _ => {}
-            },
+            }
             "r" | "n" => {
-                if let Some(it @ Item { ask: Ask::Approve(_), .. }) = current {
+                if let Some(it @ Item { ask: Ask::Approve(_), .. }) = item {
                     self.answer(&it, false, cx);
                 }
             }
             "d" | "x" => {
-                if let Some(Item { ask: Ask::Done, pane_id, .. }) = current {
+                if let Some(Item { ask: Ask::Done, pane_id, .. }) = item {
                     agents::mark_seen(pane_id);
-                    self.after_answer(idx, cx);
+                    self.after_answer(idx.unwrap_or(0), cx);
                 }
             }
             _ => {}
@@ -247,7 +398,10 @@ impl TermApp {
             self.flash(format!("Couldn't reach the agent: {e:#}"));
             return;
         }
-        let idx = items().iter().position(|i| i.pane_id == it.pane_id).unwrap_or(0);
+        let idx = entries()
+            .iter()
+            .position(|e| e.key() == Some(Key::Wait(it.pane_id)))
+            .unwrap_or(0);
         let ts = agents::collect(None)
             .into_iter()
             .find(|a| a.pane_id == it.pane_id)
@@ -257,16 +411,18 @@ impl TermApp {
         self.after_answer(idx, cx);
     }
 
-    /// An item went away: select the one after it, or close an empty queue.
-    fn after_answer(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let items = items();
-        if items.is_empty() {
+    /// An item went away: select the row now in its place, or close an
+    /// empty overlay.
+    pub(crate) fn after_answer(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let entries = entries();
+        if entries.is_empty() {
             self.overlay = None;
         } else if let Some(Overlay::Queue(state)) = self.overlay.as_mut() {
-            let still = state.selected.is_some_and(|p| items.iter().any(|i| i.pane_id == p));
+            let still = state.selected.is_some_and(|k| entries.iter().any(|e| e.key() == Some(k)));
             if !still {
-                let i = idx.min(items.len() - 1);
-                state.selected = Some(items[i].pane_id);
+                let i = idx.min(entries.len() - 1);
+                let i = (i..entries.len()).chain((0..i).rev()).find(|&i| entries[i].key().is_some());
+                state.selected = i.and_then(|i| entries[i].key());
             }
         }
         cx.notify();

@@ -19,6 +19,8 @@ pub(super) struct TabInfo {
     pub(super) zoomed: bool,
     /// activity (green) or waiting-on-you (amber)
     pub(super) dot: Option<Hsla>,
+    /// what the tab holds, when it's a single native view (database for SQL)
+    pub(super) icon: Option<Icon>,
 }
 
 impl TermApp {
@@ -225,6 +227,13 @@ impl TermApp {
                         let has = |st: Status| {
                             panes.iter().any(|p| statuses.get(&p.pane.pane_id()) == Some(&st))
                         };
+                        let icon = match panes.as_slice() {
+                            [only] => match self.views.kind(only.pane.pane_id()) {
+                                Some("sql") => Some(Icon::Database),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
                         let waiting = has(Status::NeedsInput);
                         let done = idx != active && has(Status::Done);
                         let busy = idx != active
@@ -237,6 +246,7 @@ impl TermApp {
                             title,
                             active: idx == active,
                             zoomed: tab.get_zoomed_pane().is_some(),
+                            icon,
                             dot: if waiting {
                                 Some(t.warning)
                             } else if done {
@@ -387,6 +397,13 @@ impl TermApp {
                         .child((idx + 1).to_string()),
                 )
             })
+            .when_some(tab.icon, |d, ic| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .child(icon(ic, 12., if tab.active { t.fg_muted } else { t.fg_subtle })),
+                )
+            })
             .when_some(tab.dot, |d, c| {
                 d.child(div().size(px(5.)).flex_none().rounded_full().bg(c))
             })
@@ -441,9 +458,9 @@ impl TermApp {
     }
 }
 
-/// The attention queue at a glance: agents blocked on you (warning icon) and
+/// What's waiting in Agents (⌘J) at a glance: agents blocked on you (warning icon) and
 /// agents that finished while you were elsewhere (check), each with its
-/// count. Absent when the queue is empty; click opens it.
+/// count. Absent when nothing is waiting; click opens Agents.
 fn attention_chip(blocked: usize, finished: usize, t: &Theme, cx: &mut Context<TermApp>) -> Option<impl IntoElement> {
     if blocked + finished == 0 {
         return None;

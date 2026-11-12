@@ -66,7 +66,16 @@ impl TermApp {
     ) -> impl IntoElement {
         let config = config::configuration();
         let metrics = render::metrics(window, &config, self.font_scale);
-        let viewports = self.viewports.clone();
+        // each pane's first row: scrolled back, or lifted above a run card
+        let tops: std::collections::HashMap<_, _> = self
+            .active_tab()
+            .map(|tab| {
+                tab.iter_panes()
+                    .iter()
+                    .filter_map(|p| Some((p.pane.pane_id(), self.view_top(p.pane.pane_id())?)))
+                    .collect()
+            })
+            .unwrap_or_default();
         let grid = self.grid.clone();
         // dividers: a visible hairline at rest, accent while hovered / dragged
         let fg = render::color(palette.foreground);
@@ -211,7 +220,7 @@ impl TermApp {
                     .iter_panes()
                     .iter()
                     .filter(|p| !crate::views::is_view(&p.pane))
-                    .map(|p| render::snapshot(p, viewports.get(&p.pane.pane_id()).copied()))
+                    .map(|p| render::snapshot(p, tops.get(&p.pane.pane_id()).copied()))
                     .collect();
                 let painted: Vec<_> = splits
                     .iter()
@@ -261,7 +270,7 @@ impl TermApp {
                 }
                 if let Some((pane_id, cursor, sel)) = copy {
                     if let Some(p) = tab.iter_panes().iter().find(|p| p.pane.pane_id() == pane_id) {
-                        let top = viewports
+                        let top = tops
                             .get(&pane_id)
                             .copied()
                             .unwrap_or(p.pane.get_dimensions().physical_top);

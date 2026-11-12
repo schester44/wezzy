@@ -1,9 +1,10 @@
-//! The attention queue's card (⌘J, `queue.rs`).
+//! The agents overlay's card (⌘J, `queue.rs`): what's waiting, then each
+//! agent's runs.
 
-use super::widgets::{button, term_family, with_alpha, ButtonKind};
-use super::{icon, Icon, Theme};
+use super::widgets::{button, section_header, term_family, with_alpha, ButtonKind};
+use super::{icon, spinner, Icon, Theme};
 use crate::app::TermApp;
-use crate::queue::{Ask, Item, QueueState};
+use crate::queue::{Ask, Entry, Item, Key, QueueState, RunRow};
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString};
 
 /// Lines of a request shown on the selected row before it's cut off.
@@ -11,17 +12,31 @@ const DETAIL_LINES: usize = 12;
 
 impl TermApp {
     pub(super) fn queue_view(&self, state: &QueueState, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let items = crate::queue::items();
-        let selected = crate::queue::selected_index(state, &items);
-        let confirm = state
-            .confirm
-            .and_then(|p| items.iter().find(|i| i.pane_id == p))
-            .cloned();
-        let count = items.len();
-        let rows: Vec<AnyElement> = items
+        let entries = crate::queue::entries();
+        let selected = crate::queue::selected_index(state, &entries);
+        let confirm = state.confirm.and_then(|p| {
+            entries.iter().find_map(|e| match e {
+                Entry::Wait(it) if it.pane_id == p => Some(it.clone()),
+                _ => None,
+            })
+        });
+        let empty_list = entries.is_empty();
+        let mut wait_n = 0;
+        let rows: Vec<AnyElement> = entries
             .into_iter()
             .enumerate()
-            .map(|(i, it)| self.queue_row(i, it, i == selected, t, cx))
+            .map(|(i, e)| {
+                let sel = selected == Some(i);
+                match e {
+                    Entry::WaitHeader(n) => section_header("Waiting", Some(n.to_string()), t).into_any_element(),
+                    Entry::Wait(it) => {
+                        wait_n += 1;
+                        self.queue_row(wait_n - 1, it, sel, t, cx)
+                    }
+                    Entry::Agent { name, project } => agent_header(&name, &project, t).into_any_element(),
+                    Entry::Run(r) => self.run_row(r, sel, t, cx),
+                }
+            })
             .collect();
 
         div()
@@ -33,33 +48,133 @@ impl TermApp {
                     .px_4()
                     .flex()
                     .items_center()
-                    .gap_1p5()
                     .border_b_1()
                     .border_color(t.border)
-                    .child(div().font_weight(FontWeight::MEDIUM).child("Attention queue"))
-                    .when(count > 0, |d| {
-                        d.child(
-                            div()
-                                .font_family(term_family())
-                                .text_size(px(11.))
-                                .text_color(t.fg_subtle)
-                                .child(count.to_string()),
-                        )
-                    }),
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Agents")),
             )
-            .when(count == 0, |d| d.child(empty(t)))
-            .when(count > 0, |d| {
+            .when(empty_list, |d| d.child(empty(t)))
+            .when(!empty_list, |d| {
                 d.child(
                     div()
                         .id("queue-list")
-                        .max_h(px(520.))
+                        .max_h(px(560.))
                         .overflow_y_scroll()
                         .track_scroll(&state.scroll)
-                        .py_1p5()
+                        .pb_1p5()
                         .children(rows),
                 )
             })
             .when_some(confirm, |d, it| d.child(confirm_footer(&it, t, cx)))
+    }
+
+    /// One of an agent's runs: its summary, what it changed, how long ago.
+    fn run_row(&self, r: RunRow, sel: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let key = Key::Run(r.pane_id, r.started);
+        let pane_id = r.pane_id;
+        let working = r.working;
+        div()
+            .id(("queue-run", (r.pane_id as u64) << 40 ^ r.started))
+            .relative()
+            .w_full()
+            .px_4()
+            .py_2()
+            .flex()
+            .gap_3()
+            .cursor_pointer()
+            .map(|d| {
+                if sel {
+                    d.bg(with_alpha(t.fg, 0.07))
+                        .child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent))
+                } else {
+                    d.hover(|s| s.bg(with_alpha(t.fg, 0.03)))
+                }
+            })
+            .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                let Some(crate::app::Overlay::Queue(s)) = this.overlay.as_mut() else {
+                    return;
+                };
+                if s.selected == Some(key) || ev.click_count() > 1 {
+                    this.open_queue_item(pane_id, window, cx);
+                } else {
+                    s.selected = Some(key);
+                    s.confirm = None;
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .size(px(16.))
+                    .mt(px(2.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(working, |d| d.child(spinner(12., t.fg_muted))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_color(t.fg)
+                            .when(!sel, |d| d.whitespace_nowrap().overflow_hidden().text_ellipsis())
+                            .child(r.title.clone()),
+                    )
+                    .when_some(r.prompt.clone().filter(|_| sel), |d, p| {
+                        d.child(div().text_size(px(12.)).text_color(t.fg_muted).child(p))
+                    })
+                    .when_some(r.stats.filter(|s| s.2 > 0), |d, (a, rm, n)| {
+                        d.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .text_size(px(12.))
+                                .text_color(t.fg_subtle)
+                                .child(super::git::counts(a, rm, t))
+                                .child(crate::runs::files(n)),
+                        )
+                    })
+                    .when(sel, |d| d.child(self.run_actions(&r, t, cx))),
+            )
+            .children(r.ended.map(|e| {
+                div()
+                    .flex_none()
+                    .mt(px(2.))
+                    .font_family(term_family())
+                    .text_size(px(11.))
+                    .text_color(t.fg_subtle)
+                    .child(crate::queue::ago(e))
+            }))
+            .into_any_element()
+    }
+
+    fn run_actions(&self, r: &RunRow, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let pane_id = r.pane_id;
+        div()
+            .pt_1p5()
+            .flex()
+            .items_center()
+            .gap_2()
+            .when(r.reviewable, |d| {
+                d.child(button("queue-review", "Review changes", "v", t, ButtonKind::Soft).on_click(cx.listener(
+                    move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.overlay = None;
+                        this.review_run(pane_id, window, cx);
+                    },
+                )))
+            })
+            .child(button("queue-run-open", "Open", "↩", t, ButtonKind::Ghost).on_click(cx.listener(
+                move |this, _: &ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.open_queue_item(pane_id, window, cx);
+                },
+            )))
     }
 
     fn queue_row(&self, i: usize, it: Item, sel: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -71,7 +186,7 @@ impl TermApp {
         let pane_id = it.pane_id;
         let detail = it.detail.clone().filter(|_| sel);
         div()
-            .id(("queue-row", i))
+            .id(("queue-row", pane_id as u64))
             .relative()
             .w_full()
             .pl_4()
@@ -93,10 +208,10 @@ impl TermApp {
                 let Some(crate::app::Overlay::Queue(s)) = this.overlay.as_mut() else {
                     return;
                 };
-                if s.selected == Some(pane_id) || ev.click_count() > 1 {
+                if s.selected == Some(Key::Wait(pane_id)) || ev.click_count() > 1 {
                     this.open_queue_item(pane_id, window, cx);
                 } else {
-                    s.selected = Some(pane_id);
+                    s.selected = Some(Key::Wait(pane_id));
                     s.confirm = None;
                     cx.notify();
                 }
@@ -193,10 +308,7 @@ impl TermApp {
                 cx.listener(move |this, _: &ClickEvent, _, cx| {
                     cx.stop_propagation();
                     crate::agents::mark_seen(pane_id);
-                    if crate::queue::items().is_empty() {
-                        this.overlay = None;
-                    }
-                    cx.notify();
+                    this.after_answer(0, cx);
                 }),
             )),
         }
@@ -264,6 +376,18 @@ fn confirm_footer(it: &Item, t: &Theme, cx: &mut Context<TermApp>) -> impl IntoE
                 this.answer(&yes, true, cx);
             },
         )))
+}
+
+/// The agent's name and project, above its runs.
+fn agent_header(name: &str, project: &str, t: &Theme) -> impl IntoElement {
+    section_header(name, None, t).when(!project.is_empty(), |d| {
+        d.child(
+            div()
+                .font_weight(FontWeight::NORMAL)
+                .text_color(t.fg_subtle)
+                .child(SharedString::from(project.to_string())),
+        )
+    })
 }
 
 fn empty(t: &Theme) -> impl IntoElement {

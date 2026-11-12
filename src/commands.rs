@@ -204,7 +204,7 @@ impl AppCommand {
             Self::ClosePane => "Close a pane",
             Self::BalancePanes => "Balance panes",
             Self::CreatePullRequest => "Create pull request",
-            Self::AttentionQueue => "Attention queue",
+            Self::AttentionQueue => "Agents",
             Self::ReviewAgentRun => "Review agent changes",
             Self::UndoAgentTurn => "Undo agent turn",
             Self::UndoAgentRun => "Undo agent run",

@@ -64,13 +64,17 @@ impl Render for TermApp {
             })
             .flatten(),
         );
-        if self
-            .flash
-            .as_ref()
-            .is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(3))
+        // agent toasts have more to read; none expire while the window is in
+        // the background (their clock restarts when it comes back)
+        let ttl = if self.flash_agent.as_ref().is_some_and(|a| a.body.is_some() || a.done) { 6 } else { 3 };
+        if window.is_window_active()
+            && self
+                .flash
+                .as_ref()
+                .is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(ttl))
         {
             self.flash = None;
-            self.flash_pane = None;
+            self.flash_agent = None;
         }
 
         div()

@@ -81,6 +81,8 @@ pub enum AppEvent {
         pane_id: PaneId,
         status: crate::hooks::HookStatus,
         detail: Option<String>,
+        /// A finished turn: the first sentence of the agent's last message.
+        said: Option<String>,
     },
     /// A macOS notification was clicked (notify.rs); the session server's pane id.
     NotificationClicked(PaneId),
@@ -228,7 +230,7 @@ pub(crate) enum Overlay {
     },
     Palette(crate::palette::PaletteState),
     Settings(crate::settings_ui::SettingsState),
-    /// The attention queue (⌘J): agents waiting on you.
+    /// The agents overlay (⌘J): what's waiting on you, and each agent's runs.
     Queue(crate::queue::QueueState),
     /// The global shortcut sheet (Leader ?), with what's typed to filter it.
     Shortcuts(String),
@@ -304,6 +306,15 @@ impl GridGeom {
     }
 }
 
+/// What an agent toast shows under its title.
+pub(crate) struct AgentToast {
+    pub pane: PaneId,
+    /// what it needs (a permission, a question) or, done, what it said
+    pub body: Option<String>,
+    /// it finished its turn: the toast shows the run's changes too
+    pub done: bool,
+}
+
 pub struct TermApp {
     pub(crate) focus: FocusHandle,
     pub(crate) mux_window_id: Option<WindowId>,
@@ -316,8 +327,8 @@ pub struct TermApp {
     pub(crate) agent_keys_held: bool,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) flash: Option<(String, Instant)>,
-    /// The agent pane a toast is about; clicking the toast goes there.
-    pub(crate) flash_pane: Option<PaneId>,
+    /// The agent a toast is about; clicking the toast goes to its pane.
+    pub(crate) flash_agent: Option<AgentToast>,
     pub(crate) grid: Rc<Cell<GridGeom>>,
     pub(crate) sidebar_open: bool,
     pub(crate) ws_menu_open: bool,
@@ -357,6 +368,7 @@ pub struct TermApp {
     pub(crate) run_card_hidden: HashMap<PaneId, Option<Instant>>,
     scroll_accum: f32,
     _config_sub: config::ConfigSubscription,
+    _activation_sub: gpui::Subscription,
 }
 
 /// Last time each pane produced output; drives the agent "working" indicator.
@@ -462,6 +474,17 @@ impl TermApp {
         })
         .detach();
 
+        // a toast that arrived while you were away waits for you: its clock
+        // starts over when the window comes back
+        let activation_sub = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                if let Some((_, at)) = &mut this.flash {
+                    *at = Instant::now();
+                    cx.notify();
+                }
+            }
+        });
+
         let this = Self {
             focus,
             mux_window_id: None,
@@ -472,7 +495,7 @@ impl TermApp {
             agent_keys_held: false,
             overlay: None,
             flash: None,
-            flash_pane: None,
+            flash_agent: None,
             grid: Rc::default(),
             sidebar_open: crate::settings::get().show_sidebar,
             ws_menu_open: false,
@@ -498,6 +521,7 @@ impl TermApp {
             run_card_hidden: HashMap::new(),
             scroll_accum: 0.0,
             _config_sub: config_sub,
+            _activation_sub: activation_sub,
         };
         crate::hooks::start();
         crate::notify::start();
@@ -523,13 +547,22 @@ impl TermApp {
 
     pub(crate) fn flash(&mut self, msg: impl Into<String>) {
         self.flash = Some((msg.into(), Instant::now()));
-        self.flash_pane = None;
+        self.flash_agent = None;
     }
 
-    /// A toast about an agent: clicking it goes to the agent's pane.
-    fn flash_agent(&mut self, msg: impl Into<String>, pane_id: PaneId) {
-        self.flash(msg);
-        self.flash_pane = Some(pane_id);
+    /// A toast about an agent: who (name · project), then what it needs or
+    /// what it said. Clicking it goes to the agent's pane.
+    fn toast_agent(&mut self, a: &crate::agents::Agent, body: Option<String>, done: bool) {
+        let title = match a.project.as_str() {
+            "" => a.display_name().to_string(),
+            p => format!("{} · {p}", a.display_name()),
+        };
+        self.flash(title);
+        self.flash_agent = Some(AgentToast {
+            pane: a.pane_id,
+            body,
+            done,
+        });
     }
 
     /// A macOS notification about an agent, for when Wezzy is in the background.
@@ -625,6 +658,7 @@ impl TermApp {
                 pane_id,
                 status,
                 detail,
+                said,
             } => {
                 use crate::hooks::HookStatus;
                 let looking = self.active_pane().map(|p| p.pane_id()) == Some(pane_id)
@@ -640,14 +674,11 @@ impl TermApp {
                         .into_iter()
                         .find(|a| a.pane_id == pane_id)
                     {
-                        let detail = detail.filter(|_| status == HookStatus::NeedsInput);
-                        let msg = match &detail {
-                            Some(d) => format!("{} · {d}", a.name.as_ref().unwrap_or(&a.project)),
-                            None => format!("{} · {}", a.display_name(), a.project),
-                        };
-                        self.flash_agent(msg, pane_id);
+                        let done = status == HookStatus::Done;
+                        let body = if done { said } else { detail };
+                        self.toast_agent(&a, body.clone(), done);
                         if !window.is_window_active() {
-                            self.notify_agent(&a, detail);
+                            self.notify_agent(&a, body);
                         }
                     }
                 }
@@ -662,7 +693,7 @@ impl TermApp {
                     .find(|a| a.pane_id == pane_id)
                 {
                     let fresh = crate::agents::mark_unseen(pane_id);
-                    self.flash_agent(format!("{} · {}", a.display_name(), a.project), pane_id);
+                    self.toast_agent(&a, None, false);
                     // bells repeat; notify once until you've been back
                     if fresh && !window.is_window_active() {
                         self.notify_agent(&a, None);
@@ -674,7 +705,7 @@ impl TermApp {
                     cx.activate(true);
                     window.activate_window();
                     self.flash = None;
-                    self.flash_pane = None;
+                    self.flash_agent = None;
                     self.region = crate::regions::Region::Terminal;
                     self.focus_pane(pane_id, window, cx);
                 }
@@ -1203,11 +1234,15 @@ impl TermApp {
             // with mouse=a, …): send real wheel events, one per line, as WezTerm does
             use wezterm_term::{KeyModifiers, MouseButton as TMB, MouseEvent, MouseEventKind};
             let button = if lines > 0 { TMB::WheelUp(1) } else { TMB::WheelDown(1) };
+            // rows lifted above a run card
+            let lift = self
+                .view_top(pane.pane_id())
+                .map_or(0, |t| (t - pane.get_dimensions().physical_top).max(0));
             for _ in 0..lines.unsigned_abs() {
                 pane.mouse_event(MouseEvent {
                     kind: MouseEventKind::Press,
                     x: col,
-                    y: row as i64,
+                    y: row as i64 + lift as i64,
                     x_pixel_offset: 0,
                     y_pixel_offset: 0,
                     button,

@@ -199,7 +199,7 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Previous Tab", Key(ActivateTabRelative(-1))),
         ("Toggle Sidebar", App(AppCommand::ToggleSidebar)),
         ("Find Agent…", App(AppCommand::FindAgent)),
-        ("Attention Queue", App(AppCommand::AttentionQueue)),
+        ("Agents", App(AppCommand::AttentionQueue)),
         ("Rename Agent…", App(AppCommand::RenameAgent)),
         ("Find Tab…", App(AppCommand::FindTab)),
         ("Switch Workspace…", App(AppCommand::SwitchWorkspace)),

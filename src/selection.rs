@@ -131,7 +131,7 @@ impl TermApp {
         };
         let row = row.clamp(0, p.height as isize - 1);
         let d = p.pane.get_dimensions();
-        let top = self.viewports.get(&p.pane.pane_id()).copied().unwrap_or(d.physical_top);
+        let top = self.view_top(p.pane.pane_id()).unwrap_or(d.physical_top);
         Some(Hit {
             pos: (top + row as StableRowIndex, (col_f as usize).min(p.width - 1)),
             boundary: col_f.round() as usize,

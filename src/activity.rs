@@ -13,6 +13,12 @@
 //!   snapshot and that snapshot with only the agent's files updated, so your
 //!   own edits elsewhere don't count. Undo restores a turn's files from its
 //!   snapshot.
+//! - **Timeline:** what the agent did this session, one short line per piece
+//!   of work, for the agents overlay (⌘J). Separate from runs: a line ends
+//!   when the next prompt comes after a commit, a break (`BREAK`) or a move
+//!   to another repo, or when you dismiss the run. Kept per pane until the
+//!   agent's session changes, in `<state>/agents/<server pane>.runs.json` so
+//!   it survives a restart.
 //!
 //! Git work happens on short-lived threads; everything here is safe to call
 //! from the main thread (it only locks and clones).
@@ -21,6 +27,7 @@ use crate::app::{send_event, AppEvent};
 use crate::diff::{git, git_run};
 use mux::pane::PaneId;
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Read as _, Seek as _, SeekFrom};
@@ -35,6 +42,10 @@ const LOG_TRIM: u64 = 4 * 1024 * 1024;
 const STATS_EVERY: Duration = Duration::from_secs(3);
 /// Logs of panes that no longer exist are deleted after this long.
 const LOG_ORPHAN: Duration = Duration::from_secs(24 * 3600);
+/// Timeline lines kept per pane.
+const HISTORY_MAX: usize = 100;
+/// A prompt this long after the agent finished starts a new timeline line.
+const BREAK: u64 = 15 * 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TouchKind {
@@ -116,8 +127,83 @@ impl Run {
     }
 }
 
+/// One line of an agent's timeline.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Line {
+    /// the first line of the prompt that started it
+    pub prompt: Option<String>,
+    /// first sentence of the agent's last message
+    pub summary: Option<String>,
+    pub added: u32,
+    pub removed: u32,
+    pub files: usize,
+    /// unix secs; `ended` is when the agent last finished, 0 before that
+    pub started: u64,
+    pub ended: u64,
+    /// a turn is in progress (only the open line)
+    #[serde(default)]
+    pub working: bool,
+}
+
+/// The line being written.
+#[derive(Clone, Serialize, Deserialize)]
+struct Open {
+    line: Line,
+    root: PathBuf,
+    /// HEAD when it started: a commit since ends it
+    head: String,
+    /// the working tree when it started; `None` until the snapshot lands
+    base: Option<String>,
+    /// files the agent edited (absolute)
+    files: BTreeSet<PathBuf>,
+}
+
+/// A pane's timeline in the agent's current session.
+#[derive(Default, Serialize, Deserialize)]
+struct History {
+    session: String,
+    /// oldest first
+    #[serde(rename = "runs")]
+    lines: Vec<Line>,
+    open: Option<Open>,
+    /// where it's saved; empty until the pane's log is seen
+    #[serde(skip)]
+    file: PathBuf,
+}
+
+impl History {
+    /// End the open line, if a turn of it finished.
+    fn close(&mut self) {
+        let Some(o) = self.open.take() else { return };
+        if o.line.ended == 0 && o.line.summary.is_none() {
+            return;
+        }
+        self.lines.push(Line { working: false, ..o.line });
+        if self.lines.len() > HISTORY_MAX {
+            self.lines.remove(0);
+        }
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// The first line of a prompt, clipped.
+fn prompt_line(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let mut s: String = line.chars().take(160).collect();
+    if line.chars().count() > 160 {
+        s = s.trim_end().to_string() + "…";
+    }
+    Some(s)
+}
+
 struct State {
     runs: HashMap<PaneId, Run>,
+    history: HashMap<PaneId, History>,
     touches: Vec<Touch>,
     /// read offset per log file
     offsets: HashMap<PathBuf, u64>,
@@ -129,6 +215,7 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
     let mut g = STATE.lock();
     let st = g.get_or_insert_with(|| State {
         runs: HashMap::new(),
+        history: HashMap::new(),
         touches: vec![],
         offsets: HashMap::new(),
     });
@@ -150,9 +237,28 @@ pub fn touches() -> Vec<Touch> {
     with(|s| s.touches.clone())
 }
 
-/// You've seen the run's work: the next prompt starts a new run.
+/// The pane's timeline, newest first: the open line, then the ended ones.
+pub fn timeline(pane: PaneId) -> Vec<Line> {
+    with(|s| {
+        let Some(h) = s.history.get(&pane) else { return vec![] };
+        h.open.iter().map(|o| o.line.clone()).chain(h.lines.iter().rev().cloned()).collect()
+    })
+}
+
+/// You've seen the run's work: the next prompt starts a new run, and a new
+/// timeline line.
 pub fn dismiss(pane: PaneId) {
-    with(|s| s.runs.remove(&pane));
+    let save = with(|s| {
+        s.runs.remove(&pane);
+        let h = s.history.get_mut(&pane)?;
+        if h.open.as_ref().is_some_and(|o| !o.line.working) {
+            h.close();
+        }
+        serialized(h)
+    });
+    if let Some((file, json)) = save {
+        write_history(&file, &json);
+    }
     send_event(AppEvent::Redraw);
 }
 
@@ -160,8 +266,67 @@ pub fn dismiss(pane: PaneId) {
 pub fn forget(pane: PaneId) {
     with(|s| {
         s.runs.remove(&pane);
+        s.history.remove(&pane);
         s.touches.retain(|t| t.pane != pane);
     });
+}
+
+fn serialized(h: &History) -> Option<(PathBuf, String)> {
+    if h.file.as_os_str().is_empty() {
+        return None;
+    }
+    Some((h.file.clone(), serde_json::to_string(h).ok()?))
+}
+
+fn write_history(file: &Path, json: &str) {
+    let tmp = file.with_extension("tmp");
+    if std::fs::write(&tmp, json).is_ok() {
+        std::fs::rename(&tmp, file).ok();
+    }
+}
+
+/// `<pane>.runs.json`, beside the pane's log.
+fn history_file(log: &Path) -> PathBuf {
+    log.with_extension("runs.json")
+}
+
+fn load_history(pane: PaneId, log: &Path) {
+    let file = history_file(log);
+    let mut h: History = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default();
+    h.file = file;
+    // a turn that finished while the app was down never reports it
+    if let Some(o) = h.open.as_mut().filter(|o| o.line.working) {
+        o.line.working = false;
+        o.line.ended = o.line.ended.max(o.line.started);
+    }
+    with(|s| s.history.insert(pane, h));
+}
+
+/// Recompute the open line's `+/−` and save the timeline. Runs git: call it
+/// off the main thread.
+fn update_line(pane: PaneId) {
+    let job = with(|s| {
+        let o = s.history.get(&pane)?.open.as_ref()?;
+        Some((o.root.clone(), o.base.clone(), o.files.clone(), o.line.started))
+    });
+    if let Some((root, Some(base), files, started)) = job {
+        let stats = snapshot_files(&root, &base, &files).map(|after| numstat(&root, &base, &after));
+        with(|s| {
+            let o = s.history.get_mut(&pane).and_then(|h| h.open.as_mut());
+            if let (Some(o), Some(st)) = (o.filter(|o| o.line.started == started), stats) {
+                o.line.added = st.added;
+                o.line.removed = st.removed;
+                o.line.files = st.files.len();
+            }
+        });
+    }
+    if let Some((file, json)) = with(|s| serialized(s.history.get(&pane)?)) {
+        write_history(&file, &json);
+    }
+    send_event(AppEvent::Redraw);
 }
 
 // -- undo --------------------------------------------------------------------
@@ -189,7 +354,7 @@ pub fn undo_turn(pane: PaneId) -> Result<usize, String> {
         }
     });
     crate::diff::mark_dirty();
-    send_event(AppEvent::Redraw);
+    update_line(pane);
     Ok(n)
 }
 
@@ -200,7 +365,7 @@ pub fn undo_run(pane: PaneId) -> Result<usize, String> {
     let n = restore(&run.root, &base, &run.files())?;
     with(|s| s.runs.remove(&pane));
     crate::diff::mark_dirty();
-    send_event(AppEvent::Redraw);
+    update_line(pane);
     Ok(n)
 }
 
@@ -372,9 +537,13 @@ pub fn poll() {
                 .is_ok_and(|m| m.elapsed().is_ok_and(|e| e > LOG_ORPHAN));
             if old {
                 std::fs::remove_file(&path).ok();
+                std::fs::remove_file(history_file(&path)).ok();
             }
             continue;
         };
+        if !with(|s| s.history.get(&local).is_some_and(|h| !h.file.as_os_str().is_empty())) {
+            load_history(local, &path);
+        }
         for line in read_new(&path) {
             if let Ok(v) = serde_json::from_str::<Value>(&line) {
                 events.push((local, v));
@@ -441,7 +610,7 @@ fn apply(pane: PaneId, v: &Value) {
                 return;
             }
             let Some(cwd) = cwd else { return };
-            start_turn(pane, cwd);
+            start_turn(pane, cwd, p);
         }
         "PreToolUse" => {
             let kind = match p["tool_name"].as_str().unwrap_or("").to_ascii_lowercase().as_str() {
@@ -459,7 +628,9 @@ fn apply(pane: PaneId, v: &Value) {
     }
 }
 
-fn start_turn(pane: PaneId, cwd: PathBuf) {
+fn start_turn(pane: PaneId, cwd: PathBuf, p: &Value) {
+    let session = p["session_id"].as_str().unwrap_or("").to_string();
+    let prompt = p["prompt"].as_str().and_then(prompt_line);
     let root = with(|s| s.runs.get(&pane).map(|r| r.root.clone()));
     // a run lives in one repo; prompting from another starts over
     let repo = git(&cwd, &["rev-parse", "--show-toplevel"]).map(|s| PathBuf::from(s.trim()));
@@ -469,7 +640,38 @@ fn start_turn(pane: PaneId, cwd: PathBuf) {
     let branch = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    let idx = with(|s| {
+    let head = git(&repo, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_default();
+    let now = now_secs();
+    let (idx, line, save) = with(|s| {
+        let h = s.history.entry(pane).or_default();
+        // another session in this pane (the agent restarted, or `/clear`):
+        // its timeline starts over
+        if h.session != session {
+            h.session = session.clone();
+            h.lines.clear();
+            h.open = None;
+        }
+        let ends = h.open.as_ref().is_some_and(|o| {
+            !o.line.working && (o.root != repo || o.head != head || now.saturating_sub(o.line.ended) >= BREAK)
+        });
+        if ends {
+            h.close();
+        }
+        let o = h.open.get_or_insert_with(|| Open {
+            line: Line {
+                prompt: prompt.clone(),
+                started: now,
+                ..Line::default()
+            },
+            root: repo.clone(),
+            head: head.clone(),
+            base: None,
+            files: BTreeSet::new(),
+        });
+        o.line.working = true;
+        // the snapshot below is the line's base if it has none yet
+        let line = o.base.is_none().then_some(o.line.started);
+        let save = serialized(h);
         if root.as_ref() != Some(&repo) {
             s.runs.remove(&pane);
         }
@@ -492,11 +694,20 @@ fn start_turn(pane: PaneId, cwd: PathBuf) {
             files: BTreeSet::new(),
             done: false,
         });
-        run.turns.len() - 1
+        (run.turns.len() - 1, line, save)
     });
+    if let Some((file, json)) = save {
+        write_history(&file, &json);
+    }
     std::thread::spawn(move || {
         let tree = snapshot_worktree(&repo);
         with(|s| {
+            if let Some(started) = line {
+                let o = s.history.get_mut(&pane).and_then(|h| h.open.as_mut());
+                if let Some(o) = o.filter(|o| o.line.started == started && o.base.is_none()) {
+                    o.base = tree.clone();
+                }
+            }
             if let Some(turn) = s.runs.get_mut(&pane).and_then(|r| r.turns.get_mut(idx)) {
                 turn.base = tree;
             }
@@ -507,6 +718,11 @@ fn start_turn(pane: PaneId, cwd: PathBuf) {
 fn touch(pane: PaneId, path: PathBuf, kind: TouchKind) {
     with(|s| {
         if kind == TouchKind::Edit {
+            if let Some(o) = s.history.get_mut(&pane).and_then(|h| h.open.as_mut()) {
+                if path.starts_with(&o.root) {
+                    o.files.insert(path.clone());
+                }
+            }
             if let Some(run) = s.runs.get_mut(&pane) {
                 if path.starts_with(&run.root) {
                     if let Some(turn) = run.turns.last_mut() {
@@ -527,7 +743,14 @@ fn touch(pane: PaneId, path: PathBuf, kind: TouchKind) {
 
 fn finish_turn(pane: PaneId, v: &Value) {
     let summary = summary(&v["payload"]);
-    with(|s| {
+    let save = with(|s| {
+        if let Some(o) = s.history.get_mut(&pane).and_then(|h| h.open.as_mut()) {
+            o.line.working = false;
+            o.line.ended = now_secs();
+            if summary.is_some() {
+                o.line.summary = summary.clone();
+            }
+        }
         if let Some(run) = s.runs.get_mut(&pane) {
             run.done = true;
             run.finished_at = Some(Instant::now());
@@ -541,12 +764,17 @@ fn finish_turn(pane: PaneId, v: &Value) {
             run.stale = false;
             run.computed = None;
         }
+        serialized(s.history.get(&pane)?)
     });
+    if let Some((file, json)) = save {
+        write_history(&file, &json);
+    }
     // the edit's PreToolUse fires before the file is written; give the last
     // write a moment
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(300));
         compute_stats(pane);
+        update_line(pane);
     });
 }
 
@@ -581,7 +809,7 @@ fn tool_paths(input: &Value) -> Vec<PathBuf> {
 
 /// The agent's closing words: `last_assistant_message` when the harness sends
 /// it, else the last assistant text in Claude's transcript.
-fn summary(p: &Value) -> Option<String> {
+pub fn summary(p: &Value) -> Option<String> {
     let text = p["last_assistant_message"]
         .as_str()
         .map(str::to_string)
@@ -657,6 +885,59 @@ mod tests {
         );
         assert_eq!(first_sentence("## Summary\n\n- Did `x` and y"), Some("Did x and y".into()));
         assert_eq!(first_sentence("   "), None);
+    }
+
+    #[test]
+    fn timeline_lines() {
+        let dir = std::env::temp_dir().join(format!("wezzy-timeline-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+        };
+        git(&["init", "-q"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]);
+        let pane: PaneId = 900_001;
+        let log = dir.join("7.log");
+        load_history(pane, &log);
+        let ev = |name: &str, session: &str, extra: Value| {
+            let mut p = json!({"hook_event_name": name, "cwd": dir, "session_id": session});
+            p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            apply(pane, &json!({ "payload": p }));
+        };
+        let turn = |session: &str, prompt: &str, reply: &str| {
+            ev("UserPromptSubmit", session, json!({"prompt": prompt}));
+            ev("Stop", session, json!({"last_assistant_message": reply}));
+        };
+        let prompts = || timeline(pane).iter().map(|l| l.prompt.clone().unwrap_or_default()).collect::<Vec<_>>();
+
+        // follow-ups stay on one line, with the last closing sentence
+        turn("a", "Fix the scroll bug\nin nvim", "Fixed the scroll jumping. Details follow.");
+        turn("a", "and the tests", "Tests pass.");
+        assert_eq!(prompts(), ["Fix the scroll bug"]);
+        assert_eq!(timeline(pane)[0].summary.as_deref(), Some("Tests pass."));
+        // a commit ends it
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "two"]);
+        turn("a", "Rename the overlay", "Renamed it.");
+        assert_eq!(prompts(), ["Rename the overlay", "Fix the scroll bug"]);
+        // so does a break
+        with(|s| s.history.get_mut(&pane).unwrap().open.as_mut().unwrap().line.ended -= BREAK);
+        turn("a", "Next thing", "Did it.");
+        assert_eq!(prompts().len(), 3);
+        // and dismissing the run
+        dismiss(pane);
+        turn("a", "After dismiss", "Ok.");
+        assert_eq!(prompts().len(), 4);
+        // saved beside the log, and read back
+        let before = timeline(pane);
+        with(|s| s.history.remove(&pane));
+        load_history(pane, &log);
+        assert_eq!(timeline(pane), before);
+        // a new session starts over
+        turn("b", "Something else", "Done.");
+        assert_eq!(prompts(), ["Something else"]);
+        forget(pane);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

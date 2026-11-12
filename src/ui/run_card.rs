@@ -1,6 +1,8 @@
 //! The run card: a slim bar on the bottom edge of an agent's pane when its
 //! turn finished with changes (runs.rs): +/−, file count, Review changes. Non-modal: keys keep going to the
-//! terminal, and typing into the pane hides it until the next turn.
+//! terminal, and typing into the pane hides it until the next turn. While it
+//! shows, the pane's view lifts by the rows it covers (`card_lift`), so the
+//! agent's prompt stays visible above it.
 
 use super::git::counts;
 use super::widgets::{button, small_icon_button, term_family, ButtonKind};
@@ -8,12 +10,69 @@ use super::{Icon, Theme};
 use crate::app::TermApp;
 use gpui::{div, point, prelude::*, px, AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent};
 use mux::pane::PaneId;
+use mux::tab::{PositionedPane, Tab};
+use wezterm_term::StableRowIndex;
 
 /// Panes smaller than this get no card: it would cover everything.
 const MIN_W: f32 = 320.;
 const MIN_H: f32 = 160.;
+/// The bar's height.
+const BAR_H: f32 = 34.;
 
 impl TermApp {
+    /// Whether `p` shows a run card: it has a run to review and is big enough.
+    fn shows_run_card(&self, tab: &Tab, p: &PositionedPane) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.run_card(p.pane.pane_id())?;
+        let b = self.view_bounds(tab, p);
+        (f32::from(b.size.width) >= MIN_W && f32::from(b.size.height) >= MIN_H).then_some(b)
+    }
+
+    /// How many rows the view of `p` lifts so its last lines show above the
+    /// run card: the rows the card covers, less blank rows at the bottom
+    /// (below the cursor), which can stay under it.
+    pub(crate) fn card_lift(&self, tab: &Tab, p: &PositionedPane) -> usize {
+        if crate::views::is_view(&p.pane) {
+            return 0;
+        }
+        let Some(b) = self.shows_run_card(tab, p) else {
+            return 0;
+        };
+        let g = self.grid.get();
+        if g.line_h <= px(0.) {
+            return 0;
+        }
+        let bar_top = b.origin.y + b.size.height - px(BAR_H);
+        let rows_top = g.origin.y + g.line_h * p.top as f32;
+        let fit = ((bar_top - rows_top) / g.line_h).floor().max(0.) as usize;
+        let covered = p.height.saturating_sub(fit);
+        if covered == 0 {
+            return 0;
+        }
+        let d = p.pane.get_dimensions();
+        let top = d.physical_top;
+        let (_, lines) = p.pane.get_lines(top..top + d.viewport_rows as StableRowIndex);
+        let cursor = (p.pane.get_cursor_position().y - top).max(0) as usize;
+        let blank = lines
+            .iter()
+            .enumerate()
+            .rev()
+            .take_while(|(i, l)| *i > cursor && l.is_whitespace())
+            .count();
+        covered.saturating_sub(blank)
+    }
+
+    /// The first row shown in `pane`: where you scrolled to, else the bottom
+    /// of the screen, lifted above a run card. `None` is the live screen.
+    pub(crate) fn view_top(&self, pane: PaneId) -> Option<StableRowIndex> {
+        if let Some(top) = self.viewports.get(&pane) {
+            return Some(*top);
+        }
+        let tab = self.active_tab()?;
+        let p = tab.iter_panes().into_iter().find(|p| p.pane.pane_id() == pane)?;
+        let lift = self.card_lift(&tab, &p);
+        (lift > 0).then(|| p.pane.get_dimensions().physical_top + lift as StableRowIndex)
+    }
+
     /// A run card docked to the bottom of each pane of the active tab whose
     /// agent has a run to review.
     pub(super) fn run_cards(&self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -33,11 +92,7 @@ impl TermApp {
             .filter_map(|p| {
                 let pane = p.pane.pane_id();
                 let run = self.run_card(pane)?;
-                let b = self.view_bounds(&tab, &p);
-                // too small to hold it without covering everything
-                if f32::from(b.size.width) < MIN_W || f32::from(b.size.height) < MIN_H {
-                    return None;
-                }
+                let b = self.shows_run_card(&tab, &p)?;
                 Some(
                     // the pane's box, the card at its bottom edge; the box
                     // takes no mouse events itself, only the card does
@@ -70,7 +125,7 @@ impl TermApp {
         div()
             .id(("run-card", pane))
             .w_full()
-            .h(px(34.))
+            .h(px(BAR_H))
             .pl_3()
             .pr_1p5()
             .flex()

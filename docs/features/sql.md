@@ -14,8 +14,9 @@ setup: Wezzy finds its database in the `.env` files.
 | ⌘K, then `sql neverwait select * from users` | Open `neverwait` and run that query |
 
 Databases are listed under "Databases" in ⌘K, with where they are beside them
-(`sql localhost/neverwait`). The tab is named after the database, and it splits,
-zooms and moves between workspaces like any other pane.
+(`sql localhost/neverwait`). The tab is named after the database and carries a
+database icon while the editor is its only pane. It splits, zooms and moves
+between workspaces like any other pane.
 
 ## Writing queries
 
