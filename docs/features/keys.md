@@ -30,6 +30,10 @@ seconds.
 | Leader q | Close tab |
 | ⌃h/j/k/l | Move between panes and into the side panels |
 
+Drag the line between two panes to resize them. Click the line (without
+dragging) to open a terminal, your default agent or the editor right there,
+between the two panes. Esc or a click elsewhere puts the menu away.
+
 Making panes equal size counts the panes along each side: with one pane on the
 left and two stacked on the right, the left and right halves are the same
 width and the two on the right are the same height. **Balance Panes** in ⌘K

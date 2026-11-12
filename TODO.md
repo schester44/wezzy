@@ -12,9 +12,14 @@ on its own branch in a worktree, then reviewed and merged back here.
 | 5 | System notifications when an agent needs you and Wezzy isn't focused | Merged to main; test in the bundled app | notify agent |
 | 6 | Rename agents | Merged to main | rename agent |
 | 7 | Task inbox: agents that pick up work without being managed | Parked: needs design | |
+| 8 | SQL: schema browser (tables, columns, keys, indexes; ↵ opens a table) | Merged to main; catalog queries untested against a database | sql-schema agent |
+| 9 | SQL: copy as CSV / JSON / Markdown / INSERT | Merged to main; untested in the app | sql-copy agent |
+| 10 | SQL: format the query (⌘⇧F) | Merged to main; untested in the app | sql-format agent |
+| 11 | SQL: readable `explain` (plan tree) | Merged to main; untested against a database | sql-explain agent |
 
 ## Later
 
+- SQL panes agents can drive: an agent opens (or reuses) a SQL pane with its query, you see the result there
 - PR review comments into the feedback queue (`F`)
 - Cost / context usage per agent
 - Session timeline, per-turn checkpoints

@@ -99,7 +99,8 @@ impl TermApp {
 
     /// ⌘\: a shell in a split of the current tab, placed like a new agent.
     pub(crate) fn new_terminal(&mut self, cx: &mut Context<Self>) {
-        let Some((target, request)) = self.agent_split(settings::get().agent_layout) else {
+        let split = self.next_split.take();
+        let Some((target, request)) = split.or_else(|| self.agent_split(settings::get().agent_layout)) else {
             self.spawn_tab(SpawnTabDomain::CurrentPaneDomain, None, None);
             return;
         };
@@ -126,7 +127,8 @@ impl TermApp {
 
     fn run_in_split(&mut self, harness: &Harness, _window: &mut Window, cx: &mut Context<Self>) {
         let spawn = spawn_command(harness);
-        let Some((target, request)) = self.agent_split(settings::get().agent_layout) else {
+        let split = self.next_split.take();
+        let Some((target, request)) = split.or_else(|| self.agent_split(settings::get().agent_layout)) else {
             self.spawn_tab(SpawnTabDomain::CurrentPaneDomain, Some(spawn), None);
             return;
         };

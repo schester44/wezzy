@@ -57,7 +57,8 @@ impl AssetSource for Assets {
             "git-pull-request-draft",
             "git-pull-request-closed",
             "git-merge",
-            "cloud-off"
+            "cloud-off",
+            "code"
         ))
     }
 
@@ -94,6 +95,7 @@ pub enum Icon {
     PullRequestClosed,
     GitMerge,
     CloudOff,
+    Code,
 }
 
 /// A spinning loader, for "working" states.
@@ -139,6 +141,7 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> impl IntoElement {
         Icon::PullRequestClosed => "icons/git-pull-request-closed.svg",
         Icon::GitMerge => "icons/git-merge.svg",
         Icon::CloudOff => "icons/cloud-off.svg",
+        Icon::Code => "icons/code.svg",
     };
     svg()
         .path(path)

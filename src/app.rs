@@ -279,6 +279,11 @@ pub struct TermApp {
     pub(crate) panel_drag: Option<crate::ui::SidePanel>,
     /// The split divider being dragged (its `PositionedSplit::index`).
     pub(crate) split_drag: Option<usize>,
+    /// A pressed divider, or its open menu after a click (seam.rs).
+    pub(crate) seam: Option<crate::seam::Seam>,
+    /// Where the next new terminal / agent / editor split goes, instead of the
+    /// agent layout's choice (set by a seam).
+    pub(crate) next_split: Option<(mux::pane::PaneId, mux::tab::SplitRequest)>,
     /// a view that took a mouse press, and where its pane's top-left is
     pub(crate) view_drag: Option<(PaneId, Point<Pixels>)>,
     pub(crate) ws_cursor: usize,
@@ -419,6 +424,8 @@ impl TermApp {
             sidebar_width: 248.,
             panel_drag: None,
             split_drag: None,
+            seam: None,
+            next_split: None,
             view_drag: None,
             ws_cursor: 0,
             views: Default::default(),
@@ -617,6 +624,10 @@ impl TermApp {
 
     pub(crate) fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
+        if self.seam.take().is_some_and(|s| s.is_open()) && ev.keystroke.key == "escape" {
+            cx.notify();
+            return;
+        }
         if self.copy_mode.is_some() && self.overlay.is_none() {
             self.copy_mode_key(ev, cx);
             return;
@@ -863,6 +874,7 @@ impl TermApp {
                 SplitDirection::Vertical => row == s.top && col >= s.left && col < s.left + s.size,
             }) {
                 self.split_drag = Some(s.index);
+                self.press_seam(&s, ev.position);
                 cx.notify();
                 return;
             }
@@ -1002,6 +1014,9 @@ impl TermApp {
         if ev.pressed_button != Some(gpui::MouseButton::Left) {
             self.split_drag = None;
             cx.notify();
+            return true;
+        }
+        if self.seam_holds(ev.position) {
             return true;
         }
         let g = self.grid.get();

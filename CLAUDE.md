@@ -46,6 +46,7 @@ cargo test
 | `workspaces.rs` | saved workspaces (name + cwd), the running + saved list behind the picker and sidebar menu |
 | `sidebar.rs`, `actions.rs` | sidebar sources (agents, servers, actions): which show, their items, ↵ / `o`; GitHub Actions runs via `gh` |
 | `servers.rs`, `sendout.rs`, `quickselect.rs`, `clipboard.rs` | dev servers, send output to agent, hints + ⌘-click, paste |
+| `seam.rs` | click a split divider: open a terminal, agent or editor between two panes |
 | `paneselect.rs` | PaneSelect (Leader m): pane labels, swaps done on the server |
 | `settings.rs`, `paths.rs`, `sound.rs`, `restart.rs` | settings.json + Lua `setup()`, file locations, chime, restart |
 | `update.rs` | automatic updates: polls the release feed, verifies and swaps in the new bundle |

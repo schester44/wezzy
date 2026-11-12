@@ -138,6 +138,10 @@ impl Render for TermApp {
                         this.end_selection();
                         cx.notify();
                     }
+                    if this.release_seam() {
+                        cx.notify();
+                        return;
+                    }
                     if this.panel_drag.is_some() || this.split_drag.is_some() {
                         this.panel_drag = None;
                         this.split_drag = None;
@@ -175,7 +179,8 @@ impl Render for TermApp {
                             .on_scroll_wheel(cx.listener(Self::on_scroll))
                             .on_drop(cx.listener(Self::on_file_drop))
                             .child(self.terminal_canvas(&palette, window))
-                            .children(self.pane_views(&t, window, cx)),
+                            .children(self.pane_views(&t, window, cx))
+                            .children(self.seam_view(&t, cx)),
                     ),
             )
             // toasts and modals sit over the whole window (sidebars included), so

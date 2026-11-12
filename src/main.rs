@@ -27,6 +27,7 @@ mod quickselect;
 mod recipes;
 mod regions;
 mod restart;
+mod seam;
 mod procs;
 mod render;
 mod sendout;
