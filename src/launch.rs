@@ -167,8 +167,14 @@ impl TermApp {
         match layout {
             AgentLayout::Bsp => {
                 let p = panes.iter().find(|p| p.is_active)?;
-                // split along the longer side, measured in pixels not cells
-                let wide = p.width as f32 * cw >= p.height as f32 * lh;
+                // alternate with the split that made this pane, so halving a
+                // column stacks inside it instead of opening a column between;
+                // a lone pane splits along its longer side (pixels, not cells)
+                let wide = match parent_split(&tab.codec_pane_tree(), p.pane.pane_id()) {
+                    Some(SplitDirection::Horizontal) => false,
+                    Some(SplitDirection::Vertical) => true,
+                    None => p.width as f32 * cw >= p.height as f32 * lh,
+                };
                 Some((
                     p.pane.pane_id(),
                     req(if wide {
@@ -188,6 +194,19 @@ impl TermApp {
             }
         }
     }
+}
+
+/// Direction of the split whose direct child is `pane`, if it has one.
+fn parent_split(node: &mux::tab::PaneNode, pane: mux::pane::PaneId) -> Option<SplitDirection> {
+    use mux::tab::PaneNode;
+    let PaneNode::Split { left, right, node } = node else {
+        return None;
+    };
+    let is_leaf = |n: &PaneNode| matches!(n, PaneNode::Leaf(e) if e.pane_id == pane);
+    if is_leaf(left) || is_leaf(right) {
+        return Some(node.direction);
+    }
+    parent_split(left, pane).or_else(|| parent_split(right, pane))
 }
 
 /// Run the harness through the login shell (so PATH/env from your dotfiles

@@ -44,7 +44,9 @@ pub enum CloseConfirmation {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AgentLayout {
-    /// Split the active pane along its longer side.
+    /// Split the active pane across the split that made it (side by side,
+    /// then stacked, then side by side…); a lone pane splits along its
+    /// longer side.
     Bsp,
     /// First pane is the master on the left; new agents stack on the right.
     MasterStack,
