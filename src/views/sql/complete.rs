@@ -32,7 +32,7 @@ fn unquote(s: &str) -> String {
 }
 
 /// Quote an identifier when Postgres would otherwise fold or reject it.
-fn ident(s: &str) -> String {
+pub fn ident(s: &str) -> String {
     let plain = s
         .chars()
         .next()
@@ -241,6 +241,7 @@ mod tests {
             schema: schema.into(),
             name: name.into(),
             columns: cols.iter().map(|c| (c.to_string(), "text".to_string())).collect(),
+            ..Default::default()
         };
         Schema {
             tables: vec![
@@ -250,6 +251,7 @@ mod tests {
                 t("neverwait", "Mixed", &["Id"]),
             ],
             search_path: vec!["neverwait".into()],
+            ..Default::default()
         }
     }
 

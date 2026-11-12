@@ -13,12 +13,34 @@ use std::time::{Duration, Instant};
 /// Rows kept per result; the count goes on past it.
 const MAX_ROWS: usize = 10_000;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Table {
     pub schema: String,
     pub name: String,
     /// (name, type)
     pub columns: Vec<(String, String)>,
+    /// primary key columns, in key order
+    pub primary_key: Vec<String>,
+    pub foreign_keys: Vec<ForeignKey>,
+    pub indexes: Vec<Index>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ForeignKey {
+    pub columns: Vec<String>,
+    pub ref_schema: String,
+    pub ref_table: String,
+    /// the referenced columns, matching `columns` one to one
+    pub ref_columns: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Index {
+    pub name: String,
+    /// key columns or expressions, as Postgres prints them
+    pub columns: Vec<String>,
+    pub unique: bool,
+    pub primary: bool,
 }
 
 #[derive(Default)]
@@ -26,6 +48,8 @@ pub struct Schema {
     pub tables: Vec<Table>,
     /// schemas whose tables don't need qualifying
     pub search_path: Vec<String>,
+    /// false until the first load finishes
+    pub loaded: bool,
 }
 
 pub struct ResultSet {
@@ -654,13 +678,140 @@ fn load_schema(client: &mut Client) -> Result<Schema, postgres::Error> {
                 schema,
                 name,
                 columns: vec![col],
+                ..Default::default()
             }),
         }
+    }
+    // keys and indexes are for the schema browser; without them completion
+    // still works
+    match load_constraints(client) {
+        Ok(cons) => attach_constraints(&mut tables, cons),
+        Err(e) => log::warn!("sql: constraints: {}", error_text(&e)),
+    }
+    match load_indexes(client) {
+        Ok(idx) => attach_indexes(&mut tables, idx),
+        Err(e) => log::warn!("sql: indexes: {}", error_text(&e)),
     }
     Ok(Schema {
         tables,
         search_path,
+        loaded: true,
     })
+}
+
+/// A primary key (`'p'`) or foreign key (`'f'`) of (schema, table).
+struct Constraint {
+    schema: String,
+    table: String,
+    kind: char,
+    columns: Vec<String>,
+    fk: ForeignKey,
+}
+
+const USER_SCHEMAS: &str =
+    "n.nspname not in ('pg_catalog', 'information_schema') and n.nspname not like 'pg_toast%'";
+
+fn load_constraints(client: &mut Client) -> Result<Vec<Constraint>, postgres::Error> {
+    let q = format!(
+        "select n.nspname::text, c.relname::text, con.contype::text,
+                array(select a.attname::text
+                      from unnest(con.conkey) with ordinality k(n, i)
+                      join pg_attribute a on a.attrelid = con.conrelid and a.attnum = k.n
+                      order by k.i),
+                coalesce(fn.nspname::text, ''), coalesce(fc.relname::text, ''),
+                array(select a.attname::text
+                      from unnest(con.confkey) with ordinality k(n, i)
+                      join pg_attribute a on a.attrelid = con.confrelid and a.attnum = k.n
+                      order by k.i)
+         from pg_constraint con
+         join pg_class c on c.oid = con.conrelid
+         join pg_namespace n on n.oid = c.relnamespace
+         left join pg_class fc on fc.oid = con.confrelid
+         left join pg_namespace fn on fn.oid = fc.relnamespace
+         where con.contype in ('p', 'f') and {USER_SCHEMAS}
+         order by 1, 2, con.conname"
+    );
+    Ok(client
+        .query(q.as_str(), &[])?
+        .iter()
+        .map(|r| {
+            let columns: Vec<String> = r.get(3);
+            Constraint {
+                schema: r.get(0),
+                table: r.get(1),
+                kind: r.get::<_, String>(2).chars().next().unwrap_or(' '),
+                fk: ForeignKey {
+                    columns: columns.clone(),
+                    ref_schema: r.get(4),
+                    ref_table: r.get(5),
+                    ref_columns: r.get(6),
+                },
+                columns,
+            }
+        })
+        .collect())
+}
+
+/// (schema, table, index)
+type TableIndex = (String, String, Index);
+
+fn load_indexes(client: &mut Client) -> Result<Vec<TableIndex>, postgres::Error> {
+    let q = format!(
+        "select n.nspname::text, c.relname::text, ic.relname::text, i.indisunique, i.indisprimary,
+                array(select pg_get_indexdef(i.indexrelid, k, true)
+                      from generate_series(1, i.indnatts::int) k order by k)
+         from pg_index i
+         join pg_class c on c.oid = i.indrelid
+         join pg_class ic on ic.oid = i.indexrelid
+         join pg_namespace n on n.oid = c.relnamespace
+         where {USER_SCHEMAS}
+         order by 1, 2, i.indisprimary desc, 3"
+    );
+    Ok(client
+        .query(q.as_str(), &[])?
+        .iter()
+        .map(|r| {
+            (
+                r.get(0),
+                r.get(1),
+                Index {
+                    name: r.get(2),
+                    unique: r.get(3),
+                    primary: r.get(4),
+                    columns: r.get(5),
+                },
+            )
+        })
+        .collect())
+}
+
+fn table_positions(tables: &[Table]) -> std::collections::HashMap<(String, String), usize> {
+    tables
+        .iter()
+        .enumerate()
+        .map(|(i, t)| ((t.schema.clone(), t.name.clone()), i))
+        .collect()
+}
+
+fn attach_constraints(tables: &mut [Table], cons: Vec<Constraint>) {
+    let at = table_positions(tables);
+    for c in cons {
+        let Some(&i) = at.get(&(c.schema, c.table)) else { continue };
+        match c.kind {
+            'p' => tables[i].primary_key = c.columns,
+            'f' => tables[i].foreign_keys.push(c.fk),
+            _ => {}
+        }
+    }
+}
+
+fn attach_indexes(tables: &mut [Table], idx: Vec<TableIndex>) {
+    let at = table_positions(tables);
+    for (schema, table, index) in idx {
+        if let Some(&i) = at.get(&(schema, table)) {
+            tables[i].indexes.push(index);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -709,5 +860,46 @@ mod tests {
             update_sql(&edit, &set, &changes).unwrap(),
             vec![r#"update "neverwait"."online_profiles" set "firstName" = 'it''s', "note" = NULL where "id" = '3'"#]
         );
+    }
+
+    #[test]
+    fn keys_and_indexes_attach_to_their_tables() {
+        let table = |name: &str| Table {
+            schema: "app".into(),
+            name: name.into(),
+            ..Default::default()
+        };
+        let mut tables = vec![table("users"), table("posts")];
+        let fk = ForeignKey {
+            columns: vec!["user_id".into()],
+            ref_schema: "app".into(),
+            ref_table: "users".into(),
+            ref_columns: vec!["id".into()],
+        };
+        let con = |table: &str, kind, fk: ForeignKey| Constraint {
+            schema: "app".into(),
+            table: table.into(),
+            kind,
+            columns: if kind == 'p' { vec!["id".into()] } else { fk.columns.clone() },
+            fk,
+        };
+        attach_constraints(
+            &mut tables,
+            vec![
+                con("users", 'p', ForeignKey::default()),
+                con("posts", 'f', fk.clone()),
+                con("gone", 'p', ForeignKey::default()),
+            ],
+        );
+        let index = Index {
+            name: "posts_user_id_idx".into(),
+            columns: vec!["user_id".into()],
+            ..Default::default()
+        };
+        attach_indexes(&mut tables, vec![("app".into(), "posts".into(), index.clone())]);
+        assert_eq!(tables[0].primary_key, vec!["id"]);
+        assert!(tables[0].foreign_keys.is_empty());
+        assert_eq!(tables[1].foreign_keys, vec![fk]);
+        assert_eq!(tables[1].indexes, vec![index]);
     }
 }

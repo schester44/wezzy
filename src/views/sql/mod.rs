@@ -5,6 +5,7 @@
 //! page at a time (`db.rs`); `[` `]` or the ‹ › buttons turn pages.
 //! Completion pops up while you type a name; tab or ↵ takes it.
 //! ⌘⌥↵ explains the statement and shows the plan as a tree (`explain.rs`).
+//! ⌘O shows the schema browser (`schema.rs`) at the left.
 //!
 //! The query text is kept per database in `~/.local/state/wezzy/sql/<name>.sql`.
 
@@ -14,6 +15,7 @@ mod db;
 mod explain;
 mod export;
 mod grid;
+mod schema;
 
 use super::editor::{Editor, Pos};
 use super::{PaneView, ViewCx};
@@ -44,6 +46,7 @@ pub fn run_on_open(name: &str, query: String) {
 enum Focus {
     Editor,
     Grid,
+    Schema,
 }
 
 struct Menu {
@@ -63,6 +66,7 @@ pub struct SqlView {
     menu: Option<Menu>,
     grid: Grid,
     plan: PlanView,
+    browser: schema::Browser,
     scratch: Option<PathBuf>,
     saved: u64,
     /// from the last draw, for mouse hits
@@ -73,6 +77,8 @@ struct Layout {
     metrics: Metrics,
     width: f32,
     editor_h: f32,
+    /// the schema browser's width, 0 when it's hidden
+    left: f32,
 }
 
 const STATUS_H: f32 = 26.;
@@ -93,37 +99,74 @@ impl SqlView {
             .as_ref()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .unwrap_or_default();
-        let mut editor = Editor::new(text.trim_end());
+        let editor = Editor::new(text.trim_end());
         let pending = PENDING.lock().as_mut().and_then(|m| m.remove(&name));
         let db = conn.as_ref().map(|c| Db::connect(c.url.clone()));
         let mut v = Self {
             missing: format!("No database named {name}"),
             conn,
             db,
-            editor: Editor::new(""),
+            editor,
             focus: Focus::Editor,
             menu: None,
             grid: Grid::default(),
             plan: PlanView::default(),
+            browser: schema::Browser::default(),
             scratch,
             saved: 0,
             layout: None,
         };
-        // append the query as its own statement and run it
         if let Some(q) = pending {
-            editor.key(&Keystroke::parse("cmd-down").unwrap());
+            v.append_and_run(&q);
+        }
+        v.saved = v.editor.version;
+        v
+    }
+
+    /// Add the query as its own statement at the end and run it (unless it's
+    /// already the last one).
+    fn append_and_run(&mut self, q: &str) {
+        let q = q.trim();
+        let editor = &mut self.editor;
+        editor.key(&Keystroke::parse("cmd-down").unwrap());
+        if !editor.text().trim_end().ends_with(q) {
             if !editor.text().trim().is_empty() {
                 let sep = if editor.text().trim_end().ends_with(';') { "\n\n" } else { ";\n\n" };
                 editor.insert(sep);
             }
-            editor.insert(q.trim());
-            v.editor = editor;
-            v.run();
-        } else {
-            v.editor = editor;
+            editor.insert(q);
         }
-        v.saved = v.editor.version;
-        v
+        self.run();
+    }
+
+    fn schema(&self) -> std::sync::Arc<db::Schema> {
+        self.db
+            .as_ref()
+            .map(|d| d.shared.lock().schema.clone())
+            .unwrap_or_default()
+    }
+
+    /// ⌘O: show the browser and go there; from the browser, hide it.
+    fn toggle_browser(&mut self) {
+        self.menu = None;
+        if self.browser.open && self.focus == Focus::Schema {
+            self.browser.open = false;
+            self.browser.typing = false;
+            self.focus = Focus::Editor;
+        } else {
+            self.browser.open = true;
+            self.focus = Focus::Schema;
+        }
+    }
+
+    fn browser_act(&mut self, act: schema::Act, cx: &mut App) {
+        match act {
+            schema::Act::Nothing => {}
+            schema::Act::Open(sql) => self.append_and_run(&sql),
+            schema::Act::Copy(text, toast) => self.act(Some(Action::Copy(text, toast)), cx),
+            schema::Act::Editor => self.focus = Focus::Editor,
+            schema::Act::Shortcuts => crate::app::send_event(crate::app::AppEvent::ViewShortcuts),
+        }
     }
 
     fn save(&mut self) {
@@ -615,11 +658,18 @@ impl Drop for SqlView {
 impl PaneView for SqlView {
     fn render(&mut self, vcx: &ViewCx, t: &Theme, _cx: &mut App) -> AnyElement {
         let m = &vcx.metrics;
+        let browser_w = if self.browser.open {
+            px(schema::WIDTH).min(vcx.size.width * 0.4)
+        } else {
+            px(0.)
+        };
+        let width = vcx.size.width - browser_w;
         let editor_h = (vcx.size.height * 0.4).max(m.line_h * 6. + px(10.)).min(vcx.size.height * 0.7);
         self.layout = Some(Layout {
             metrics: m.clone(),
-            width: f32::from(vcx.size.width),
+            width: f32::from(width),
             editor_h: f32::from(editor_h),
+            left: f32::from(browser_w),
         });
         let grid_h = vcx.size.height - editor_h - px(STATUS_H);
         let editor_focused = vcx.focused && self.focus == Focus::Editor;
@@ -627,19 +677,31 @@ impl PaneView for SqlView {
         self.editor.band = self.active_statement_rows();
         let keyword = t.fg_muted;
         let comment = t.fg_subtle;
-        let editor = self.editor.render(m, t, editor_focused, vcx.size.width, editor_h, |_, line| {
+        let editor = self.editor.render(m, t, editor_focused, width, editor_h, |_, line| {
             highlight(line, keyword, comment)
+        });
+        let browser = self.browser.open.then(|| {
+            let schema = self.schema();
+            let focused = vcx.focused && self.focus == Focus::Schema;
+            self.browser.render(&schema, m, t, focused, browser_w, vcx.size.height)
         });
         let menu = if editor_focused { self.render_menu(m, t) } else { None };
         let status = self.status_line(m, t);
-        let grid = self.render_grid(m, t, grid_focused, gpui::size(vcx.size.width, grid_h));
-        div()
-            .size_full()
+        let grid = self.render_grid(m, t, grid_focused, gpui::size(width, grid_h));
+        let main = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .flex()
             .flex_col()
             .child(div().relative().h(editor_h).flex_none().child(editor).children(menu))
             .child(status)
-            .child(div().flex_1().min_h_0().child(grid))
+            .child(div().flex_1().min_h_0().child(grid));
+        div()
+            .size_full()
+            .flex()
+            .children(browser)
+            .child(main)
             .into_any_element()
     }
 
@@ -647,6 +709,13 @@ impl PaneView for SqlView {
         let m = &ks.modifiers;
         if m.platform && ks.key == "s" && !self.grid.pending.is_empty() {
             return true;
+        }
+        if m.platform && !m.control && !m.alt && !m.shift && ks.key == "o" {
+            return true;
+        }
+        // typing a filter: every key but ⌘ chords is the browser's
+        if self.focus == Focus::Schema && self.browser.typing {
+            return !m.platform;
         }
         // typing into a cell: every key but ⌘ chords is the cell's
         if self.focus == Focus::Grid && self.grid.editing() {
@@ -658,6 +727,8 @@ impl PaneView for SqlView {
             return match (self.focus, ks.key.as_str()) {
                 (Focus::Editor, "j") => self.has_result(),
                 (Focus::Grid, "k") => true,
+                (Focus::Editor | Focus::Grid, "h") => self.browser.open,
+                (Focus::Schema, "l") => true,
                 _ => false,
             };
         }
@@ -667,11 +738,22 @@ impl PaneView for SqlView {
         match self.focus {
             Focus::Editor => matches!(ks.key.as_str(), "enter" | "a" | "z" | "x"),
             Focus::Grid => ks.key == "a",
+            Focus::Schema => false,
         }
     }
 
     fn mouse_down(&mut self, pos: Point<Pixels>, mods: &Modifiers, clicks: usize, cx: &mut App) -> bool {
         let Some(l) = &self.layout else { return false };
+        if f32::from(pos.x) < l.left {
+            self.focus = Focus::Schema;
+            self.menu = None;
+            let schema = self.schema();
+            let act = self.browser.mouse_down(pos, clicks, &schema);
+            self.browser_act(act, cx);
+            return false;
+        }
+        let pos = gpui::point(pos.x - px(l.left), pos.y);
+        self.browser.typing = false;
         let y = f32::from(pos.y);
         if y < l.editor_h {
             self.focus = Focus::Editor;
@@ -718,7 +800,7 @@ impl PaneView for SqlView {
 
     fn mouse_drag(&mut self, pos: Point<Pixels>) {
         let Some(l) = &self.layout else { return };
-        let grid_pos = gpui::point(pos.x, pos.y - px(l.editor_h + STATUS_H));
+        let grid_pos = gpui::point(pos.x - px(l.left), pos.y - px(l.editor_h + STATUS_H));
         let Some(db) = &self.db else { return };
         let s = db.shared.lock();
         if let Some(Outcome::Rows(set)) = s.last.as_ref().map(|r| &r.outcome) {
@@ -732,6 +814,10 @@ impl PaneView for SqlView {
 
     fn scroll(&mut self, pos: Point<Pixels>, lines: isize) {
         let Some(l) = &self.layout else { return };
+        if f32::from(pos.x) < l.left {
+            self.browser.scroll(lines);
+            return;
+        }
         if f32::from(pos.y) < l.editor_h + STATUS_H {
             return;
         }
@@ -752,6 +838,26 @@ impl PaneView for SqlView {
         if self.focus == Focus::Grid && self.grid.editing() {
             return self.grid_key(ks, cx);
         }
+        let m = &ks.modifiers;
+        if m.platform && !m.control && !m.alt && !m.shift && ks.key == "o" {
+            self.toggle_browser();
+            return true;
+        }
+        if self.focus == Focus::Schema {
+            if m.control && !m.platform && ks.key == "l" {
+                self.browser.typing = false;
+                self.focus = Focus::Editor;
+                return true;
+            }
+            let schema = self.schema();
+            return match self.browser.key(ks, &schema) {
+                Some(act) => {
+                    self.browser_act(act, cx);
+                    true
+                }
+                None => false,
+            };
+        }
         if self.focus == Focus::Grid && ks.key_char.as_deref() == Some("?") {
             self.grid.close_menu();
             crate::app::send_event(crate::app::AppEvent::ViewShortcuts);
@@ -767,6 +873,11 @@ impl PaneView for SqlView {
             (Focus::Grid, "k") if ctrl => {
                 self.grid.close_menu();
                 self.focus = Focus::Editor;
+                return true;
+            }
+            (Focus::Editor | Focus::Grid, "h") if ctrl && self.browser.open => {
+                self.menu = None;
+                self.focus = Focus::Schema;
                 return true;
             }
             _ => {}
@@ -857,6 +968,18 @@ impl PaneView for SqlView {
                     ("c", "Copy as CSV, JSON, insert…"),
                 ],
             ),
+            group(
+                "Schema",
+                &[
+                    ("⌘O", "Show / hide the schema"),
+                    ("/", "Filter tables"),
+                    ("l h", "Expand / collapse"),
+                    ("↵", "Select from the table"),
+                    ("y", "Copy the name"),
+                    ("⌃H", "From the editor"),
+                    ("⌃L esc", "Back to the editor"),
+                ],
+            ),
         ];
         let right = vec![
             group(
@@ -897,7 +1020,10 @@ impl PaneView for SqlView {
     }
 
     fn paste(&mut self, text: &str) {
-        if self.focus == Focus::Grid {
+        if self.focus == Focus::Schema {
+            let schema = self.schema();
+            self.browser.paste(&schema, text);
+        } else if self.focus == Focus::Grid {
             self.grid.paste(text);
         } else {
             self.menu = None;
@@ -908,6 +1034,10 @@ impl PaneView for SqlView {
     fn copy(&mut self) -> Option<String> {
         match self.focus {
             Focus::Editor => self.editor.selected_text(),
+            Focus::Schema => {
+                let schema = self.schema();
+                self.browser.copy_selected(&schema)
+            }
             Focus::Grid => {
                 let s = self.db.as_ref()?.shared.lock();
                 match s.last.as_ref().map(|r| &r.outcome) {
