@@ -43,6 +43,7 @@ cargo test
 | `palette.rs`, `settings_ui.rs`, `regions.rs` | command palette, settings overlay, keyboard focus in side panels |
 | `session.rs` | attach to the session server (`wezterm-mux-server`), pane id mapping |
 | `hooks.rs`, `agents.rs`, `procs.rs` | agent hook install/polling, agent detection + status, foreground process lookup |
+| `activity.rs`, `runs.rs`, `ui/run_card.rs` | agent runs: per-turn snapshots, stats and undo; the run card, the git panel's run filter, commit / review / undo actions |
 | `notify.rs` | macOS notifications and the Dock badge for agents waiting on you |
 | `launch.rs`, `recipes.rs` | harness launcher (⌘I), recipes |
 | `hosts.rs` | SSH hosts (⌘⇧S / "ssh …" in ⌘K): config + `~/.ssh/config` aliases |

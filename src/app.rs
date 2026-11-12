@@ -352,6 +352,9 @@ pub struct TermApp {
     pub(crate) ws_cursor: usize,
     /// native views hosted in placeholder panes (`views.rs`)
     pub(crate) views: crate::views::Views,
+    /// Run cards you typed past: pane → the run's `finished_at` when you did,
+    /// so its next finished turn shows the card again (runs.rs).
+    pub(crate) run_card_hidden: HashMap<PaneId, Option<Instant>>,
     scroll_accum: f32,
     _config_sub: config::ConfigSubscription,
 }
@@ -492,6 +495,7 @@ impl TermApp {
             view_drag: None,
             ws_cursor: 0,
             views: Default::default(),
+            run_card_hidden: HashMap::new(),
             scroll_accum: 0.0,
             _config_sub: config_sub,
         };
@@ -551,6 +555,7 @@ impl TermApp {
                 let mux = Mux::get();
                 mux.prune_dead_windows();
                 crate::notify::sync_badge(); // drops closed panes
+                self.forget_closed_runs();
                 if let Some(id) = self.mux_window_id {
                     if mux.get_window(id).is_none() {
                         // Our window died (last pane exited): fall back to any other window.
@@ -823,6 +828,7 @@ impl TermApp {
                 } else if let (Some(pane), Some(tk)) = (self.active_pane(), input.term_key) {
                     self.viewports.remove(&pane.pane_id());
                     clear_alert(pane.pane_id());
+                    self.hide_run_card(pane.pane_id());
                     if self.selection.as_ref().is_some_and(|s| s.pane_id == pane.pane_id()) {
                         self.selection = None;
                     }
@@ -1488,6 +1494,12 @@ impl TermApp {
                     Scope::All
                 };
                 self.open_palette(scope, cx);
+            }
+            // a confirmed undo (runs.rs)
+            EmitEvent(name) if crate::runs::confirmed_undo(&name).is_some() => {
+                if let Some(p) = &pane {
+                    crate::runs::undo(p.pane_id(), crate::runs::confirmed_undo(&name) == Some(true));
+                }
             }
             EmitEvent(name) => {
                 if let (Some(w), Some(p)) = (self.mux_window_id, &pane) {

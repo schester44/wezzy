@@ -15,6 +15,7 @@
 //!   enter/d   on a comment: edit / delete
 //!   f on a line comments on just that line; on a hunk header, the whole hunk
 //!   V         select lines from the cursor line (j/k extend, f comments, esc exits)
+//!   A         only the files the agent's run changed / everything (runs.rs)
 //!   o         open in editor          r        recipes     R  refresh     q  close
 //!   ?         shortcut sheet
 //!
@@ -23,10 +24,11 @@
 
 use crate::app::TermApp;
 use crate::diff::{self, Op, Section, Snapshot};
+use crate::diff::FileDiff;
 use crate::feedback::Comment;
 use gpui::{Context, Keystroke, Window};
-use mux::pane::Pane;
-use std::collections::HashSet;
+use mux::pane::{Pane, PaneId};
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -183,6 +185,13 @@ pub struct GitPanel {
     /// scroll the comment box into view on the next render
     reveal_draft: std::cell::Cell<bool>,
     pub visual: Option<Visual>,
+    /// show only the files this agent pane's run edited (`A`)
+    pub run_filter: Option<PaneId>,
+    /// move the cursor to the first file once the snapshot of this repo lands
+    /// (opening a review); `true` also opens the file onto its first hunk
+    pub land: Option<(PathBuf, bool)>,
+    /// the commit in flight is of this run's files: end the run when it lands
+    pub committing_run: Option<PaneId>,
 }
 
 impl Default for GitPanel {
@@ -206,7 +215,22 @@ impl Default for GitPanel {
             feedback_folded: false,
             reveal_draft: Default::default(),
             visual: None,
+            run_filter: None,
+            land: None,
+            committing_run: None,
         }
+    }
+}
+
+/// The files a run filter lets through (absolute), or `None` for everything.
+pub type RunFiles = Option<BTreeSet<PathBuf>>;
+
+/// Whether `f` passes the run filter.
+pub fn shown(only: &RunFiles, snap: &Snapshot, f: &FileDiff) -> bool {
+    match (only, &snap.root) {
+        (None, _) => true,
+        (Some(only), Some(root)) => only.contains(&root.join(&f.path)),
+        (Some(_), None) => false,
     }
 }
 
@@ -219,8 +243,24 @@ impl GitPanel {
             .count()
     }
 
+    /// The run filter's files, while it's on and the run still exists.
+    pub fn run_files(&self) -> RunFiles {
+        self.run_filter.and_then(crate::activity::run).map(|r| r.files())
+    }
+
+    /// A section's files that pass the run filter, with their indices.
+    pub fn section_files<'a>(&self, snap: &'a Snapshot, sec: Section) -> Vec<(usize, &'a FileDiff)> {
+        let only = self.run_files();
+        snap.files(sec)
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| shown(&only, snap, f))
+            .collect()
+    }
+
     pub fn rows(&self, snap: &Snapshot) -> Vec<Row> {
         let mut rows = vec![];
+        let only = self.run_files();
         // a new comment's box sits under its hunk while that hunk is on screen
         let new_draft = self
             .comment_draft
@@ -230,7 +270,7 @@ impl GitPanel {
         let mut draft_placed = false;
         for sec in Section::ALL {
             let files = snap.files(sec);
-            if files.is_empty() {
+            if !files.iter().any(|f| shown(&only, snap, f)) {
                 continue;
             }
             rows.push(Row::Section(sec));
@@ -238,6 +278,9 @@ impl GitPanel {
                 continue;
             }
             for (fi, f) in files.iter().enumerate() {
+                if !shown(&only, snap, f) {
+                    continue;
+                }
                 rows.push(Row::File(sec, fi));
                 if !self.expanded.contains(&(sec, f.path.clone())) {
                     continue;
@@ -458,7 +501,8 @@ impl TermApp {
             },
             "o" => self.open_cursor_in_editor(&snap, cur, window, cx),
             "s" | "S" if shift || key == "S" => {
-                let all_staged = snap.unstaged.is_empty() && snap.untracked.is_empty();
+                let all_staged = self.git.section_files(&snap, Section::Unstaged).is_empty()
+                    && self.git.section_files(&snap, Section::Untracked).is_empty();
                 self.git_all(&snap, if all_staged { Op::Unstage } else { Op::Stage })
             }
             "]" | "[" if !rows.is_empty() => {
@@ -535,6 +579,7 @@ impl TermApp {
                 Some(Row::Feedback | Row::Draft) | None => {}
                 Some(r) => self.ask_discard(&snap, r),
             },
+            "a" | "A" if shift || key == "A" => self.toggle_run_filter(),
             "c" | "a" => self.open_composer(&snap, key == "a"),
             "p" | "P" if shift || key == "P" => self.sync(&snap, diff::Sync::Push),
             "p" => self.sync(&snap, diff::Sync::Pull),
@@ -554,7 +599,7 @@ impl TermApp {
         self.scroll_to_cursor();
     }
 
-    fn scroll_to_cursor(&self) {
+    pub(crate) fn scroll_to_cursor(&self) {
         self.git.reveal.set(true);
     }
 
@@ -565,6 +610,8 @@ impl TermApp {
         self.git.visual = None;
         self.git.confirm = None;
         self.git.help = false;
+        self.git.run_filter = None;
+        self.git.land = None;
         self.region = crate::regions::Region::Terminal;
     }
 
@@ -606,9 +653,9 @@ impl TermApp {
         let Some(root) = &snap.root else { return };
         let result = match row {
             Row::Section(sec) => {
-                // a whole section: every file in it
+                // a whole section: every file in it (that the run filter shows)
                 let mut r = Ok(());
-                for f in snap.files(sec) {
+                for (_, f) in self.git.section_files(snap, sec) {
                     r = diff::apply(root, op, sec, f, None, snap.has_head);
                     if r.is_err() {
                         break;
@@ -630,7 +677,19 @@ impl TermApp {
 
     fn git_all(&mut self, snap: &Snapshot, op: Op) {
         let Some(root) = &snap.root else { return };
-        if let Err(e) = diff::apply_all(root, op, snap.has_head) {
+        let result = if self.git.run_files().is_some() {
+            // filtered to a run: just its files
+            let secs: &[Section] = match op {
+                Op::Unstage => &[Section::Staged],
+                _ => &[Section::Unstaged, Section::Untracked],
+            };
+            secs.iter()
+                .flat_map(|sec| self.git.section_files(snap, *sec).into_iter().map(move |(_, f)| (*sec, f)))
+                .try_for_each(|(sec, f)| diff::apply(root, op, sec, f, None, snap.has_head))
+        } else {
+            diff::apply_all(root, op, snap.has_head)
+        };
+        if let Err(e) = result {
             self.flash(e);
         }
         std::thread::spawn(diff::refresh);
@@ -649,7 +708,11 @@ impl TermApp {
                 self.flash("Unstage it first (s), then discard");
                 return;
             }
-            Row::Section(sec) => format!("all {} {}", snap.files(sec).len(), sec.title().to_lowercase()),
+            Row::Section(sec) => format!(
+                "all {} {}",
+                self.git.section_files(snap, sec).len(),
+                sec.title().to_lowercase()
+            ),
             Row::File(Section::Untracked, fi) => format!("delete {}", snap.untracked[fi].path),
             Row::File(sec, fi) => format!("changes to {}", snap.files(sec)[fi].path),
             Row::Hunk(sec, fi, _) | Row::Line(sec, fi, ..) if sec == Section::Untracked => {
@@ -788,6 +851,7 @@ impl TermApp {
         }
         let c = self.git.composer.take().expect("open");
         self.git.committing = true;
+        self.git.committing_run = (!c.amend).then(|| self.commit_ends_run(&snap)).flatten();
         diff::commit(root, c.text, c.amend);
     }
 
@@ -815,10 +879,17 @@ impl TermApp {
 
     pub(crate) fn on_committed(&mut self, result: Result<String, (String, String)>, amend: bool) {
         self.git.committing = false;
+        if result.is_err() {
+            self.git.committing_run = None;
+        }
         match result {
             Ok(summary) => {
                 self.git.draft.clear();
                 self.flash(format!("{} {summary}", if amend { "Amended" } else { "Committed" }));
+                // the run's work is in a commit: it's reviewed
+                if let Some(pane) = self.git.committing_run.take() {
+                    self.end_run(pane);
+                }
             }
             Err((err, text)) => {
                 // reopen with the message so nothing is lost

@@ -8,7 +8,7 @@ use super::widgets::{kbd, term_family, with_alpha};
 use super::{icon, spinner, Icon, Theme};
 use crate::app::TermApp;
 use crate::diff::{LineKind, Section, Snapshot};
-use crate::gitpanel::{GitPanel, Row};
+use crate::gitpanel::{shown, GitPanel, Row, RunFiles};
 use gpui::{
     div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, Hsla, SharedString,
 };
@@ -32,17 +32,22 @@ impl TermApp {
         self.git.sync_list(&rows);
         let cursor = self.git.cursor.min(rows.len().saturating_sub(1));
         let cur_row = rows.get(cursor).copied();
+        let only = Arc::new(self.git.run_files());
 
         let body = if snap.is_clean() {
             empty_state(Icon::Check, "No changes", Some("Working tree clean"), t).into_any_element()
+        } else if rows.is_empty() {
+            // filtered to a run whose files are all committed or undone
+            empty_state(Icon::Check, "No changes", None, t).into_any_element()
         } else {
-            let (snap, rows, tc, mono) = (snap.clone(), rows.clone(), *t, term_family());
+            let (snap, rows, tc, mono, only) = (snap.clone(), rows.clone(), *t, term_family(), only.clone());
             gpui::list(
                 self.git.list.clone(),
                 cx.processor(move |this, i: usize, _, cx| {
                     let ctx = RowCtx {
                         git: &this.git,
                         snap: &snap,
+                        only: &only,
                         rows: &rows,
                         cur_row,
                         cursor,
@@ -59,7 +64,7 @@ impl TermApp {
         };
 
         let content = div()
-            .child(self.git_header(&snap, t, cx))
+            .child(self.git_header(&snap, &only, t, cx))
             .children(self.git_composer(&snap, t, cx))
             .child(body)
             .when(
@@ -75,10 +80,11 @@ impl TermApp {
         panel.child(self.side_card(focused, t, content))
     }
 
-    fn git_header(&self, snap: &Snapshot, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn git_header(&self, snap: &Snapshot, only: &RunFiles, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let (adds, dels) = Section::ALL
             .iter()
             .flat_map(|s| snap.files(*s))
+            .filter(|f| shown(only, snap, f))
             .fold((0, 0), |(a, d), f| (a + f.added, d + f.removed));
         let repo = snap
             .root
@@ -173,6 +179,9 @@ impl TermApp {
                                     .child(subject.to_string()),
                             )
                         }
+                    })
+                    .when(only.is_some(), |d| {
+                        d.child(div().flex_1()).children(self.git.run_filter.map(|p| run_chip(p, t, cx)))
                     }),
             )
     }
@@ -430,6 +439,7 @@ impl TermApp {
 struct RowCtx<'a> {
     git: &'a GitPanel,
     snap: &'a Snapshot,
+    only: &'a RunFiles,
     rows: &'a [Row],
     cur_row: Option<Row>,
     cursor: usize,
@@ -495,7 +505,14 @@ impl RowCtx<'_> {
                             .font_family(self.mono.clone())
                             .text_size(px(11.))
                             .text_color(t.fg_subtle)
-                            .child(self.snap.files(sec).len().to_string()),
+                            .child(
+                                self.snap
+                                    .files(sec)
+                                    .iter()
+                                    .filter(|f| shown(self.only, self.snap, f))
+                                    .count()
+                                    .to_string(),
+                            ),
                     )
                     .into_any_element()
             }
@@ -947,6 +964,38 @@ fn pr_chip(pr: crate::pr::PullRequest, t: &Theme, cx: &mut Context<TermApp>) -> 
         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)))
 }
 
+/// The run filter is on: the agent it's showing; click for everything.
+fn run_chip(pane: mux::pane::PaneId, t: &Theme, cx: &mut Context<TermApp>) -> impl IntoElement {
+    let name = crate::agents::collect(None)
+        .into_iter()
+        .find(|a| a.pane_id == pane)
+        .map(|a| a.display_name().to_string())
+        .unwrap_or_else(|| "Agent".into());
+    div()
+        .id("git-run-filter")
+        .flex_none()
+        .h(px(20.))
+        .pl_1p5()
+        .pr_1()
+        .flex()
+        .items_center()
+        .gap_1()
+        .rounded_md()
+        .border_1()
+        .border_color(t.border)
+        .text_size(px(11.))
+        .text_color(t.fg_muted)
+        .cursor_pointer()
+        .hover(|s| s.bg(t.hover).text_color(t.fg))
+        .child(icon(Icon::Bot, 11., t.fg_subtle))
+        .child(name)
+        .child(icon(Icon::X, 10., t.fg_subtle))
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+            this.git.run_filter = None;
+            cx.notify();
+        }))
+}
+
 /// "+12 −3" in the diff colors; a side with nothing is left out.
 pub(super) fn counts(adds: u32, dels: u32, t: &Theme) -> impl IntoElement {
     div()
@@ -1004,6 +1053,7 @@ impl TermApp {
                 &[
                     ("f", "Comment on line (or hunk header)"),
                     ("V", "Select lines from here, then f"),
+                    ("A", "Only the agent's run / everything"),
                     ("F", "Send comments to agent"),
                     ("enter", "Edit comment"),
                     ("d", "Delete comment"),

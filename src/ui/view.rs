@@ -24,6 +24,7 @@ impl Render for TermApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let config = config::configuration();
         self.views.sync();
+        self.land_git_cursor();
         let tab = self.active_tab();
         let pane = tab.as_ref().and_then(|t| t.get_active_pane());
         // a zoomed pane (⌘↵) takes the whole window: side panels hide while it lasts
@@ -169,6 +170,7 @@ impl Render for TermApp {
                             .on_drop(cx.listener(Self::on_file_drop))
                             .child(self.terminal_canvas(&palette, window))
                             .children(self.pane_views(&t, window, cx))
+                            .children(self.run_cards(&t, cx))
                             .children(self.seam_view(&t, cx)),
                     ),
             )

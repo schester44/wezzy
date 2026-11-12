@@ -196,6 +196,63 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
   Permission is asked on the first post. `notify::tests` checks every message
   signature against the runtime, since dev builds assert them at the call.
 
+## Agent runs (`activity.rs`, `runs.rs`, `ui/run_card.rs`)
+
+A run is an agent's turns since you last reviewed its work. `activity.rs` owns
+the data; everything in it only locks a mutex and clones, so it's safe to call
+from render. Git work happens on short-lived threads.
+
+- **The log:** besides the status record, the hook script appends
+  `UserPromptSubmit`, `Stop` and the `PreToolUse` of file tools (Read, Edit,
+  MultiEdit, Write, NotebookEdit, apply_patch) to
+  `~/.local/state/wezzy/agents/<WEZTERM_PANE>.log`, one JSON line each. It's
+  append-only because the single status record loses a `PreToolUse` that's
+  followed right away by its `PostToolUse`. Only the hook-file harnesses
+  (Claude Code, Codex) write it; the pi and opencode plugins don't.
+  `activity::poll` runs on the hooks poller's thread: it reads each log from
+  its last offset (starting at the end the first time, so nothing from before
+  the app started is replayed), keeps a partial last line for next time,
+  empties a log once it's read past 4 MiB, and deletes logs of panes that have
+  been gone for a day.
+- **Turns and snapshots:** a `UserPromptSubmit` (not a subagent's) starts a
+  turn and snapshots the working tree as a tree object: `git add -A` and
+  `write-tree` into a temporary `GIT_INDEX_FILE` seeded from a copy of the real
+  index, so the real index is never touched and unchanged files aren't
+  rehashed. Untracked files are in it, ignored ones aren't. A file tool other
+  than Read adds its absolute path to the turn's `files` if it's inside the
+  run's repo. `Stop` marks the turn done and takes the summary: the first
+  sentence of `last_assistant_message`, or of the last assistant text in
+  Claude's transcript. A run lives in one repo; a prompt from another starts a
+  new one. Runs are in memory only; `forget_closed_runs` (on `MuxChanged`) drops
+  those of closed panes.
+- **Stats:** the run's first snapshot against that snapshot with only the
+  agent's files taken from the working tree (`read-tree` + `add -A -- <files>`
+  in a temp index), through `git diff --numstat`. Your own edits elsewhere
+  don't count, and files changed by shell commands aren't in `files`. Stats are
+  recomputed at most every 3s while the agent edits, and 300ms after `Stop`
+  (the last edit's `PreToolUse` fires before the write).
+- **Undo:** `restore` puts each file back from a snapshot tree
+  (`git restore --source=<tree> --worktree`), or deletes it when the tree
+  doesn't have it (the agent created it). `undo_turn` uses the last turn's
+  snapshot and files and drops the turn; `undo_run` uses the first snapshot and
+  every file and ends the run. `runs::undo` calls them on a thread and reports
+  through `AppEvent::Flash`. The confirm modal performs
+  `EmitEvent("wezzy-run.undo-turn" | "wezzy-run.undo-run")`, which `perform`
+  routes to `runs::undo` (not app commands, since those ask first).
+- **The card** (`ui/run_card.rs`, drawn after `pane_views` over each pane of
+  the active tab) shows while the run is `done && has_changes()`. Typing into
+  the pane records the run's `finished_at` in `TermApp::run_card_hidden`, so
+  the card hides until the next `Stop` changes it. `activity::dismiss` ends the
+  run.
+- **Git panel:** `GitPanel::run_filter` limits `rows()` (and section ops, `S`,
+  `U`, the counts) to files whose `snap.root.join(path)` is in the run's
+  `files()`. `GitPanel::land` puts the cursor on the first file once the
+  snapshot of the run's repo arrives (`land_git_cursor`, from render). A commit
+  submitted with the filter on, where everything staged is the run's and none
+  of its files are left unstaged, sets `committing_run`; `on_committed` ends
+  that run. `F` targets the run whose `touched()` covers every commented file
+  (`run_for_comments`).
+
 ## Sidebar (`sidebar.rs`)
 
 - **Sources:** the sidebar is a stack of sources (`Source`: agents, servers,
