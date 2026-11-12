@@ -592,7 +592,8 @@ impl TermApp {
             AppEvent::Perform { pane_id, action } => self.perform(action, pane_id, window, cx),
             AppEvent::Clipboard(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
             AppEvent::Flash(msg) => self.flash(msg),
-            AppEvent::Redraw => {}
+            // new agent touches or a new git snapshot
+            AppEvent::Redraw => self.follow_step(),
             AppEvent::ViewShortcuts => {
                 if let Some(id) = self.active_pane().map(|p| p.pane_id()) {
                     self.overlay = Some(Overlay::ViewShortcuts(id, String::new()));

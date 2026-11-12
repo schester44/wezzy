@@ -16,6 +16,7 @@
 //!   f on a line comments on just that line; on a hunk header, the whole hunk
 //!   V         select lines from the cursor line (j/k extend, f comments, esc exits)
 //!   o         open in editor          r        recipes     R  refresh     q  close
+//!   w         follow the agent's edits (moving the cursor stops it)
 //!   ?         shortcut sheet
 //!
 //! Commit / comment / pull request boxes: enter submits, shift+enter adds a
@@ -183,6 +184,10 @@ pub struct GitPanel {
     /// scroll the comment box into view on the next render
     reveal_draft: std::cell::Cell<bool>,
     pub visual: Option<Visual>,
+    /// following the agent's edits (`w`); see `gitlive`
+    pub follow: Option<crate::gitlive::Follow>,
+    /// a repaint loop is running for fading markers / glows
+    pub ticking: std::cell::Cell<bool>,
 }
 
 impl Default for GitPanel {
@@ -206,6 +211,8 @@ impl Default for GitPanel {
             feedback_folded: false,
             reveal_draft: Default::default(),
             visual: None,
+            follow: None,
+            ticking: Default::default(),
         }
     }
 }
@@ -304,6 +311,11 @@ impl GitPanel {
         }
     }
 
+    /// Scroll the cursor into view on the next render.
+    pub fn reveal_cursor(&self) {
+        self.reveal.set(true);
+    }
+
     /// Clamp the cursor onto a navigable row.
     pub fn clamp(&mut self, rows: &[Row]) {
         if rows.is_empty() {
@@ -374,6 +386,15 @@ pub fn toggle_op(row: Row) -> Op {
 
 impl TermApp {
     pub(crate) fn diff_key(&mut self, ks: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+        let before = self.git.cursor;
+        self.diff_key_inner(ks, window, cx);
+        // moving the cursor yourself stops following the agent
+        if self.git.cursor != before && ks.key != "w" {
+            self.git.follow = None;
+        }
+    }
+
+    fn diff_key_inner(&mut self, ks: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
         let Some(snap) = diff::snapshot().filter(|s| s.root.is_some()) else {
             if ks.key == "q" {
                 self.close_diff_panel();
@@ -548,6 +569,7 @@ impl TermApp {
             // recipes (review / simplify / …) run against this repo; {file} = cursor file
             "r" => self.open_palette(crate::palette::Scope::Recipes, cx),
             "q" => self.close_diff_panel(),
+            "w" => self.toggle_follow(),
             _ => {}
         }
         // re-clamp against the same rows (the snapshot only changes on refresh)
@@ -567,6 +589,7 @@ impl TermApp {
         self.git.visual = None;
         self.git.confirm = None;
         self.git.help = None;
+        self.git.follow = None;
         self.region = crate::regions::Region::Terminal;
     }
 

@@ -8,11 +8,16 @@ use super::widgets::{kbd, term_family, with_alpha};
 use super::{icon, spinner, Icon, Theme};
 use crate::app::TermApp;
 use crate::diff::{LineKind, Section, Snapshot};
+use crate::activity::TouchKind;
+use crate::diff::Freshness;
+use crate::gitlive::{Marker, PULSE};
 use crate::gitpanel::{GitPanel, Row};
 use gpui::{
     div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, Hsla, SharedString,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Width of the line-number gutter (incl. the left bar) in expanded diffs.
 const GUTTER_W: f32 = 58.;
@@ -32,6 +37,12 @@ impl TermApp {
         self.git.sync_list(&rows);
         let cursor = self.git.cursor.min(rows.len().saturating_sub(1));
         let cur_row = rows.get(cursor).copied();
+        // agent touches and fresh hunks fade by age; keep repainting while they do
+        let live = Arc::new(Live {
+            markers: snap.root.as_deref().map(crate::gitlive::markers).unwrap_or_default(),
+            fresh: crate::diff::freshness(),
+        });
+        self.git_tick(&snap, cx);
 
         let body = if snap.is_clean() {
             empty_state(Icon::Check, "No changes", Some("Working tree clean"), t).into_any_element()
@@ -49,6 +60,7 @@ impl TermApp {
                         focused,
                         mono: &mono,
                         t: &tc,
+                        live: &live,
                     };
                     ctx.render(i, cx)
                 }),
@@ -119,6 +131,21 @@ impl TermApp {
                     .children(pr.map(|pr| pr_chip(pr, t, cx)))
                     .child(div().flex_1())
                     .when(adds + dels > 0, |d| d.child(counts(adds, dels, t)))
+                    // following the agent (`w`); click to stop
+                    .when(self.git.follow.is_some(), |d| {
+                        d.child(
+                            div()
+                                .id("git-follow")
+                                .ml_1()
+                                .flex_none()
+                                .cursor_pointer()
+                                .child(icon(Icon::Eye, 13., t.fg))
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.git.follow = None;
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .id("git-help")
@@ -436,6 +463,95 @@ struct RowCtx<'a> {
     focused: bool,
     mono: &'a SharedString,
     t: &'a Theme,
+    live: &'a Live,
+}
+
+/// What's moving in the panel this frame (`gitlive`).
+struct Live {
+    /// agent touches by repo-relative path
+    markers: HashMap<String, Marker>,
+    fresh: Freshness,
+}
+
+/// A fresh hunk or file: a neutral wash that fades over `diff::GLOW`.
+fn glow(at: Option<Instant>, t: &Theme) -> Option<gpui::Div> {
+    let at = at?;
+    Some(
+        div()
+            .absolute()
+            .inset_0()
+            .bg(with_alpha(t.fg, 0.11 * crate::gitlive::fade(at, crate::diff::GLOW))),
+    )
+}
+
+/// Where an agent is: in the gutter left of the file's chevron. An edit is a
+/// solid dot that pulses once on contact, a read a faint ring; both fade over
+/// `TRAIL`. With several agents in the repo, their pane letter instead.
+fn touch_marker(m: &Marker, path: &str, mono: &SharedString, t: &Theme) -> AnyElement {
+    use gpui::{Animation, AnimationExt};
+    const BOX: f32 = 14.;
+    let edit = m.kind == TouchKind::Edit;
+    // neutral: accent is for selection; position and fill carry the meaning
+    let color = if edit { t.fg } else { t.fg_subtle };
+    let mark = match &m.label {
+        Some(l) => div()
+            .font_family(mono.clone())
+            .text_size(px(10.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(color)
+            .child(l.clone())
+            .into_any_element(),
+        None if edit => div().size(px(6.)).rounded_full().bg(color).into_any_element(),
+        None => div()
+            .size(px(6.))
+            .rounded_full()
+            .border_1()
+            .border_color(color)
+            .into_any_element(),
+    };
+    let pulse = (edit && m.at.elapsed() < PULSE).then(|| {
+        let id = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (path, m.at).hash(&mut h);
+            h.finish()
+        };
+        div()
+            .absolute()
+            .rounded_full()
+            .border_1()
+            .border_color(t.fg)
+            .with_animation(
+                ("git-touch-pulse", id),
+                Animation::new(PULSE).with_easing(gpui::ease_out_quint()),
+                |d, delta| {
+                    let s = 6. + 10. * delta;
+                    d.size(px(s))
+                        .left(px((BOX - s) / 2.))
+                        .top(px((BOX - s) / 2.))
+                        .opacity(0.9 * (1. - delta))
+                },
+            )
+    });
+    div()
+        .absolute()
+        .left(px(8.))
+        .top_0()
+        .bottom_0()
+        .flex()
+        .items_center()
+        .opacity(m.strength())
+        .child(
+            div()
+                .relative()
+                .size(px(BOX))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(mark)
+                .children(pulse),
+        )
+        .into_any_element()
 }
 
 impl RowCtx<'_> {
@@ -456,6 +572,7 @@ impl RowCtx<'_> {
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.region = crate::regions::Region::Diff;
                 this.git.cursor = i;
+                this.git.follow = None;
                 if let Some(snap) = crate::diff::snapshot() {
                     let rows = this.git.rows(&snap);
                     this.git.clamp(&rows);
@@ -514,10 +631,18 @@ impl RowCtx<'_> {
                     "U" => ("!", t.danger),
                     _ => ("M", t.warning),
                 };
+                // a new file glows; so does a collapsed one with a fresh hunk inside
+                let fresh = self.live.fresh.file(sec, fi).or_else(|| {
+                    (!open)
+                        .then(|| (0..f.hunks.len()).filter_map(|hi| self.live.fresh.hunk(sec, fi, hi)).max())
+                        .flatten()
+                });
                 base.h(px(30.))
                     .cursor_pointer()
                     .when(!is_cur, |d| d.hover(|s| s.bg(with_alpha(t.fg, 0.03))))
+                    .children(glow(fresh, t))
                     .child(self.bar(is_cur))
+                    .children(self.live.markers.get(&f.path).map(|m| touch_marker(m, &f.path, self.mono, t)))
                     .pl(px(26.))
                     .pr_4()
                     .gap_2()
@@ -570,6 +695,7 @@ impl RowCtx<'_> {
                     .when(!is_cur, |d| d.bg(gpui::hsla(0., 0., 0., 0.14)))
                     .border_t_1()
                     .border_color(t.border)
+                    .children(glow(self.live.fresh.hunk(sec, fi, hi), t))
                     .child(self.bar(self.git.visual.is_none() && in_cursor_hunk(sec, fi, hi)))
                     .pl(px(GUTTER_W - 2.))
                     .pr_4()
@@ -619,6 +745,7 @@ impl RowCtx<'_> {
                     .text_color(text_color)
                     .when_some(bg, |d, bg| d.bg(bg))
                     .when(selected, |d| d.bg(with_alpha(t.accent, 0.16)))
+                    .children(glow(self.live.fresh.hunk(sec, fi, hi), t))
                     // cursor line: a gray wash over whatever the line's own color is
                     .when(is_cur, |d| {
                         d.child(
@@ -974,6 +1101,7 @@ impl TermApp {
                     ("tab", "Expand / collapse"),
                     ("enter", "Expand, or open hunk in editor"),
                     ("o", "Open in editor"),
+                    ("w", "Follow the agent's edits"),
                 ],
             ),
             group(

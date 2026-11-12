@@ -13,6 +13,7 @@ mod commands;
 mod copymode;
 mod diff;
 mod feedback;
+mod gitlive;
 mod gitpanel;
 mod hooks;
 mod hosts;

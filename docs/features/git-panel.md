@@ -40,6 +40,26 @@ The header has the repo, the branch and the last commit, plus:
 Below that, changes are grouped into **Untracked**, **Unstaged** and **Staged**.
 Expand a file to see its hunks.
 
+## Watching the agent work
+
+While an agent works, the panel shows where its attention is:
+
+- **Markers:** a dot left of a file means an agent just edited it. It pulses
+  once when the edit lands. A faint ring means the agent only read the file.
+  Markers fade over about 10 seconds, so the files the agent moved through
+  read as a short trail. When more than one agent is working in the repo, each
+  marker shows the letter of the agent's pane instead of a dot.
+- **New changes glow:** a hunk that just appeared or changed lights up and
+  fades over a few seconds, and so does a file that just showed up. A
+  collapsed file glows when a hunk inside it is new.
+- **Follow (`w`):** the cursor jumps to the file the agent last edited,
+  expands it and lands on the hunk the edit made, then keeps doing that for
+  each new edit. An eye in the header shows it's on. Moving the cursor
+  yourself, clicking a row, clicking the eye or pressing `w` again stops it.
+
+Markers and follow need Wezzy's agent hooks (⌘, → Agent hooks). The glow
+works without them, for any change to the repo.
+
 ## Keys
 
 Press `?` in the panel to see these.
@@ -53,6 +73,7 @@ Press `?` in the panel to see these.
 | tab, space | Expand / collapse (`l` expands, `h` collapses) |
 | ↵ | Expand, or open the hunk in your editor |
 | o | Open the file at the cursor line in your editor |
+| w | Follow the agent's edits, or stop |
 | s | Stage or unstage the file, hunk or section |
 | S | Stage everything; unstage everything if it's all staged |
 | u | Unstage the file, hunk or section |
@@ -159,3 +180,10 @@ end
 - Very large diffs and binary files show up without hunks. You can still
   stage, discard and open them as whole files.
 - A zoomed pane (⌘↵) hides the panel until you unzoom.
+- Nothing glows when the panel opens or switches to another repo: only
+  changes that arrive while you're looking count. Staging or unstaging a hunk
+  doesn't make it glow.
+- Follow waits while you write a commit message or comment, select lines or
+  confirm a discard, and picks up the latest edit after. Closing the panel
+  turns it off. An edit to a file that never shows up in the diff (it ended
+  up unchanged) is skipped.

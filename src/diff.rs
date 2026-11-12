@@ -10,6 +10,7 @@
 
 use crate::app::{send_event, AppEvent};
 use parking_lot::Mutex;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -161,10 +162,127 @@ pub fn refresh() {
 
 fn publish(snap: Snapshot) {
     let mut cur = SNAPSHOT.lock();
+    // under the snapshot lock, so concurrent refreshes compare in order
+    with_fresh(|f| f.note(cur.as_deref(), &snap, Instant::now()));
     if cur.as_deref() != Some(&snap) {
         *cur = Some(Arc::new(snap));
         drop(cur);
         send_event(AppEvent::Redraw);
+    }
+}
+
+// -- freshness ----------------------------------------------------------------
+
+/// How long a hunk or file that just appeared stays marked fresh.
+pub const GLOW: Duration = Duration::from_secs(4);
+/// A gap this long between snapshots (the panel was closed, or looking
+/// elsewhere) means the next one isn't compared.
+const FRESH_GAP: Duration = Duration::from_secs(6);
+
+/// When each hunk and file of the current snapshot appeared, if that was
+/// within `GLOW`. Positions index the current snapshot's sections.
+#[derive(Clone, Debug, Default)]
+pub struct Freshness {
+    hunks: HashMap<(Section, usize, usize), Instant>,
+    files: HashMap<(Section, usize), Instant>,
+}
+
+impl Freshness {
+    pub fn hunk(&self, sec: Section, fi: usize, hi: usize) -> Option<Instant> {
+        self.hunks.get(&(sec, fi, hi)).copied().filter(|at| at.elapsed() < GLOW)
+    }
+
+    /// The file appeared (it wasn't in any section before).
+    pub fn file(&self, sec: Section, fi: usize) -> Option<Instant> {
+        self.files.get(&(sec, fi)).copied().filter(|at| at.elapsed() < GLOW)
+    }
+
+    /// Anything still glowing.
+    pub fn live(&self) -> bool {
+        self.hunks.values().chain(self.files.values()).any(|at| at.elapsed() < GLOW)
+    }
+}
+
+/// The current snapshot's fresh hunks and files.
+pub fn freshness() -> Freshness {
+    with_fresh(|f| f.current.clone())
+}
+
+/// Compares each published snapshot with the previous one. Hunks are keyed by
+/// path + body (not section or line numbers), so staging one, or an edit above
+/// it that shifts it down, doesn't make it fresh.
+#[derive(Default)]
+struct Fresh {
+    root: Option<PathBuf>,
+    last: Option<Instant>,
+    hunks: HashMap<(String, u64), Instant>,
+    files: HashMap<String, Instant>,
+    current: Freshness,
+}
+
+static FRESH: Mutex<Option<Fresh>> = Mutex::new(None);
+
+fn with_fresh<R>(f: impl FnOnce(&mut Fresh) -> R) -> R {
+    f(FRESH.lock().get_or_insert_with(Fresh::default))
+}
+
+fn hunk_key(h: &Hunk) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut s = std::collections::hash_map::DefaultHasher::new();
+    if h.raw.is_empty() {
+        // an untracked file's synthetic hunk has no raw body
+        h.lines.iter().for_each(|l| l.text.hash(&mut s));
+    } else {
+        h.raw.hash(&mut s);
+    }
+    s.finish()
+}
+
+impl Fresh {
+    /// Record what's new in `snap` since `prev`. The first snapshot, one of
+    /// another repo, or one after a long gap marks nothing.
+    fn note(&mut self, prev: Option<&Snapshot>, snap: &Snapshot, now: Instant) {
+        let compare = snap.root.is_some()
+            && prev.is_some_and(|p| p.root == snap.root)
+            && self.root == snap.root
+            && self.last.is_some_and(|l| now.duration_since(l) < FRESH_GAP);
+        if !compare {
+            self.hunks.clear();
+            self.files.clear();
+        }
+        self.root = snap.root.clone();
+        self.last = Some(now);
+        let mut old_hunks = HashSet::new();
+        let mut old_files = HashSet::new();
+        if let Some(p) = prev.filter(|_| compare) {
+            for f in Section::ALL.iter().flat_map(|s| p.files(*s)) {
+                old_files.insert(f.path.as_str());
+                old_hunks.extend(f.hunks.iter().map(|h| (f.path.as_str(), hunk_key(h))));
+            }
+        }
+        self.hunks.retain(|_, at| now.duration_since(*at) < GLOW);
+        self.files.retain(|_, at| now.duration_since(*at) < GLOW);
+        let mut current = Freshness::default();
+        for sec in Section::ALL {
+            for (fi, f) in snap.files(sec).iter().enumerate() {
+                if compare && !old_files.contains(f.path.as_str()) {
+                    self.files.entry(f.path.clone()).or_insert(now);
+                }
+                if let Some(at) = self.files.get(&f.path) {
+                    current.files.insert((sec, fi), *at);
+                }
+                for (hi, h) in f.hunks.iter().enumerate() {
+                    let key = hunk_key(h);
+                    if compare && !old_hunks.contains(&(f.path.as_str(), key)) {
+                        self.hunks.entry((f.path.clone(), key)).or_insert(now);
+                    }
+                    if let Some(at) = self.hunks.get(&(f.path.clone(), key)) {
+                        current.hunks.insert((sec, fi, hi), *at);
+                    }
+                }
+            }
+        }
+        self.current = current;
     }
 }
 
@@ -626,6 +744,41 @@ mod tests {
         assert_eq!(hunk_starts("@@ -12,7 +14,9 @@ fn main()"), Some((12, 14)));
         assert_eq!(hunk_starts("@@ -1 +1 @@"), Some((1, 1)));
         assert_eq!(hunk_starts("@@ -0,0 +1,3 @@"), Some((0, 1)));
+    }
+
+    #[test]
+    fn fresh_hunks() {
+        let root = Some(PathBuf::from("/r"));
+        let one = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n";
+        let two = format!("{one}@@ -10 +10,2 @@\n x\n+y\n");
+        let snap = |text: &str, root: &Option<PathBuf>| Snapshot {
+            root: root.clone(),
+            unstaged: parse_diff(text),
+            ..Default::default()
+        };
+        let a = snap(one, &root);
+        let b = snap(&two, &root);
+        let mut f = Fresh::default();
+        let now = Instant::now();
+        // the first snapshot marks nothing
+        f.note(None, &a, now);
+        assert!(!f.current.live());
+        // a hunk that appeared glows; the one that was already there doesn't
+        f.note(Some(&a), &b, now);
+        assert!(f.current.hunk(Section::Unstaged, 0, 1).is_some());
+        assert!(f.current.hunk(Section::Unstaged, 0, 0).is_none());
+        assert!(f.current.file(Section::Unstaged, 0).is_none());
+        // staging it moves it, but it isn't new
+        let mut staged = snap(one, &root);
+        staged.staged = parse_diff("diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -10 +10,2 @@\n x\n+y\n");
+        let mut g = Fresh::default();
+        g.note(None, &b, now);
+        g.note(Some(&b), &staged, now);
+        assert!(!g.current.live());
+        // another repo starts over
+        let other = snap(&two, &Some(PathBuf::from("/s")));
+        f.note(Some(&b), &other, now);
+        assert!(!f.current.live());
     }
 
     #[test]
