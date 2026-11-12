@@ -22,6 +22,10 @@ whoever has waited longest is on top.
 | `d` | Dismiss a finished agent without going to it |
 | esc | Close |
 
+While anything is in the queue, the right end of the tab bar shows how many
+agents are blocked on you (a warning icon) and how many finished (a check).
+Click it to open the queue.
+
 **Attention Queue** in ⌘K opens it too. Clicking a row selects it; clicking it
 again goes to the agent.
 

@@ -947,7 +947,8 @@ fn pr_chip(pr: crate::pr::PullRequest, t: &Theme, cx: &mut Context<TermApp>) -> 
         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)))
 }
 
-fn counts(adds: u32, dels: u32, t: &Theme) -> impl IntoElement {
+/// "+12 −3" in the diff colors; a side with nothing is left out.
+pub(super) fn counts(adds: u32, dels: u32, t: &Theme) -> impl IntoElement {
     div()
         .flex_none()
         .flex()

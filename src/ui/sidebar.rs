@@ -118,6 +118,10 @@ pub(super) fn agent_row(
     } else {
         a.workspace.clone()
     };
+    // what its run changed so far (since you last reviewed it)
+    let stats = crate::activity::run(pane_id)
+        .and_then(|r| r.stats)
+        .filter(|s| s.added + s.removed > 0);
     div()
         .id(("agent", pane_id))
         .relative()
@@ -171,7 +175,8 @@ pub(super) fn agent_row(
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .child(meta),
-                        ),
+                        )
+                        .when_some(stats, |d, s| d.child(super::git::counts(s.added, s.removed, t))),
                 )
                 .when_some(task, |d, task| {
                     d.child(

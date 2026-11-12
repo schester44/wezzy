@@ -5,6 +5,7 @@
 //! We provide: rendering, input dispatch, and our own UI (sidebar, overlays).
 
 mod actions;
+mod activity;
 mod agents;
 mod app;
 mod clipboard;

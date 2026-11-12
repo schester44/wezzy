@@ -38,6 +38,29 @@ case "$payload" in
   *'"hook_event_name":"Notification"'*) ;;
   *) rm -f "$req" ;;
 esac
+# Activity log, one line per event, appended so none are lost between polls:
+# prompts and stops (turn boundaries) and file tools (what the agent read and
+# changed), subagents included. Read and trimmed by the app.
+log=
+case "$payload" in
+  *'"hook_event_name":"UserPromptSubmit"'*|*'"hook_event_name": "UserPromptSubmit"'*) log=1 ;;
+  *'"hook_event_name":"Stop"'*|*'"hook_event_name": "Stop"'*) log=1 ;;
+  *'"hook_event_name":"PreToolUse"'*|*'"hook_event_name": "PreToolUse"'*)
+    case "$payload" in
+      *'"tool_name":"Read"'*|*'"tool_name": "Read"'*) log=1 ;;
+      *'"tool_name":"Edit"'*|*'"tool_name": "Edit"'*) log=1 ;;
+      *'"tool_name":"MultiEdit"'*|*'"tool_name": "MultiEdit"'*) log=1 ;;
+      *'"tool_name":"Write"'*|*'"tool_name": "Write"'*) log=1 ;;
+      *'"tool_name":"NotebookEdit"'*|*'"tool_name": "NotebookEdit"'*) log=1 ;;
+      *'"tool_name":"apply_patch"'*|*'"tool_name": "apply_patch"'*) log=1 ;;
+    esac ;;
+esac
+# (raw newlines can't occur inside JSON strings, so dropping them keeps one
+# event per line even if a harness pretty-prints)
+[ -n "$log" ] && printf '{"harness":"%s","pane":%s,"ts":%s,"payload":%s}\n' \
+  "${1:-unknown}" "$WEZTERM_PANE" "$(date +%s)" "$(printf '%s' "$payload" | tr -d '\n')" \
+  >> "$dir/$WEZTERM_PANE.log"
+
 tmp="$dir/.$name.$$"
 printf '{"harness":"%s","pane":%s,"ts":%s,"payload":%s}\n' \
   "${1:-unknown}" "$WEZTERM_PANE" "$(date +%s)" "$payload" > "$tmp" \

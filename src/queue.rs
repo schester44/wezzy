@@ -70,16 +70,30 @@ pub struct Item {
 
 /// The queue's items, in order.
 pub fn items() -> Vec<Item> {
-    let mut agents: Vec<Agent> = agents::collect(None)
-        .into_iter()
-        .filter(|a| match a.status {
-            Status::NeedsInput => !answered(a),
-            Status::Done => a.unseen,
-            _ => false,
-        })
-        .collect();
+    let mut agents: Vec<Agent> = agents::collect(None).into_iter().filter(queued).collect();
     agents.sort_by_key(|a| (a.status != Status::NeedsInput, a.since));
     agents.into_iter().map(item).collect()
+}
+
+/// In the queue: blocked on you (and not just answered here), or finished
+/// while you were elsewhere.
+pub fn queued(a: &Agent) -> bool {
+    match a.status {
+        Status::NeedsInput => !answered(a),
+        Status::Done => a.unseen,
+        _ => false,
+    }
+}
+
+/// (blocked, finished) agents in the queue, for the top bar.
+pub fn counts(agents: &[Agent]) -> (usize, usize) {
+    agents.iter().filter(|a| queued(a)).fold((0, 0), |(b, f), a| {
+        if a.status == Status::NeedsInput {
+            (b + 1, f)
+        } else {
+            (b, f + 1)
+        }
+    })
 }
 
 fn item(a: Agent) -> Item {

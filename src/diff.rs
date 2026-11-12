@@ -134,6 +134,11 @@ static SNAPSHOT: Mutex<Option<Arc<Snapshot>>> = Mutex::new(None);
 /// Set after we change the repo ourselves, so the poller refreshes right away.
 static DIRTY: Mutex<bool> = Mutex::new(false);
 
+/// Refresh on the poller's next tick (something changed the repo).
+pub fn mark_dirty() {
+    *DIRTY.lock() = true;
+}
+
 /// Directory the panel is looking at; `None` when it's closed.
 pub fn set_target(cwd: Option<PathBuf>) {
     let mut t = TARGET.lock();

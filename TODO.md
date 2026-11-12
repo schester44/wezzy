@@ -16,12 +16,16 @@ on its own branch in a worktree, then reviewed and merged back here.
 | 9 | SQL: copy as CSV / JSON / Markdown / INSERT | Merged to main; untested in the app | sql-copy agent |
 | 10 | SQL: format the query (⌘⇧F) | Merged to main; untested in the app | sql-format agent |
 | 11 | SQL: readable `explain` (plan tree) | Merged to main; untested against a database | sql-explain agent |
+| 12 | Agent activity foundation: hook activity log, per-turn snapshots, runs, stats, undo (`activity.rs`) | Done on main | manager |
+| 13 | Run diffstat on sidebar agent rows | Done on main | manager |
+| 14 | Run card over the agent pane after it stops: summary, diffstat, Review / Undo turn / Ask agent / Commit & PR; git panel run filter | In progress | run-card agent |
+| 15 | Live agent markers in the git panel: touched-file markers with fade, fresh-hunk glow, follow mode | In progress | live-markers agent |
 
 ## Later
 
 - SQL panes agents can drive: an agent opens (or reuses) a SQL pane with its query, you see the result there
 - PR review comments into the feedback queue (`F`)
 - Cost / context usage per agent
-- Session timeline, per-turn checkpoints
+- Session timeline
 - Recipe pipelines, best-of-N
 - Wezzy MCP server for agents

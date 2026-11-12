@@ -202,10 +202,10 @@ impl TermApp {
 
     pub(super) fn top_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mux = Mux::get();
-        let statuses: std::collections::HashMap<_, _> = agents::collect(None)
-            .into_iter()
-            .map(|a| (a.pane_id, a.status))
-            .collect();
+        let all_agents = agents::collect(None);
+        let (blocked, finished) = crate::queue::counts(&all_agents);
+        let statuses: std::collections::HashMap<_, _> =
+            all_agents.into_iter().map(|a| (a.pane_id, a.status)).collect();
         let tabs: Vec<TabInfo> = self
             .mux_window_id
             .and_then(|id| mux.get_window(id))
@@ -296,6 +296,7 @@ impl TermApp {
                     .when(leader, |d| d.child(pill("Leader", t.accent)))
                     .when_some(table, |d, name| d.child(pill(&name, t.warning))),
             )
+            .children(attention_chip(blocked, finished, t, cx))
     }
 
     /// One numbered chip per window in the workspace; absent with a single
@@ -438,4 +439,52 @@ impl TermApp {
             }))
             .into_any_element()
     }
+}
+
+/// The attention queue at a glance: agents blocked on you (warning icon) and
+/// agents that finished while you were elsewhere (check), each with its
+/// count. Absent when the queue is empty; click opens it.
+fn attention_chip(blocked: usize, finished: usize, t: &Theme, cx: &mut Context<TermApp>) -> Option<impl IntoElement> {
+    if blocked + finished == 0 {
+        return None;
+    }
+    let part = |ic: Icon, color, n: usize| {
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(icon(ic, 12., color))
+            .child(
+                div()
+                    .font_family(term_family())
+                    .text_size(px(11.))
+                    .text_color(t.fg_muted)
+                    .child(n.to_string()),
+            )
+    };
+    Some(
+        div()
+            .id("attention-chip")
+            .flex_none()
+            .h(px(22.))
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_2p5()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|s| s.bg(t.hover))
+            .when(blocked > 0, |d| d.child(part(Icon::Alert, t.warning, blocked)))
+            .when(finished > 0, |d| d.child(part(Icon::Check, t.success, finished)))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                if matches!(this.overlay, Some(crate::app::Overlay::Queue(_))) {
+                    this.overlay = None;
+                    cx.notify();
+                } else {
+                    this.open_queue(cx);
+                }
+            })),
+    )
 }
