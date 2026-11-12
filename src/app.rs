@@ -228,6 +228,8 @@ pub(crate) enum Overlay {
     },
     Palette(crate::palette::PaletteState),
     Settings(crate::settings_ui::SettingsState),
+    /// The attention queue (⌘J): agents waiting on you.
+    Queue(crate::queue::QueueState),
     /// The global shortcut sheet (Leader ?); any key or click closes it.
     Shortcuts,
     /// A view's own sheet (`?` in it), for the view in this pane.
@@ -728,6 +730,7 @@ impl TermApp {
                     | (Some(Overlay::Palette(_)), AppCommand::FindTab)
                     | (Some(Overlay::Palette(_)), AppCommand::SwitchWorkspace)
                     | (Some(Overlay::Settings(_)), AppCommand::OpenSettings)
+                    | (Some(Overlay::Queue(_)), AppCommand::AttentionQueue)
             );
             if closes {
                 self.overlay = None;
@@ -742,6 +745,11 @@ impl TermApp {
         }
         if matches!(self.overlay, Some(Overlay::Settings(_))) {
             self.settings_key(ev, window, cx);
+            cx.notify();
+            return;
+        }
+        if matches!(self.overlay, Some(Overlay::Queue(_))) {
+            self.queue_key(ev, window, cx);
             cx.notify();
             return;
         }
@@ -900,7 +908,7 @@ impl TermApp {
                 }
             }
             Overlay::Shortcuts | Overlay::ViewShortcuts(_) => self.overlay = None,
-            Overlay::Palette(_) | Overlay::Settings(_) => {}
+            Overlay::Palette(_) | Overlay::Settings(_) | Overlay::Queue(_) => {}
         }
     }
 

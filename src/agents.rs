@@ -8,9 +8,9 @@ use crate::hooks::{self, HookStatus};
 use mux::pane::{CachePolicy, PaneId};
 use mux::Mux;
 use parking_lot::Mutex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Agents that finished or asked for you while you were looking elsewhere,
 /// until you go to their pane. Main thread only, but a static like PANE_ALERTS.
@@ -43,6 +43,23 @@ pub fn waiting_count() -> usize {
     };
     s.retain(|id| mux.get_pane(*id).is_some());
     s.len()
+}
+
+/// Each agent's last status and when it took it, so the attention queue can
+/// put whoever has waited longest first. Main thread only.
+static SINCE: Mutex<Option<HashMap<PaneId, (Status, Instant)>>> = Mutex::new(None);
+
+fn since(pane_id: PaneId, status: Status) -> Instant {
+    let mut guard = SINCE.lock();
+    let m = guard.get_or_insert_with(HashMap::new);
+    match m.get(&pane_id) {
+        Some((s, at)) if *s == status => *at,
+        _ => {
+            let now = Instant::now();
+            m.insert(pane_id, (status, now));
+            now
+        }
+    }
 }
 
 fn is_unseen(pane_id: PaneId) -> bool {
@@ -98,6 +115,13 @@ pub struct Agent {
     /// Finished or asked for you since you last went to its pane.
     pub unseen: bool,
     pub focused: bool,
+    /// The permission dialog it's showing (from hooks).
+    pub request: Option<hooks::Request>,
+    /// Its hook record's time (unix secs); 0 without hooks. Changes with
+    /// every event the agent reports.
+    pub hook_ts: u64,
+    /// When it took its current status (as first seen by this app).
+    pub since: Instant,
 }
 
 impl Agent {
@@ -172,6 +196,8 @@ pub fn collect(focused_pane: Option<PaneId>) -> Vec<Agent> {
             .to_string();
 
         let subagents = hook.as_ref().map(|h| h.subagents.clone()).unwrap_or_default();
+        let request = hook.as_ref().and_then(|h| h.request.clone());
+        let hook_ts = hook.as_ref().map_or(0, |h| h.ts);
         let (status, detail) = match &hook {
             Some(h) => {
                 let s = match h.status {
@@ -206,7 +232,13 @@ pub fn collect(focused_pane: Option<PaneId>) -> Vec<Agent> {
             status,
             unseen,
             focused: Some(pane_id) == focused_pane,
+            request,
+            hook_ts,
+            since: since(pane_id, status),
         });
+    }
+    if let Some(m) = SINCE.lock().as_mut() {
+        m.retain(|id, _| out.iter().any(|a| a.pane_id == *id));
     }
     out.sort_by_key(|a| a.pane_id);
     out

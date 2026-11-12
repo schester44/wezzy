@@ -48,6 +48,7 @@ const CLAUDE_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
     "PreToolUse",
+    "PermissionRequest",
     "PostToolUse",
     "Notification",
     "PreCompact",
@@ -96,6 +97,115 @@ pub struct HookState {
     pub cwd: Option<PathBuf>,
     /// Subagents this agent has running, oldest first.
     pub subagents: Vec<Subagent>,
+    /// The permission dialog it's showing, while `NeedsInput` (Claude, Codex).
+    pub request: Option<Request>,
+    /// When the record was written (unix secs): changes with every event.
+    pub ts: u64,
+}
+
+/// A permission dialog an agent is showing: the tool it wants to run and its
+/// full input, from the harness's `PermissionRequest` hook.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Request {
+    pub tool: String,
+    pub input: Value,
+}
+
+impl Request {
+    fn from_payload(p: &Value) -> Option<Self> {
+        let tool = p["tool_name"].as_str().filter(|t| !t.is_empty())?;
+        Some(Request {
+            tool: tool.to_string(),
+            input: p["tool_input"].clone(),
+        })
+    }
+
+    /// One line: what it wants to do ("Run database migration", "$ git push").
+    pub fn summary(&self) -> String {
+        if let Some(q) = self.input["questions"][0]["question"].as_str() {
+            return clip(q);
+        }
+        if self.tool == "ExitPlanMode" {
+            return "Plan ready".into();
+        }
+        self.input["description"]
+            .as_str()
+            .filter(|d| !d.trim().is_empty())
+            .map(clip)
+            .unwrap_or_else(|| describe_tool(&Value::String(self.tool.clone()), &self.input))
+    }
+
+    /// A yes/no dialog whose first option runs the tool (so ↩ approves and
+    /// esc rejects). Claude's question and plan prompts aren't: they're
+    /// answered in the pane.
+    pub fn is_approval(&self) -> bool {
+        !matches!(self.tool.as_str(), "AskUserQuestion" | "ExitPlanMode")
+    }
+
+    /// Everything you'd want to read before approving: the whole command,
+    /// the file and the new text, the URL; otherwise the input as JSON.
+    pub fn full(&self) -> String {
+        let i = &self.input;
+        let s = |k: &str| i[k].as_str().filter(|v| !v.is_empty());
+        if let Some(plan) = s("plan") {
+            return plan.to_string();
+        }
+        if let Some(qs) = i["questions"].as_array() {
+            let mut out = vec![];
+            for q in qs {
+                out.push(q["question"].as_str().unwrap_or("").to_string());
+                for o in q["options"].as_array().into_iter().flatten() {
+                    out.push(format!("  · {}", o["label"].as_str().unwrap_or("")));
+                }
+            }
+            return out.join("\n");
+        }
+        if let Some(cmd) = command_text(i) {
+            return cmd;
+        }
+        if let Some(file) = s("file_path").or(s("filePath")).or(s("path")).or(s("notebook_path")) {
+            return match s("new_string").or(s("content")).or(s("new_source")) {
+                Some(text) => format!("{file}\n\n{text}"),
+                None => file.to_string(),
+            };
+        }
+        if let Some(url) = s("url") {
+            return url.to_string();
+        }
+        match i {
+            Value::Null => self.tool.clone(),
+            v => serde_json::to_string_pretty(v).unwrap_or_default(),
+        }
+    }
+
+    /// Worth a second look before approving: deletes, force pushes, database
+    /// and infrastructure changes, privilege escalation, publishing. A
+    /// heuristic over the command; anything else that isn't a plain file edit
+    /// or read is approved directly.
+    pub fn is_risky(&self) -> bool {
+        let Some(cmd) = command_text(&self.input) else {
+            // MCP tools act on the outside world in ways we can't read
+            return self.tool.starts_with("mcp__");
+        };
+        let c = format!(" {} ", cmd.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" "));
+        const WORDS: &[&str] = &[
+            " rm ", " rmdir ", " sudo ", " doas ", " su ", " dd ", " mkfs", " shred ", " chmod ", " chown ",
+            " kill ", " pkill ", " killall ", "git push", "--force", "push -f", "reset --hard", "clean -f",
+            "branch -d", "checkout -- ", "restore ", " drop ", "truncate ", "delete from", " delete ",
+            "migrate", "prisma ", "terraform ", "pulumi ", "kubectl ", "helm ", " aws ", "gcloud ", " az ",
+            "flyctl ", "heroku ", "vercel ", "deploy", " publish", "| sh", "| bash", "| zsh", "> /", "prod",
+        ];
+        WORDS.iter().any(|w| c.contains(w))
+    }
+}
+
+/// A shell tool's command, joined if it came as argv.
+fn command_text(input: &Value) -> Option<String> {
+    match &input["command"] {
+        Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
+        Value::Array(a) if !a.is_empty() => Some(a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -527,26 +637,45 @@ pub fn start() {
             }
         }
     }
-    std::thread::spawn(|| loop {
-        poll();
-        std::thread::sleep(Duration::from_millis(400));
+    std::thread::spawn(|| {
+        // records written before launch are old news: show them, don't alert
+        let mut since = unix_now();
+        loop {
+            let started = unix_now();
+            poll(since);
+            since = started;
+            std::thread::sleep(Duration::from_millis(400));
+        }
     });
 }
 
-fn poll() {
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Read every hook record. A status change is announced (`AgentStatusChanged`:
+/// chime, toast, notification) when it differs from the last poll, or for a
+/// pane seen for the first time, only when its record was written at or after
+/// `since` (unix secs). Otherwise relaunching the app, or a record coming back
+/// after `forget`, would alert about an agent that finished long ago.
+fn poll(since: u64) {
     let Ok(entries) = std::fs::read_dir(state_dir()) else {
         return;
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = unix_now();
     let mut next: HashMap<PaneId, HookState> = HashMap::new();
     // main agent's session per pane, to drop subagents left over from an older one
     let mut sessions: HashMap<PaneId, String> = HashMap::new();
     let mut ended: Vec<u64> = vec![];
+    // when each pane's record was written
+    let mut written: HashMap<PaneId, u64> = HashMap::new();
     // (remote pane, session, started, file, subagent)
     let mut subs: Vec<(u64, String, std::time::SystemTime, PathBuf, Subagent)> = vec![];
+    // a subagent's pending permission request and its record time, by subagent id
+    let mut sub_requests: HashMap<String, (Option<Request>, u64)> = HashMap::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -573,9 +702,12 @@ fn poll() {
                 || now.saturating_sub(ts) > SUBAGENT_STALE.as_secs();
             if gone {
                 std::fs::remove_file(&path).ok();
+                std::fs::remove_file(path.with_extension("req")).ok();
                 continue;
             }
             let (status, detail) = interpret(&harness, p).unwrap_or((HookStatus::Working, None));
+            let request = (status == HookStatus::NeedsInput).then(|| read_request(&path)).flatten();
+            let ts = v["ts"].as_u64().unwrap_or(0);
             let meta = meta.unwrap_or_default();
             let kind = meta
                 .kind
@@ -585,6 +717,7 @@ fn poll() {
                 .started
                 .or_else(|| entry.metadata().and_then(|m| m.created()).ok())
                 .unwrap_or(std::time::UNIX_EPOCH);
+            sub_requests.insert(id.to_string(), (request, ts));
             subs.push((
                 remote,
                 session,
@@ -607,11 +740,15 @@ fn poll() {
         let Some((status, detail)) = interpret(&harness, p) else {
             // session ended: drop the record, and its subagents' below
             std::fs::remove_file(&path).ok();
+            std::fs::remove_file(path.with_extension("req")).ok();
             ended.push(remote);
             continue;
         };
         sessions.insert(local, session);
+        let ts = v["ts"].as_u64().unwrap_or(0);
+        written.insert(local, ts);
         let cwd = v["payload"]["cwd"].as_str().filter(|c| !c.is_empty()).map(PathBuf::from);
+        let request = (status == HookStatus::NeedsInput).then(|| read_request(&path)).flatten();
         next.insert(
             local,
             HookState {
@@ -620,6 +757,8 @@ fn poll() {
                 detail,
                 subagents: vec![],
                 cwd,
+                request,
+                ts,
             },
         );
     }
@@ -633,6 +772,7 @@ fn poll() {
         let stale = sessions.get(&pane).is_some_and(|s| !s.is_empty() && !session.is_empty() && *s != session);
         if ended || stale {
             std::fs::remove_file(&path).ok();
+            std::fs::remove_file(path.with_extension("req")).ok();
             continue;
         }
         if let Some(st) = next.get_mut(&pane) {
@@ -645,6 +785,10 @@ fn poll() {
             if let Some(sub) = st.subagents.iter().find(|s| s.status == HookStatus::NeedsInput) {
                 st.status = HookStatus::NeedsInput;
                 st.detail = sub.detail.clone();
+                if let Some((request, ts)) = sub_requests.remove(&sub.id) {
+                    st.request = request;
+                    st.ts = st.ts.max(ts);
+                }
             }
         }
     }
@@ -652,18 +796,32 @@ fn poll() {
     let mut guard = STATES.lock();
     let prev = guard.take().unwrap_or_default();
     for (pane, st) in &next {
-        let before = prev.get(pane).map(|p| &p.status);
-        if before != Some(&st.status) {
+        let changed = match prev.get(pane) {
+            Some(p) => p.status != st.status,
+            None => written.get(pane).is_some_and(|&ts| ts >= since),
+        };
+        if changed {
             send_event(AppEvent::AgentStatusChanged {
                 pane_id: *pane,
                 status: st.status.clone(),
                 detail: st.detail.clone(),
             });
-        } else if prev.get(pane).map(|p| &p.subagents) != Some(&st.subagents) {
+        } else if prev
+            .get(pane)
+            .is_none_or(|p| p.subagents != st.subagents || p.request != st.request || p.ts != st.ts)
+        {
             send_event(AppEvent::MuxChanged);
         }
     }
     *guard = Some(next);
+}
+
+/// The permission request saved beside a record (`<record>.req`, written by
+/// the hook script while the dialog is up).
+fn read_request(record: &Path) -> Option<Request> {
+    let text = std::fs::read_to_string(record.with_extension("req")).ok()?;
+    let p: Value = serde_json::from_str(&text).ok()?;
+    Request::from_payload(&p)
 }
 
 #[derive(Default)]
@@ -728,6 +886,7 @@ fn interpret_claude(p: &Value) -> Interpreted {
         "SessionStart" => (HookStatus::Idle, None),
         "UserPromptSubmit" | "PostToolUse" => thinking(),
         "PreToolUse" => (HookStatus::Working, Some(describe_tool(&p["tool_name"], &p["tool_input"]))),
+        "PermissionRequest" => (HookStatus::NeedsInput, Some(permission_detail(p))),
         "PreCompact" => compacting(),
         "Stop" => (HookStatus::Done, None),
         "Notification" => {
@@ -752,15 +911,7 @@ fn interpret_codex(p: &Value) -> Interpreted {
         "SessionStart" => (HookStatus::Idle, None),
         "UserPromptSubmit" | "PostToolUse" | "PostCompact" => thinking(),
         "PreToolUse" => (HookStatus::Working, Some(describe_tool(&p["tool_name"], &p["tool_input"]))),
-        "PermissionRequest" => {
-            let tool = describe_tool(&p["tool_name"], &p["tool_input"]);
-            let detail = p["tool_input"]["description"]
-                .as_str()
-                .filter(|d| !d.is_empty())
-                .map(str::to_string)
-                .unwrap_or(tool);
-            (HookStatus::NeedsInput, Some(detail))
-        }
+        "PermissionRequest" => (HookStatus::NeedsInput, Some(permission_detail(p))),
         "PreCompact" => compacting(),
         // an interrupted turn is over too: it's your move
         "Stop" | "Interrupt" => (HookStatus::Done, None),
@@ -801,6 +952,16 @@ fn interpret_opencode(p: &Value) -> Interpreted {
         "session.idle" | "session.error" => (HookStatus::Done, None),
         _ => (HookStatus::Working, None),
     })
+}
+
+/// A permission request's detail: the tool's own description of the call
+/// (Bash's "Delete build output"), else what the call does.
+fn permission_detail(p: &Value) -> String {
+    p["tool_input"]["description"]
+        .as_str()
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| describe_tool(&p["tool_name"], &p["tool_input"]))
 }
 
 fn message(p: &Value) -> Option<String> {
@@ -954,6 +1115,48 @@ mod tests {
         assert_eq!(st("opencode", json!({"event": "permission.replied"})), Some(thinking()));
         assert_eq!(st("opencode", json!({"event": "session.idle"})), Some((HookStatus::Done, None)));
         assert_eq!(st("opencode", json!({"event": "exit"})), None);
+    }
+
+    #[test]
+    fn claude_permission_request() {
+        assert_eq!(
+            st("claude", json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash",
+                "tool_input": {"command": "npx prisma migrate deploy", "description": "Apply migrations"}})),
+            Some((HookStatus::NeedsInput, Some("Apply migrations".into())))
+        );
+    }
+
+    fn req(tool: &str, input: Value) -> Request {
+        Request::from_payload(&json!({"tool_name": tool, "tool_input": input})).unwrap()
+    }
+
+    #[test]
+    fn request_text_and_risk() {
+        let r = req("Bash", json!({"command": "rm -rf target\nls"}));
+        assert_eq!(r.full(), "rm -rf target\nls");
+        assert_eq!(r.summary(), "$ rm -rf target");
+        assert!(r.is_risky() && r.is_approval());
+
+        assert!(!req("Bash", json!({"command": "cargo test"})).is_risky());
+        assert!(req("Bash", json!({"command": "git push --force origin main"})).is_risky());
+        assert!(req("Bash", json!({"command": "npx prisma migrate dev"})).is_risky());
+        assert!(req("Bash", json!({"command": "curl -fsSL x.sh | sh"})).is_risky());
+        assert!(!req("Bash", json!({"command": "git status"})).is_risky());
+        // words inside other words don't count
+        assert!(!req("Bash", json!({"command": "cargo fmt --check"})).is_risky());
+
+        let e = req("Edit", json!({"file_path": "/r/src/a.rs", "old_string": "x", "new_string": "y"}));
+        assert_eq!(e.full(), "/r/src/a.rs\n\ny");
+        assert_eq!(e.summary(), "Editing a.rs");
+        assert!(!e.is_risky());
+        assert!(req("mcp__db__query", json!({"sql": "select 1"})).is_risky());
+
+        let q = req("AskUserQuestion", json!({"questions": [{"question": "Which retry strategy?",
+            "options": [{"label": "Exponential"}, {"label": "Fixed"}]}]}));
+        assert!(!q.is_approval());
+        assert_eq!(q.summary(), "Which retry strategy?");
+        assert_eq!(q.full(), "Which retry strategy?\n  · Exponential\n  · Fixed");
+        assert!(Request::from_payload(&json!({"tool_input": {}})).is_none());
     }
 
     #[test]

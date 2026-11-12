@@ -168,6 +168,17 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
   or changes, or after 30 minutes without events. A subagent waiting on you
   makes its agent NeedsInput. `hooks::start` re-registers hooks installed by a
   build that subscribed to fewer events.
+- **Permission requests:** the Notification that follows Claude's
+  `PermissionRequest` overwrites the record, so the script also keeps the
+  `PermissionRequest` payload in `<record>.req` and deletes it on that agent's
+  next event other than a Notification: the file exists while the dialog is
+  up. `HookState::request` (`hooks::Request`) carries it while NeedsInput,
+  with `full()` text and an `is_risky()` heuristic.
+- **Attention queue** (`queue.rs`, `ui/queue.rs`): NeedsInput agents, then
+  unseen Done ones, each oldest first (`Agent::since`). Approve / reject send
+  ↩ / esc to the pane, only for Claude and Codex approval dialogs
+  (`Request::is_approval`). An answered item is hidden until the agent's
+  record time (`Agent::hook_ts`) moves, since a rejection fires no hook.
 - **Names** (`agents::names`): Rename agent stores a name per server pane id
   in a state file, since the mux protocol can't store data on a server pane.
   The file records the server's pid and is ignored under a new server (pane ids

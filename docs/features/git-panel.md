@@ -17,7 +17,9 @@ When the branch is ready, push it and open a pull request from the same place.
 | q | Close the panel |
 | ⌘K → **Create Pull Request** | Open the panel and start a pull request |
 
-The panel takes the sidebar's place on the left while it's open.
+The panel takes the sidebar's place on the left while it's open. With pane
+cards on, the panel lights up like the active pane while it has focus, and the
+panes all look inactive, so you can tell its keys (`?` lists them) are live.
 
 ## What it shows
 

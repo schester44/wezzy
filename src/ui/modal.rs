@@ -136,6 +136,10 @@ impl TermApp {
                 72.,
                 card(460.).child(self.settings_view(state, t, cx)).into_any_element(),
             ),
+            Overlay::Queue(state) => (
+                56.,
+                card(560.).child(self.queue_view(state, t, cx)).into_any_element(),
+            ),
             Overlay::Shortcuts | Overlay::ViewShortcuts(_) => return None,
         };
 

@@ -24,7 +24,8 @@ impl TermApp {
         let panel = self.side_panel(super::panel::SidePanel::Git, t, cx);
 
         let Some(snap) = snap else {
-            return panel.child(empty_state(Icon::GitBranch, "Not a git repository", None, t));
+            let empty = div().child(empty_state(Icon::GitBranch, "Not a git repository", None, t));
+            return panel.child(self.side_card(focused, t, empty));
         };
 
         let rows = Arc::new(self.git.rows(&snap));
@@ -57,7 +58,7 @@ impl TermApp {
             .into_any_element()
         };
 
-        panel
+        let content = div()
             .child(self.git_header(&snap, t, cx))
             .children(self.git_composer(&snap, t, cx))
             .child(body)
@@ -70,8 +71,8 @@ impl TermApp {
                 |d| {
                 d.child(self.git_footer(t, cx))
                 },
-            )
-
+            );
+        panel.child(self.side_card(focused, t, content))
     }
 
     fn git_header(&self, snap: &Snapshot, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {

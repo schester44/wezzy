@@ -42,6 +42,7 @@ pub enum AppCommand {
     MovePaneToNewTab,
     BalancePanes,
     CreatePullRequest,
+    AttentionQueue,
 }
 
 impl AppCommand {
@@ -75,6 +76,7 @@ impl AppCommand {
         Self::MovePaneToNewTab,
         Self::BalancePanes,
         Self::CreatePullRequest,
+        Self::AttentionQueue,
     ];
 
     /// Stable id, used in the event name.
@@ -109,6 +111,7 @@ impl AppCommand {
             Self::MovePaneToNewTab => "move-pane-to-new-tab",
             Self::BalancePanes => "balance-panes",
             Self::CreatePullRequest => "create-pull-request",
+            Self::AttentionQueue => "attention-queue",
         }
     }
 
@@ -144,6 +147,7 @@ impl AppCommand {
             Self::MovePaneToNewTab => "MovePaneToNewTab",
             Self::BalancePanes => "BalancePanes",
             Self::CreatePullRequest => "CreatePullRequest",
+            Self::AttentionQueue => "AttentionQueue",
         }
     }
 
@@ -179,6 +183,7 @@ impl AppCommand {
             Self::MovePaneToNewTab => "Move pane to new tab",
             Self::BalancePanes => "Balance panes",
             Self::CreatePullRequest => "Create pull request",
+            Self::AttentionQueue => "Attention queue",
         }
     }
 

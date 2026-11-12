@@ -29,6 +29,7 @@ mod regions;
 mod restart;
 mod seam;
 mod procs;
+mod queue;
 mod render;
 mod sendout;
 mod sound;

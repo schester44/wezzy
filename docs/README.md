@@ -6,6 +6,7 @@ How to use Wezzy.
 
 | | |
 |---|---|
+| [Attention queue](features/attention-queue.md) | Every agent waiting on you in one list (⌘J); approve or reject permission prompts from it |
 | [Git panel](features/git-panel.md) | Review, stage and commit agent changes, comment back, open a pull request |
 | [Keys](features/keys.md) | The leader key, panes and tabs, mouse selection, copy mode, changing keys |
 | [Sidebar](features/sidebar.md) | Agents, dev servers and GitHub Actions runs at a glance |

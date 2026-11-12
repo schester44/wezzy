@@ -28,6 +28,16 @@ case "$payload" in
     id=$(printf '%s' "$payload" | sed -n 's/.*"agent_id":"\([A-Za-z0-9_-]*\)".*/\1/p' | head -n 1)
     [ -n "$id" ] && name="$WEZTERM_PANE.$id" ;;
 esac
+# A permission request is overwritten by the Notification that follows it, so
+# keep its payload (the full tool input) beside the record until this agent
+# moves on: <name>.req exists exactly while the dialog is up.
+req="$dir/$name.req"
+case "$payload" in
+  *'"hook_event_name":"PermissionRequest"'*)
+    printf '%s\n' "$payload" > "$req.$$" && mv -f "$req.$$" "$req" ;;
+  *'"hook_event_name":"Notification"'*) ;;
+  *) rm -f "$req" ;;
+esac
 tmp="$dir/.$name.$$"
 printf '{"harness":"%s","pane":%s,"ts":%s,"payload":%s}\n' \
   "${1:-unknown}" "$WEZTERM_PANE" "$(date +%s)" "$payload" > "$tmp" \

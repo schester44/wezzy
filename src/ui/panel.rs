@@ -72,4 +72,31 @@ impl TermApp {
                     ),
             )
     }
+
+    /// A side panel's content (a flex column). With pane cards on it sits in a
+    /// card like a pane's: the terminal's fill and a faint edge while the panel
+    /// has focus, flat chrome (like an inactive pane) otherwise.
+    pub(super) fn side_card(&self, focused: bool, t: &Theme, content: Div) -> Div {
+        let content = content.flex_1().min_h_0().flex().flex_col();
+        if !crate::settings::get().pane_cards {
+            return content;
+        }
+        let g = self.grid.get();
+        // one gap from the window's left / bottom edge and flush with the top
+        // bar, like the terminal's cards
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .pl(g.card_gap())
+            .pb(g.card_gap())
+            .child(content.rounded(g.card_radius()).overflow_hidden().border_1().map(|d| {
+                if focused {
+                    d.bg(t.term_bg).border_color(with_alpha(t.fg, 0.10))
+                } else {
+                    d.border_color(gpui::transparent_black())
+                }
+            }))
+    }
 }

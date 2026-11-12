@@ -19,7 +19,7 @@ impl TermApp {
 
         // rows are numbered across sections, matching the keyboard cursor
         let mut row = 0;
-        let mut panel = self.side_panel(super::panel::SidePanel::Sidebar, t, cx).pt_1();
+        let mut panel = div().pt_1();
         for section in sections {
             let source = section.source;
             panel = panel.child(sidebar_section_header(source, section.items.len(), section.collapsed, t, cx));
@@ -59,7 +59,7 @@ impl TermApp {
             );
         }
 
-        panel
+        let content = panel
             .child(div().flex_1())
             .when(!lua_status.is_empty(), |d| {
                 d.child(
@@ -77,7 +77,10 @@ impl TermApp {
                         .text_ellipsis()
                         .child(lua_status),
                 )
-            })
+            });
+        let focused = self.region == crate::regions::Region::Sidebar;
+        self.side_panel(super::panel::SidePanel::Sidebar, t, cx)
+            .child(self.side_card(focused, t, content))
     }
 }
 

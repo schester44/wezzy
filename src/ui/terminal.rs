@@ -71,6 +71,8 @@ impl TermApp {
         // dividers: a visible hairline at rest, accent while hovered / dragged
         let fg = render::color(palette.foreground);
         let cards = crate::settings::get().pane_cards;
+        // with a side panel focused, no terminal card reads as the active one
+        let term_region = self.region == crate::regions::Region::Terminal;
         let split_idle = gpui::Hsla { a: 0.10, ..fg };
         let t = crate::ui::Theme::new(palette, config.window_background_opacity);
         let gap_color = t.chrome;
@@ -192,7 +194,7 @@ impl TermApp {
                         .iter()
                         .map(|p| render::Card {
                             bounds: geom.card(p.left, p.top, p.width, p.height),
-                            active: p.is_active,
+                            active: p.is_active && term_region,
                         })
                         .collect()
                 } else {

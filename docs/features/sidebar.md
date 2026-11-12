@@ -20,6 +20,9 @@ order.
 | esc, Ctrl+l | Back to the terminal |
 | ⌥⌘1–9 | Jump to agent 1–9 (numbers show next to agents while you hold ⌥⌘) |
 
+With pane cards on, the sidebar lights up like the active pane while it has
+focus, and the panes all look inactive.
+
 Click a row to do what ↵ does. Hover a server or run and click the arrow to
 open it in your browser.
 
@@ -88,6 +91,9 @@ if ok then
   table.insert(config.keys, { key = "r", mods = "CMD|ALT", action = wezzy.action.RenameAgent })
 end
 ```
+
+To work through every agent that's waiting on you in one place, press ⌘J for
+the [attention queue](attention-queue.md).
 
 ### When Wezzy is in the background
 

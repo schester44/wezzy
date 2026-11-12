@@ -5,6 +5,7 @@ mod help;
 mod modal;
 mod palette;
 mod panel;
+mod queue;
 mod settings;
 mod sidebar;
 mod terminal;
@@ -65,7 +66,8 @@ impl AssetSource for Assets {
             "git-pull-request-closed",
             "git-merge",
             "cloud-off",
-            "code"
+            "code",
+            "shield"
         ))
     }
 
@@ -103,6 +105,7 @@ pub enum Icon {
     GitMerge,
     CloudOff,
     Code,
+    Shield,
 }
 
 /// A spinning loader, for "working" states.
@@ -149,6 +152,7 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> impl IntoElement {
         Icon::GitMerge => "icons/git-merge.svg",
         Icon::CloudOff => "icons/cloud-off.svg",
         Icon::Code => "icons/code.svg",
+        Icon::Shield => "icons/shield.svg",
     };
     svg()
         .path(path)
@@ -170,7 +174,7 @@ pub struct Theme {
     /// Raised surfaces: popovers, modals, toasts.
     pub elevated: Hsla,
     pub hover: Hsla,
-    /// Active tab: an opaque, lifted surface so it reads clearly over the translucent chrome.
+    /// Active tab: the active pane's fill, so the tab and its pane read as one surface.
     pub tab_active: Hsla,
     pub selected: Hsla,
     pub border: Hsla,
@@ -213,7 +217,7 @@ impl Theme {
             chrome: alpha(shade(bg, 0.72), (opacity + 0.08).min(1.0)),
             elevated: alpha(shade(bg, 1.25).max_l(0.14), 0.98),
             hover: alpha(fg, 0.05),
-            tab_active: alpha(shade(bg, 1.45).max_l(0.17), 1.0),
+            tab_active: alpha(bg, opacity),
             selected: alpha(fg, 0.10),
             border: alpha(fg, 0.08),
             fg: alpha(fg, 0.92),
