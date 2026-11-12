@@ -18,8 +18,9 @@ on its own branch in a worktree, then reviewed and merged back here.
 | 11 | SQL: readable `explain` (plan tree) | Merged to main; untested against a database | sql-explain agent |
 | 12 | Agent activity foundation: hook activity log, per-turn snapshots, runs, stats, undo (`activity.rs`) | Done on main | manager |
 | 13 | Run diffstat on sidebar agent rows | Done on main | manager |
-| 14 | Run card over the agent pane after it stops: summary, diffstat, Review / Undo turn / Ask agent / Commit & PR; git panel run filter | Merged to main; untested in the app | run-card agent |
+| 14 | Run bar on the agent pane after it stops: diffstat + Review changes; git panel run filter (`A` cycles agents); undo from ⌘K | Merged to main; untested in the app | run-card agent |
 | 15 | Live agent markers in the git panel: touched-file markers with fade, fresh-hunk glow, follow mode | Merged to main; untested in the app | live-markers agent |
+| 16 | Real text field for the git panel's commit / comment / PR boxes: cursor, selection, mouse, clipboard | Merged to main; untested in the app | textfield agent |
 
 ## Later
 

@@ -37,6 +37,7 @@ cargo test
 | `ui/mod.rs` | `Theme` (derived from the terminal palette), icons |
 | `render.rs` | paints panes/cells/cursor into a gpui canvas |
 | `keys.rs` | gpui keystroke → WezTerm key, leader + key tables, default bindings |
+| `textfield.rs`, `ui/textfield.rs` | the git panel's text boxes (commit, comment, PR): cursor, selection, mouse, clipboard, undo |
 | `copymode.rs` | copy mode (Leader y): vim motions over scrollback, selection, search, copy |
 | `luawin.rs` | Lua `window` object for `action_callback` / `wezterm.on` handlers |
 | `commands.rs` | app commands (`AppCommand`), exposed to Lua as `require("wezzy").action.*` |
