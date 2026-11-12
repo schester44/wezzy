@@ -766,10 +766,14 @@ impl TermApp {
         }
         if self.region != crate::regions::Region::Terminal {
             // ⌘ chords (palette, toggles, tabs…) still go through the keymap while a
-            // side panel has focus; the commit composer keeps the ones it edits with
+            // side panel has focus; the git panel's text boxes keep the ones they edit with
             let ks = &ev.keystroke;
-            let composer_owns = (self.git.composer.is_some() || self.git.comment_draft.is_some())
-                && matches!(ks.key.as_str(), "enter" | "v" | "backspace");
+            let composer_owns = self.region == crate::regions::Region::Diff
+                && (self.git.composer.is_some() || self.git.comment_draft.is_some())
+                && matches!(
+                    ks.key.as_str(),
+                    "enter" | "backspace" | "delete" | "a" | "c" | "x" | "v" | "z" | "left" | "right" | "up" | "down"
+                );
             if ks.modifiers.platform && !composer_owns {
                 if let Some(input) = keys::translate(ks) {
                     if let Lookup::Action(action) = self.keys.lookup(&input.key, input.mods) {
