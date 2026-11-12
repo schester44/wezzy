@@ -235,6 +235,8 @@ pub(crate) struct GridGeom {
     pub origin: Point<Pixels>,
     /// `origin` relative to the terminal area (the window padding)
     pub pad: Point<Pixels>,
+    /// the terminal area's size
+    pub size: gpui::Size<Pixels>,
     pub cell_w: Pixels,
     pub line_h: Pixels,
 }
@@ -836,6 +838,18 @@ impl TermApp {
         if g.cell_w <= px(0.) {
             return;
         }
+        // a native view takes its own clicks, padding included
+        if let Some((tab, p, b)) = self.view_at(ev.position) {
+            tab.set_active_idx(p.index);
+            let pos = point(ev.position.x - b.origin.x, ev.position.y - b.origin.y);
+            if let Some(view) = self.views.get_mut(p.pane.pane_id()) {
+                if view.mouse_down(pos, &ev.modifiers, ev.click_count, cx) {
+                    self.view_drag = Some((p.pane.pane_id(), b.origin));
+                }
+            }
+            cx.notify();
+            return;
+        }
         let col = ((ev.position.x - g.origin.x) / g.cell_w).floor();
         let row = ((ev.position.y - g.origin.y) / g.line_h).floor();
         if col < 0. || row < 0. {
@@ -856,18 +870,6 @@ impl TermApp {
                 col >= p.left && col < p.left + p.width && row >= p.top && row < p.top + p.height
             }) {
                 tab.set_active_idx(p.index);
-                if let Some(view) = self.views.get_mut(p.pane.pane_id()) {
-                    let origin = point(
-                        g.origin.x + g.cell_w * p.left as f32,
-                        g.origin.y + g.line_h * p.top as f32,
-                    );
-                    let pos = point(ev.position.x - origin.x, ev.position.y - origin.y);
-                    if view.mouse_down(pos, &ev.modifiers, ev.click_count, cx) {
-                        self.view_drag = Some((p.pane.pane_id(), origin));
-                    }
-                    cx.notify();
-                    return;
-                }
                 // ⌘-click opens the URL / file:line under the mouse
                 if ev.modifiers.platform {
                     let pane = p.pane.clone();
@@ -928,6 +930,41 @@ impl TermApp {
 
     /// Mouse moved while dragging a divider: move it to the cell under the mouse,
     /// like WezTerm's drag_split. Returns false when no drag is in progress.
+    /// Where a view pane is drawn, in window coordinates. Like a terminal it
+    /// sits on the cell grid, but an edge on the terminal area's edge reaches
+    /// it, past the window padding, so the view runs edge to edge.
+    pub(crate) fn view_bounds(&self, tab: &Tab, p: &mux::tab::PositionedPane) -> gpui::Bounds<Pixels> {
+        let g = self.grid.get();
+        let area = point(g.origin.x - g.pad.x, g.origin.y - g.pad.y);
+        let size = tab.get_size();
+        let x0 = if p.left == 0 { area.x } else { g.origin.x + g.cell_w * p.left as f32 };
+        let y0 = if p.top == 0 { area.y } else { g.origin.y + g.line_h * p.top as f32 };
+        let x1 = if p.left + p.width >= size.cols {
+            area.x + g.size.width
+        } else {
+            g.origin.x + g.cell_w * (p.left + p.width) as f32
+        };
+        let y1 = if p.top + p.height >= size.rows {
+            area.y + g.size.height
+        } else {
+            g.origin.y + g.line_h * (p.top + p.height) as f32
+        };
+        gpui::Bounds::new(point(x0, y0), gpui::size(x1 - x0, y1 - y0))
+    }
+
+    /// The view pane under `pos` (window coordinates), with its bounds.
+    fn view_at(&self, pos: Point<Pixels>) -> Option<(Arc<Tab>, mux::tab::PositionedPane, gpui::Bounds<Pixels>)> {
+        let tab = self.active_tab()?;
+        let hit = tab.iter_panes().into_iter().find_map(|p| {
+            if !self.views.has(p.pane.pane_id()) {
+                return None;
+            }
+            let b = self.view_bounds(&tab, &p);
+            b.contains(&pos).then_some((p, b))
+        })?;
+        Some((tab, hit.0, hit.1))
+    }
+
     /// Feed a view the drag it asked for; `true` while one is going on.
     pub(crate) fn drag_view(&mut self, ev: &gpui::MouseMoveEvent, cx: &mut Context<Self>) -> bool {
         let Some((pane_id, origin)) = self.view_drag else {
@@ -1003,6 +1040,14 @@ impl TermApp {
             return;
         }
         self.scroll_accum -= lines as f32;
+        if let Some((_, p, b)) = self.view_at(ev.position) {
+            let pos = point(ev.position.x - b.origin.x, ev.position.y - b.origin.y);
+            if let Some(view) = self.views.get_mut(p.pane.pane_id()) {
+                view.scroll(pos, lines);
+            }
+            cx.notify();
+            return;
+        }
         // like WezTerm, the wheel acts on the pane under the mouse
         let g = self.grid.get();
         let hit = (g.cell_w > px(0.) && g.line_h > px(0.))
@@ -1025,15 +1070,6 @@ impl TermApp {
                 None => return,
             },
         };
-        if let Some(view) = self.views.get_mut(pane.pane_id()) {
-            let pos = point(
-                g.cell_w * col as f32 + (ev.position.x - g.origin.x) % g.cell_w,
-                g.line_h * row as f32 + (ev.position.y - g.origin.y) % g.line_h,
-            );
-            view.scroll(pos, lines);
-            cx.notify();
-            return;
-        }
         if pane.is_mouse_grabbed() {
             // the app asked for mouse reporting (Claude Code's fullscreen UI, vim
             // with mouse=a, …): send real wheel events, one per line, as WezTerm does

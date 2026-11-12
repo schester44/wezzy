@@ -141,7 +141,7 @@ See how Postgres plans to run a statement, and where the time goes.
 | | |
 |---|---|
 | ⌘⌥↵ | Explain the statement under the cursor, without running it |
-| ⌘⌥⇧↵ | Explain it with ANALYZE: run it and show what actually happened |
+| ⌘⇧↵ | Explain it with ANALYZE: run it and show what actually happened |
 | j k, arrows | Move between steps |
 | g, G | First step, last step |
 | h l, ← → | Fold, unfold (h on a step without any goes to its parent) |
@@ -162,7 +162,7 @@ look wrong: a row estimate off by more than 10×, a sequential scan whose filter
 throws away most of the table, or a sequential scan that is most of the plan's
 cost. The line under the editor shows the planning and execution times.
 
-ANALYZE runs the statement, so ⌘⌥⇧↵ only works on statements that just read
+ANALYZE runs the statement, so ⌘⇧↵ only works on statements that just read
 (`select`, `with`, `table`, `values`). Both run in a read-only transaction that's
 rolled back. A statement you write yourself that starts with `explain` runs as
 written: with `format json` it shows the tree, otherwise the plan's text in the

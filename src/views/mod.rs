@@ -22,6 +22,19 @@ use std::sync::Arc;
 /// User var naming the view: `"<kind>"` or `"<kind> <args>"`.
 pub const USER_VAR: &str = "WEZZY_VIEW";
 
+/// The terminal font at another size, for UI text in a view (a result grid
+/// rather than code). Mono advances scale with the size, so `cell_w` and
+/// `line_h` do too.
+pub fn scaled(m: &crate::render::Metrics, size: f32) -> crate::render::Metrics {
+    let k = size / f32::from(m.font_size).max(1.);
+    crate::render::Metrics {
+        font: m.font.clone(),
+        font_size: gpui::px(size),
+        cell_w: m.cell_w * k,
+        line_h: gpui::px((f32::from(m.line_h) * k).ceil()),
+    }
+}
+
 /// What a view gets to know when it draws.
 pub struct ViewCx {
     pub pane_id: PaneId,
@@ -148,6 +161,10 @@ impl Views {
 
     pub fn shortcuts(&self, pane_id: PaneId) -> Option<(&'static str, Vec<Vec<crate::shortcuts::Group>>)> {
         self.views.get(&pane_id)?.1.shortcuts()
+    }
+
+    pub fn has(&self, pane_id: PaneId) -> bool {
+        self.views.contains_key(&pane_id)
     }
 
     pub fn get_mut(&mut self, pane_id: PaneId) -> Option<&mut Box<dyn PaneView>> {

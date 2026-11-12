@@ -693,6 +693,7 @@ impl TermApp {
             return Vec::new();
         };
         let g = self.grid.get();
+        let area = point(g.origin.x - g.pad.x, g.origin.y - g.pad.y);
         let metrics = render::metrics(window, &config::configuration(), self.font_scale);
         let focused = self.focus.is_focused(window)
             && self.overlay.is_none()
@@ -701,8 +702,12 @@ impl TermApp {
             .into_iter()
             .filter_map(|p| {
                 let pane_id = p.pane.pane_id();
+                if !self.views.has(pane_id) {
+                    return None;
+                }
+                let b = self.view_bounds(&tab, &p);
                 let view = self.views.get_mut(pane_id)?;
-                let size = gpui::size(g.cell_w * p.width as f32, g.line_h * p.height as f32);
+                let size = b.size;
                 let vcx = crate::views::ViewCx {
                     pane_id,
                     cols: p.width,
@@ -714,8 +719,8 @@ impl TermApp {
                 Some(
                     div()
                         .absolute()
-                        .left(g.pad.x + g.cell_w * p.left as f32)
-                        .top(g.pad.y + g.line_h * p.top as f32)
+                        .left(b.origin.x - area.x)
+                        .top(b.origin.y - area.y)
                         .w(size.width)
                         .h(size.height)
                         .overflow_hidden()
@@ -820,6 +825,7 @@ impl TermApp {
                 grid.set(GridGeom {
                     origin,
                     pad: point(pl, pt),
+                    size: bounds.size,
                     cell_w: metrics.cell_w,
                     line_h: metrics.line_h,
                 });

@@ -231,7 +231,7 @@ impl SqlView {
         }
     }
 
-    /// ⌘⌥↵: the statement's plan; ⌘⌥⇧↵ runs it too (EXPLAIN ANALYZE), so
+    /// ⌘⌥↵: the statement's plan; ⌘⇧↵ runs it too (EXPLAIN ANALYZE), so
     /// only for statements that just read.
     fn explain(&mut self, analyze: bool) {
         if !self.grid.pending.is_empty() {
@@ -687,7 +687,9 @@ impl PaneView for SqlView {
         });
         let menu = if editor_focused { self.render_menu(m, t) } else { None };
         let status = self.status_line(m, t);
-        let grid = self.render_grid(m, t, grid_focused, gpui::size(width, grid_h));
+        // the result is UI, not code: smaller than the terminal font
+        let gm = super::scaled(m, 12.5);
+        let grid = self.render_grid(&gm, t, grid_focused, gpui::size(width, grid_h));
         let main = div()
             .flex_1()
             .min_w_0()
@@ -890,7 +892,8 @@ impl PaneView for SqlView {
             return true;
         }
         match ks.key.as_str() {
-            "enter" if m.platform && m.alt => {
+            // ⌘⇧↵ explain analyze, ⌘⌥↵ explain
+            "enter" if m.platform && (m.alt || m.shift) => {
                 self.menu = None;
                 self.explain(m.shift);
                 return true;
@@ -1001,7 +1004,7 @@ impl PaneView for SqlView {
                 &[
                     ("⌘↵", "Run statement or selection"),
                     ("⌘⌥↵", "Explain"),
-                    ("⌘⌥⇧↵", "Explain analyze (reads only)"),
+                    ("⌘⇧↵", "Explain analyze (reads only)"),
                     ("⌃J esc", "To the results"),
                     ("⌃space", "Completions"),
                 ],
