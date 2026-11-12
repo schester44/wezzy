@@ -39,6 +39,29 @@ left and two stacked on the right, the left and right halves are the same
 width and the two on the right are the same height. **Balance Panes** in ⌘K
 does the same, and `wezzy.action.BalancePanes` binds it to any key.
 
+Each pane sits on a rounded card, a shade lighter than the sidebar and top bar,
+with a small gap between panes. The gap is the divider: drag it to resize the
+panes. The active pane's outline is brighter. For flat panes split by a thin
+line, turn **Pane cards** off in Settings (⌘,), or in `~/.config/wezzy/wezzy.lua`:
+
+```lua
+local ok, wezzy = pcall(require, "wezzy")
+if ok then
+  wezzy.setup({
+    pane_cards = false,
+  })
+end
+```
+
+or in `~/.config/wezzy/settings.json`:
+
+```json
+"pane_cards": false
+```
+
+The gap between cards is never wider than one column of text, so a pane's text
+sits close to the side of its card when the pane is next to another one.
+
 Closing a tab with more than one pane always asks first. Otherwise, Wezzy asks
 when something other than a shell is still running, as set in Settings (⌘,).
 

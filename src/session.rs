@@ -156,6 +156,11 @@ async fn attach_and_restore() -> anyhow::Result<()> {
         }
         send_event(AppEvent::WindowReady(w));
     }
+    // ttys and the views' user vars now, not at the 2s poll: a reattached
+    // view pane is blank until its spec is recovered
+    if let Err(err) = refresh_ttys().await {
+        log::trace!("tty refresh: {err:#}");
+    }
     // Drop the placeholder if it didn't adopt anything (the connecting UI tab
     // closes on its own; give it a moment first).
     smol::Timer::after(Duration::from_millis(1500)).await;
@@ -215,9 +220,17 @@ async fn refresh_ttys() -> anyhow::Result<()> {
     crate::agents::names::retain(|id| live.contains(&id));
 
     // nvim that was already running when we attached never re-announces
-    // IS_NVIM; infer it so smart-splits (and our edge nav) see it.
+    // IS_NVIM; infer it so smart-splits (and our edge nav) see it. Views'
+    // placeholders don't re-announce WEZZY_VIEW either.
     for pane in mux.iter_panes() {
         if let Some(cp) = pane.downcast_ref::<wezterm_client::pane::ClientPane>() {
+            if !crate::views::is_view(&pane) {
+                if let Some(spec) = crate::views::recover_spec(&pane) {
+                    cp.seed_user_var(crate::views::USER_VAR, &spec);
+                    crate::app::send_event(crate::app::AppEvent::Redraw);
+                    continue;
+                }
+            }
             if !pane.copy_user_vars().contains_key("IS_NVIM") && crate::procs::is_vim(&pane) {
                 cp.seed_user_var("IS_NVIM", "true");
             }

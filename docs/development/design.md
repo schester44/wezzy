@@ -92,7 +92,11 @@ Derived fills (via `with_alpha`):
 - **Text input**: recessed fill, 1px accent ring at ~55–70%, 1.5px accent
   caret, `fg_subtle` placeholder that says what to type.
 - **Confirmation**: inline footer bar (`Discard hunk in x?` + Cancel / Discard),
-  not a modal. `esc` or any other key cancels.
+  not a modal. `esc` or any other key cancels. App-level confirms (quit, close
+  pane / tab, Lua `Confirmation`) are a small modal: `MEDIUM` title and 12px
+  `fg_muted` detail, then a recessed footer with a hairline above it holding
+  Cancel `esc` (ghost) and the verb `↩`, which is destructive when it kills
+  something and a soft button otherwise (`button()` + `ButtonKind` in `view.rs`).
 - **Modal header**: 48px row with a `MEDIUM` 13px title (or the search field)
   and a hairline below; the list follows with 6px vertical padding.
 - **Setting row**: label in `fg` on the left, value in 12px `fg_muted` on the

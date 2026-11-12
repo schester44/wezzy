@@ -9,6 +9,7 @@
 //!   editor = { "nvim", "+{line}", "{file}" }, -- ⌘-click file:line opens this in a split
 //!   auto_update = true,               -- install new releases in the background (see update.rs)
 //!   notifications = true,             -- macOS notifications + Dock badge for agents (see notify.rs)
+//!   pane_cards = true,                -- panes as rounded cards with gaps between them (see render.rs)
 //!   sidebar = { "agents", "servers", "actions" }, -- ⌘B sections, top to bottom (see sidebar.rs)
 //!   harnesses = {                     -- name = argv; merged over the built-ins
 //!     claude = { "claude" },
@@ -97,6 +98,9 @@ pub struct Settings {
     /// macOS notifications and the Dock badge when an agent needs you while
     /// Wezzy is in the background.
     pub notifications: bool,
+    /// Panes drawn as rounded cards with a gap between them, instead of flat
+    /// with a hairline divider.
+    pub pane_cards: bool,
     /// settings.json recipes, then the Lua config's
     pub recipes: Vec<crate::recipes::Recipe>,
     /// the settings.json subset, so saving from the UI doesn't copy Lua ones into the file
@@ -125,6 +129,7 @@ impl Settings {
         sound: String::new(),
         auto_update: true,
         notifications: true,
+        pane_cards: true,
         recipes: Vec::new(),
         file_recipes: Vec::new(),
         hosts: Vec::new(),
@@ -269,6 +274,7 @@ struct Stored {
     sound: Option<String>,
     auto_update: Option<bool>,
     notifications: Option<bool>,
+    pane_cards: Option<bool>,
     recipes: Option<Vec<StoredRecipe>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hosts: Option<Vec<StoredHost>>,
@@ -354,6 +360,9 @@ fn from_file() -> Settings {
     if let Some(v) = st.notifications {
         s.notifications = v;
     }
+    if let Some(v) = st.pane_cards {
+        s.pane_cards = v;
+    }
     if let Some(v) = st.recipes {
         s.file_recipes = v
             .into_iter()
@@ -410,6 +419,7 @@ pub fn update(f: impl FnOnce(&mut Settings)) {
         sound: (!s.sound.is_empty()).then(|| s.sound.clone()),
         auto_update: Some(s.auto_update),
         notifications: Some(s.notifications),
+        pane_cards: Some(s.pane_cards),
         recipes: (!s.file_recipes.is_empty()).then(|| {
             s.file_recipes
                 .iter()
@@ -517,6 +527,9 @@ pub fn lua_setup(_: &mlua::Lua, opts: mlua::Table) -> mlua::Result<()> {
     }
     if let Some(v) = opts.get::<_, Option<bool>>("notifications")? {
         s.notifications = v;
+    }
+    if let Some(v) = opts.get::<_, Option<bool>>("pane_cards")? {
+        s.pane_cards = v;
     }
     if let Some(v) = opts.get::<_, Option<Vec<String>>>("sidebar")? {
         if let Some(bad_id) = v.iter().find(|id| crate::sidebar::Source::from_id(id).is_none()) {

@@ -49,8 +49,8 @@ impl TermApp {
             .flex()
             .flex_col()
             .bg(t.chrome)
-            .border_r_1()
-            .border_color(t.border)
+            // flat panes need the edge; cards have their own
+            .when(!crate::settings::get().pane_cards, |d| d.border_r_1().border_color(t.border))
             // drag the right edge to resize
             .child(
                 div()

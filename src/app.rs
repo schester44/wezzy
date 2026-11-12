@@ -239,6 +239,62 @@ pub(crate) struct GridGeom {
     pub size: gpui::Size<Pixels>,
     pub cell_w: Pixels,
     pub line_h: Pixels,
+    /// the tab's size in cells
+    pub cols: usize,
+    pub rows: usize,
+}
+
+/// Width of the gap between pane cards, and between the cards and the edge of
+/// the terminal area. Splits are one cell wide, so it can't exceed a column;
+/// a column narrower than the gap plus a little inner padding shrinks it.
+const CARD_GAP: f32 = 6.;
+/// Least room between a card's edge and its text across a split.
+const CARD_INNER: f32 = 2.;
+/// macOS's corner radius for a window like ours (full-size content, toolbar
+/// height titlebar). Cards in the window's corners sit one gap inside it, so
+/// their radius is this minus the gap: concentric curves.
+const WINDOW_RADIUS: f32 = 16.;
+
+impl GridGeom {
+    pub(crate) fn card_gap(&self) -> Pixels {
+        px(CARD_GAP.min(f32::from(self.cell_w) - 2. * CARD_INNER).max(2.))
+    }
+
+    /// Every card's corner radius, concentric with the window's corners.
+    pub(crate) fn card_radius(&self) -> Pixels {
+        px(WINDOW_RADIUS) - self.card_gap()
+    }
+
+    /// The card a pane is drawn on, in window coordinates. Panes stay on the
+    /// cell grid; their cards reach into the one-cell split strips around them,
+    /// leaving the same gap on every side, and on the terminal area's edges
+    /// they reach past the window padding to one gap from the edge (the top
+    /// edge, under the top bar, gets none).
+    pub(crate) fn card(&self, left: usize, top: usize, width: usize, height: usize) -> gpui::Bounds<Pixels> {
+        let gap = self.card_gap();
+        let area = point(self.origin.x - self.pad.x, self.origin.y - self.pad.y);
+        let reach_x = (self.cell_w - gap) / 2.;
+        let reach_y = (self.line_h - gap) / 2.;
+        let x0 = self.origin.x + self.cell_w * left as f32;
+        let y0 = self.origin.y + self.line_h * top as f32;
+        let x1 = self.origin.x + self.cell_w * (left + width) as f32;
+        let y1 = self.origin.y + self.line_h * (top + height) as f32;
+        let x0 = if left == 0 { (area.x + gap).min(x0) } else { x0 - reach_x };
+        // the top bar already pads the tabs above the cards; a gap on top of
+        // that leaves more room below the tabs than above them
+        let y0 = if top == 0 { area.y.min(y0) } else { y0 - reach_y };
+        let x1 = if left + width >= self.cols {
+            (area.x + self.size.width - gap).max(x1)
+        } else {
+            x1 + reach_x
+        };
+        let y1 = if top + height >= self.rows {
+            (area.y + self.size.height - gap).max(y1)
+        } else {
+            y1 + reach_y
+        };
+        gpui::Bounds::new(point(x0, y0), gpui::size(x1 - x0, y1 - y0))
+    }
 }
 
 pub struct TermApp {
@@ -947,6 +1003,14 @@ impl TermApp {
     /// it, past the window padding, so the view runs edge to edge.
     pub(crate) fn view_bounds(&self, tab: &Tab, p: &mux::tab::PositionedPane) -> gpui::Bounds<Pixels> {
         let g = self.grid.get();
+        if crate::settings::get().pane_cards {
+            // inside the card's hairline
+            let c = g.card(p.left, p.top, p.width, p.height);
+            return gpui::Bounds::new(
+                point(c.origin.x + px(1.), c.origin.y + px(1.)),
+                gpui::size(c.size.width - px(2.), c.size.height - px(2.)),
+            );
+        }
         let area = point(g.origin.x - g.pad.x, g.origin.y - g.pad.y);
         let size = tab.get_size();
         let x0 = if p.left == 0 { area.x } else { g.origin.x + g.cell_w * p.left as f32 };

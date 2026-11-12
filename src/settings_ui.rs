@@ -13,6 +13,7 @@ pub enum Row {
     Editor,
     Sidebar,
     SidebarActions,
+    PaneCards,
     Sound,
     Notifications,
     Updates,
@@ -27,6 +28,7 @@ pub const ROWS: &[Row] = &[
     Row::Editor,
     Row::Sidebar,
     Row::SidebarActions,
+    Row::PaneCards,
     Row::Sound,
     Row::Notifications,
     Row::Updates,
@@ -49,6 +51,7 @@ impl Row {
             Row::Editor => "Editor",
             Row::Sidebar => "Sidebar",
             Row::SidebarActions => "GitHub Actions",
+            Row::PaneCards => "Pane cards",
             Row::Sound => "Sound",
             Row::Notifications => "Notifications",
             Row::Updates => "Updates",
@@ -88,6 +91,7 @@ impl Row {
             }
             Row::Sound => s.sound().unwrap_or_else(|| "Off".into()),
             Row::Notifications => if s.notifications { "On" } else { "Off" }.into(),
+            Row::PaneCards => if s.pane_cards { "On" } else { "Off" }.into(),
             Row::Updates => if s.auto_update { "Automatic" } else { "Off" }.into(),
             Row::AgentHooks => {
                 // the agents still missing hooks, else the ones that have them
@@ -180,6 +184,7 @@ impl TermApp {
                 crate::notify::sync_badge();
             }
             Row::Updates => settings::update(|s| s.auto_update = !s.auto_update),
+            Row::PaneCards => settings::update(|s| s.pane_cards = !s.pane_cards),
             Row::Editor => {
                 if let Some(Overlay::Settings(st)) = self.overlay.as_mut() {
                     st.editing = Some(Row::Editor.value(true));

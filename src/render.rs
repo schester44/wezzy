@@ -114,8 +114,61 @@ pub struct PaintOpts {
     pub focused: bool,
 }
 
+/// A pane's card: its bounds, whether it's the active pane, and how it's drawn.
+pub struct Card {
+    pub bounds: Bounds<Pixels>,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct CardStyle {
+    pub fill: Hsla,
+    pub inactive_fill: Hsla,
+    pub border: Hsla,
+    pub active_border: Hsla,
+    pub radius: Pixels,
+}
+
+/// The chrome between and around the cards: `area` with a hole for each card.
+/// Painting it under the cards instead would stack two translucent layers and
+/// leave the panes nearly opaque; this way every pixel is painted once. The
+/// holes are a hair smaller than the cards so no seam shows under the border.
+pub fn paint_gaps(area: Bounds<Pixels>, cards: &[Card], radius: Pixels, color: Hsla, window: &mut Window) {
+    let mut b = gpui::PathBuilder::fill();
+    let (o, s) = (area.origin, area.size);
+    b.move_to(o);
+    b.line_to(point(o.x + s.width, o.y));
+    b.line_to(point(o.x + s.width, o.y + s.height));
+    b.line_to(point(o.x, o.y + s.height));
+    b.close();
+    // lyon fills even-odd by default and cards never overlap: each card is a hole
+    for c in cards {
+        let k = px(0.5);
+        let (x0, y0) = (c.bounds.origin.x + k, c.bounds.origin.y + k);
+        let (x1, y1) = (c.bounds.origin.x + c.bounds.size.width - k, c.bounds.origin.y + c.bounds.size.height - k);
+        let r = (radius - k).max(px(0.)).min((x1 - x0) / 2.).min((y1 - y0) / 2.);
+        let rr = point(r, r);
+        b.move_to(point(x0 + r, y0));
+        b.line_to(point(x1 - r, y0));
+        b.arc_to(rr, px(0.), false, true, point(x1, y0 + r));
+        b.line_to(point(x1, y1 - r));
+        b.arc_to(rr, px(0.), false, true, point(x1 - r, y1));
+        b.line_to(point(x0 + r, y1));
+        b.arc_to(rr, px(0.), false, true, point(x0, y1 - r));
+        b.line_to(point(x0, y0 + r));
+        b.arc_to(rr, px(0.), false, true, point(x0 + r, y0));
+        b.close();
+    }
+    if let Ok(path) = b.build() {
+        window.paint_path(path, color);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn paint_tab(
     origin: Point<Pixels>,
+    cards: &[Card],
+    card_style: &CardStyle,
     panes: &[PaneSnap],
     splits: &[(PositionedSplit, Hsla, bool)],
     m: &Metrics,
@@ -123,14 +176,29 @@ pub fn paint_tab(
     window: &mut Window,
     cx: &mut App,
 ) {
+    for c in cards {
+        window.paint_quad(gpui::quad(
+            c.bounds,
+            card_style.radius,
+            if c.active { card_style.fill } else { card_style.inactive_fill },
+            px(1.),
+            if c.active { card_style.active_border } else { card_style.border },
+            gpui::BorderStyle::Solid,
+        ));
+    }
     for p in panes {
         paint_pane(origin, p, m, opts, window, cx);
     }
     for (s, color, hot) in splits {
+        let strip = split_strip(origin, s, m);
+        if !cards.is_empty() {
+            // The gap between cards is the divider; the resize cursor is its
+            // only hover state.
+            continue;
+        }
         // Splits occupy one cell between panes; draw a line through its middle,
         // thicker while hovered / dragged.
         let w = if *hot { px(2.0) } else { px(1.0) };
-        let strip = split_strip(origin, s, m);
         let b = match s.direction {
             SplitDirection::Horizontal => Bounds::new(
                 point(strip.center().x - w / 2.0, strip.origin.y),

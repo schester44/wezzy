@@ -6,6 +6,10 @@
 //! skips the pane's cells and draws the view in the pane's rectangle instead.
 //! Splits, tabs, zoom, swaps, workspaces and restarts all treat it as an
 //! ordinary pane; closing the pane ends the placeholder and drops the view.
+//!
+//! User vars don't survive reattaching (a restart of the app), so the
+//! placeholder's shell stays alive with the spec in its argv, and
+//! `recover_spec` reads it back from the process table.
 
 mod editor;
 mod hello;
@@ -98,8 +102,12 @@ pub fn is_view(pane: &Arc<dyn Pane>) -> bool {
     spec(pane).is_some()
 }
 
+/// argv[3] of a placeholder's shell; argv[5] is the base64 spec.
+const ARGV0: &str = "wezzy-view";
+
 /// The placeholder that holds a view's slot on the server. Positional args
-/// keep `title` and the spec out of the shell's parser.
+/// keep `title` and the spec out of the shell's parser. `cat` runs as a child,
+/// not `exec`ed, so the shell (and the spec in its argv) stays visible.
 pub fn spawn_command(kind: &str, args: &str, title: &str) -> SpawnCommand {
     use base64::Engine;
     let spec = if args.is_empty() {
@@ -111,20 +119,44 @@ pub fn spawn_command(kind: &str, args: &str, title: &str) -> SpawnCommand {
     let script = format!(
         "stty -echo 2>/dev/null; \
          printf '\\033[?25l\\033]2;%s\\007\\033]1337;SetUserVar={USER_VAR}=%s\\007' \"$1\" \"$2\"; \
-         exec cat >/dev/null"
+         cat >/dev/null"
     );
     SpawnCommand {
         args: Some(vec![
             "/bin/sh".into(),
             "-c".into(),
             script,
-            "wezzy-view".into(),
+            ARGV0.into(),
             title.into(),
             encoded,
         ]),
         domain: SpawnTabDomain::DefaultDomain,
         ..Default::default()
     }
+}
+
+/// The view a server pane hosts, read from its placeholder process: for panes
+/// we reattached to, whose `WEZZY_VIEW` user var we never saw.
+pub fn recover_spec(pane: &Arc<dyn Pane>) -> Option<String> {
+    use base64::Engine;
+    let info = crate::procs::foreground_now(pane)?;
+    if info.argv.get(3).map(String::as_str) == Some(ARGV0) {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(info.argv.get(5)?)
+            .ok()?;
+        return String::from_utf8(bytes).ok();
+    }
+    // Placeholders from before the shell stayed alive `exec`ed into a bare
+    // `cat` that leads its own session (one typed in a shell doesn't). Only
+    // their title, the database name, is left.
+    let leader = unsafe { libc::getsid(info.pid as i32) } == info.pid as i32;
+    if info.name == "cat" && info.argv.len() == 1 && leader {
+        let title = pane.get_title();
+        if sql::conn::resolve(&title).is_some() {
+            return Some(format!("sql {title}"));
+        }
+    }
+    None
 }
 
 /// Live views, keyed by local pane id.

@@ -54,6 +54,16 @@ pub fn foreground(pane: &Arc<dyn Pane>) -> Option<LocalProcessInfo> {
     info
 }
 
+/// `foreground` without the per-pane cache, which may hold a miss from before
+/// the pane's tty was known.
+pub fn foreground_now(pane: &Arc<dyn Pane>) -> Option<LocalProcessInfo> {
+    pane.get_foreground_process_info(CachePolicy::AllowStale).or_else(|| {
+        pane_tty(pane)
+            .and_then(|t| foreground_pgid(&t))
+            .and_then(LocalProcessInfo::with_root_pid)
+    })
+}
+
 pub fn foreground_name(pane: &Arc<dyn Pane>) -> Option<String> {
     foreground(pane).map(|i| {
         if i.name.is_empty() {

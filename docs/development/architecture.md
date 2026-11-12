@@ -62,6 +62,17 @@ The terminal is a gpui `canvas`. Each frame it sizes the active tab to the
 canvas (cols/rows from font metrics and config padding), snapshots each
 positioned pane's visible lines, and paints:
 
+- **Cards** (`pane_cards`, on by default): one rounded quad per pane, filled
+  with `term_bg` and outlined with a hairline, on the darker `chrome` that the
+  sidebar and top bar use. The side panels drop their right border, since the
+  change of tone already separates them. Panes never leave the cell grid, so nothing that
+  maps the mouse to cells changes. Instead each card reaches into the one-cell
+  split strips around its pane and leaves the same gap on every side
+  (`GridGeom::card`). That caps the gap at one column, and across a
+  side-by-side split the text sits about 2px from the card's edge. View panes
+  are placed inside their card (`view_bounds`). The corner radius is the
+  window's (`WINDOW_RADIUS`, a guess at macOS's 16pt) minus the gap, so cards
+  in the window's corners curve parallel to it.
 - **Background runs and text:** same-styled cells are shaped as one run, with
   a forced grid advance so ligatures and nerd-font glyphs can't drift.
 - **Cursor:** block cursors repaint the glyph underneath in `cursor_fg`.
@@ -104,9 +115,16 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
 - **A placeholder holds the slot.** The server owns the layout and the client
   rebuilds it from `ListPanes`, so a view still occupies a real server pane.
   `views::spawn_command` runs `sh` with `stty -echo`, which sets the pane title
-  (OSC 2) and the `WEZZY_VIEW` user var (`"<kind> <args>"`), then `exec cat`.
+  (OSC 2) and the `WEZZY_VIEW` user var (`"<kind> <args>"`), then runs `cat`.
   Splits, zoom, swaps, moving tabs and workspaces all treat it as an ordinary
   pane, and it survives app restarts with the session.
+- **Restarts lose user vars.** A reattached `ClientPane` only learns user vars
+  that are set after the attach, so the placeholder never re-announces itself.
+  To cover that, `cat` runs as a child rather than `exec`ed, which keeps the
+  shell alive with the spec in its argv (`wezzy-view <title> <base64 spec>`).
+  `session::refresh_ttys` reads it back with `views::recover_spec` and seeds the
+  user var. Placeholders that `exec`ed `cat` are recovered from the title,
+  if it names a configured database.
 - **The app draws over it.** `Views::sync` (each frame) creates a `PaneView`
   for every pane announcing one and drops those whose pane is gone. The canvas
   skips painting their cells, and `pane_views` in `ui/view.rs` places each

@@ -46,6 +46,7 @@ impl Render for TermApp {
         let pane = tab.as_ref().and_then(|t| t.get_active_pane());
         // a zoomed pane (⌘↵) takes the whole window: side panels hide while it lasts
         let zoomed = self.pane_zoomed();
+        let cards = crate::settings::get().pane_cards;
         if zoomed && self.region != crate::regions::Region::Terminal {
             self.region = crate::regions::Region::Terminal;
         }
@@ -174,7 +175,13 @@ impl Render for TermApp {
                             .flex_1()
                             .min_w_0()
                             .relative()
-                            .bg(t.term_bg)
+                            // with cards the canvas paints the chrome itself, only
+                            // between the cards (see render::paint_gaps)
+                            .map(|d| match (cards, tab.is_some()) {
+                                (false, _) => d.bg(t.term_bg),
+                                (true, false) => d.bg(t.chrome),
+                                (true, true) => d,
+                            })
                             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                             .on_scroll_wheel(cx.listener(Self::on_scroll))
                             .on_drop(cx.listener(Self::on_file_drop))
@@ -700,6 +707,7 @@ impl TermApp {
         let g = self.grid.get();
         let area = point(g.origin.x - g.pad.x, g.origin.y - g.pad.y);
         let metrics = render::metrics(window, &config::configuration(), self.font_scale);
+        let cards = crate::settings::get().pane_cards;
         let focused = self.focus.is_focused(window)
             && self.overlay.is_none()
             && self.region == crate::regions::Region::Terminal;
@@ -728,6 +736,7 @@ impl TermApp {
                         .top(b.origin.y - area.y)
                         .w(size.width)
                         .h(size.height)
+                        .when(cards, |d| d.rounded(g.card_radius() - px(1.)))
                         .overflow_hidden()
                         .child(view.render(&vcx, t, cx))
                         .into_any_element(),
@@ -747,7 +756,19 @@ impl TermApp {
         let grid = self.grid.clone();
         // dividers: a visible hairline at rest, accent while hovered / dragged
         let fg = render::color(palette.foreground);
-        let split_idle = gpui::Hsla { a: 0.16, ..fg };
+        let cards = crate::settings::get().pane_cards;
+        let split_idle = gpui::Hsla { a: 0.10, ..fg };
+        let t = crate::ui::Theme::new(palette, config.window_background_opacity);
+        let gap_color = t.chrome;
+        let card_style = render::CardStyle {
+            fill: t.term_bg,
+            // inactive cards recede into the sidebar / top bar color
+            inactive_fill: t.chrome,
+            // no edge on inactive cards; a faint one marks the active card
+            border: gpui::transparent_black(),
+            active_border: with_alpha(t.fg, 0.10),
+            radius: px(0.), // from the grid, at paint time
+        };
         let split_hot = render::color(palette.colors.0[4]);
         let split_drag = self.split_drag;
         let opts = PaintOpts {
@@ -827,13 +848,16 @@ impl TermApp {
                         dpi: (72.0 * scale) as u32,
                     });
                 }
-                grid.set(GridGeom {
+                let geom = GridGeom {
                     origin,
                     pad: point(pl, pt),
                     size: bounds.size,
                     cell_w: metrics.cell_w,
                     line_h: metrics.line_h,
-                });
+                    cols,
+                    rows,
+                };
+                grid.set(geom);
 
                 // each divider owns its one-cell strip between panes: resize cursor,
                 // hover highlight, and the drag target for on_mouse_down
@@ -845,10 +869,21 @@ impl TermApp {
                         (s, window.insert_hitbox(b, gpui::HitboxBehavior::Normal))
                     })
                     .collect();
-                Some((tab, origin, splits))
+                Some((tab, origin, splits, geom))
             },
-            move |_, state, window, cx| {
-                let Some((tab, origin, splits)) = state else { return };
+            move |bounds, state, window, cx| {
+                let Some((tab, origin, splits, geom)) = state else { return };
+                let pane_cards: Vec<_> = if cards {
+                    tab.iter_panes()
+                        .iter()
+                        .map(|p| render::Card {
+                            bounds: geom.card(p.left, p.top, p.width, p.height),
+                            active: p.is_active,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let panes: Vec<_> = tab
                     .iter_panes()
                     .iter()
@@ -870,7 +905,11 @@ impl TermApp {
                         (*s, if hot { split_hot } else { split_idle }, hot)
                     })
                     .collect();
-                render::paint_tab(origin, &panes, &painted, &paint_metrics, &opts, window, cx);
+                let card_style = render::CardStyle { radius: geom.card_radius(), ..card_style };
+                if cards {
+                    render::paint_gaps(bounds, &pane_cards, card_style.radius, gap_color, window);
+                }
+                render::paint_tab(origin, &pane_cards, &card_style, &panes, &painted, &paint_metrics, &opts, window, cx);
                 if let Some((pane_id, matches, typed)) = &hints {
                     if let Some(p) = tab.iter_panes().iter().find(|p| p.pane.pane_id() == *pane_id) {
                         let o = point(
@@ -1043,36 +1082,68 @@ impl TermApp {
                 message,
                 detail,
                 verb,
+                action,
                 ..
-            } => (
-                96.,
-                card(380.)
-                    .p_4()
-                    .gap_1()
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child(message.clone()))
-                    .when(!detail.is_empty(), |d| {
-                        d.child(div().text_color(t.fg_muted).child(detail.clone()))
-                    })
-                    .child(
-                        div()
-                            .mt_3()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().flex_1())
-                            .child(button("confirm-no", "Cancel", t, false).on_click(
-                                cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    this.answer_confirm(false, window, cx)
+            } => {
+                let destructive = matches!(
+                    action,
+                    KeyAssignment::QuitApplication
+                        | KeyAssignment::CloseCurrentPane { .. }
+                        | KeyAssignment::CloseCurrentTab { .. }
+                );
+                (
+                    96.,
+                    card(340.)
+                        .child(
+                            div()
+                                .px_4()
+                                .pt_4()
+                                .pb_3()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(div().font_weight(FontWeight::MEDIUM).child(message.clone()))
+                                .when(!detail.is_empty(), |d| {
+                                    d.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(t.fg_muted)
+                                            .child(detail.clone()),
+                                    )
                                 }),
-                            ))
-                            .child(button("confirm-yes", verb, t, true).on_click(
-                                cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    this.answer_confirm(true, window, cx)
-                                }),
-                            )),
-                    )
-                    .into_any_element(),
-            ),
+                        )
+                        .child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap_2()
+                                .border_t_1()
+                                .border_color(t.border)
+                                .bg(gpui::hsla(0., 0., 0., 0.14))
+                                .child(button("confirm-no", "Cancel", "esc", t, ButtonKind::Ghost).on_click(
+                                    cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.answer_confirm(false, window, cx)
+                                    }),
+                                ))
+                                .child(
+                                    button(
+                                        "confirm-yes",
+                                        verb,
+                                        "↩",
+                                        t,
+                                        if destructive { ButtonKind::Danger } else { ButtonKind::Soft },
+                                    )
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.answer_confirm(true, window, cx)
+                                    })),
+                                ),
+                        )
+                        .into_any_element(),
+                )
+            }
             Overlay::Palette(state) => (
                 56.,
                 card(620.).child(self.palette_view(state, t, cx)).into_any_element(),
@@ -2021,26 +2092,54 @@ fn menu_row(id: impl Into<gpui::ElementId>, t: &Theme) -> gpui::Stateful<gpui::D
         .hover(|s| s.bg(t.hover))
 }
 
-fn button(id: &'static str, label: &'static str, t: &Theme, primary: bool) -> gpui::Stateful<gpui::Div> {
+#[derive(Clone, Copy)]
+enum ButtonKind {
+    /// hairline border, fill on hover
+    Ghost,
+    /// soft `fg` fill: the default action
+    Soft,
+    /// `danger` fill: an action that kills something
+    Danger,
+}
+
+fn button(
+    id: &'static str,
+    label: &'static str,
+    key: &'static str,
+    t: &Theme,
+    kind: ButtonKind,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .h(px(30.))
-        .px_3()
+        .flex_none()
+        .h(px(24.))
+        .px_2p5()
         .flex()
         .items_center()
-        .rounded_lg()
+        .gap_1p5()
+        .rounded_md()
         .cursor_pointer()
+        .text_size(px(12.))
         .font_weight(FontWeight::MEDIUM)
-        .map(|d| {
-            if primary {
-                d.bg(t.accent)
-                    .text_color(gpui::black())
-                    .hover(|s| s.opacity(0.9))
-            } else {
-                d.border_1().border_color(t.border).hover(|s| s.bg(t.hover))
-            }
+        .map(|d| match kind {
+            ButtonKind::Ghost => d
+                .border_1()
+                .border_color(t.border)
+                .text_color(t.fg)
+                .hover(|s| s.bg(t.hover)),
+            ButtonKind::Soft => d
+                .border_1()
+                .border_color(t.border)
+                .bg(with_alpha(t.fg, 0.07))
+                .text_color(t.fg)
+                .hover(|s| s.bg(with_alpha(t.fg, 0.12))),
+            ButtonKind::Danger => d
+                .bg(t.danger)
+                .text_color(gpui::white())
+                .hover(|s| s.opacity(0.88)),
         })
         .child(label)
+        .child(div().opacity(0.55).font_family(term_family()).text_size(px(11.)).child(key))
 }
 
 fn pill(label: &str, color: Hsla) -> impl IntoElement {
