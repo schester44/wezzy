@@ -56,7 +56,7 @@ Tables in your search path are completed bare (`users`), others with their schem
 ## Browsing the schema
 
 ⌘O opens a list of the database's schemas and tables at the left of the editor.
-Open a table to see its columns and indexes, or press ↵ on it to see its rows.
+Open a table to see its columns and indexes, or press s on it to see its rows.
 
 | | |
 |---|---|
@@ -64,8 +64,9 @@ Open a table to see its columns and indexes, or press ↵ on it to see its rows.
 | ctrl+h | From the editor or the result, go to the schema |
 | j k, ↑ ↓ | Move |
 | g, G | First row, last row |
-| ↵, l, → | Open a schema, table or index group |
-| -, h, ← | Close it, or go up to the row above it |
+| ↵, tab | Open or close a schema, table or index group |
+| l, → | Open it |
+| h, ← | Close it, or go up to the row above it |
 | s on a table | Add `select * from` the table to the editor and run it |
 | / | Filter the tables by name |
 | y | Copy the name |

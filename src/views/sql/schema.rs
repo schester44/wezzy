@@ -348,11 +348,11 @@ impl Browser {
             "k" | "up" => self.move_by(n, -1),
             "g" if m.shift => self.move_by(n, n as isize),
             "g" => self.move_by(n, -(n as isize)),
-            "l" | "right" | "enter" => {
+            "l" | "right" | "enter" | "tab" => {
                 let row = row?;
                 match (row.open, ks.key.as_str()) {
                     (Some(false), _) => self.toggle(schema, &row, true),
-                    (Some(true), "enter") => self.toggle(schema, &row, false),
+                    (Some(true), "enter" | "tab") => self.toggle(schema, &row, false),
                     (Some(true), _) => self.move_by(n, 1),
                     _ => {}
                 }
@@ -361,7 +361,7 @@ impl Browser {
                 Node::Table(i) => return Some(Self::select_sql(schema, i)),
                 _ => {}
             },
-            "h" | "left" | "-" => {
+            "h" | "left" => {
                 let row = row?;
                 if row.open == Some(true) && (self.filter.is_empty() || row.depth > 0) {
                     self.toggle(schema, &row, false);
@@ -696,7 +696,11 @@ mod tests {
         b.key(&ks("j"), &s);
         b.key(&ks("enter"), &s);
         assert!(b.expanded.contains("t\0app\0posts"));
-        b.key(&ks("-"), &s);
+        b.key(&ks("enter"), &s);
+        assert!(!b.expanded.contains("t\0app\0posts"));
+        b.key(&ks("tab"), &s);
+        assert!(b.expanded.contains("t\0app\0posts"));
+        b.key(&ks("tab"), &s);
         assert!(!b.expanded.contains("t\0app\0posts"));
         match b.key(&ks("s"), &s) {
             Some(Act::Open(sql)) => assert_eq!(sql, "select * from posts;"),
