@@ -40,6 +40,8 @@ pub enum Outcome {
     /// a statement without rows: "3 rows affected"
     Done(u64),
     Error(String),
+    /// `explain (format json …)` output
+    Plan(super::explain::Plan),
 }
 
 pub struct Run {
@@ -238,6 +240,8 @@ enum Job {
     Page(usize),
     /// run these updates in one transaction, then reload the page
     Save(Vec<String>),
+    /// explain one statement; with ANALYZE when `true`
+    Explain(String, bool),
 }
 
 pub struct Db {
@@ -295,6 +299,10 @@ impl Db {
 
     pub fn run(&self, sql: String) {
         self.tx.send(Job::Query(sql)).ok();
+    }
+
+    pub fn explain(&self, sql: String, analyze: bool) {
+        self.tx.send(Job::Explain(sql, analyze)).ok();
     }
 
     pub fn page(&self, offset: usize) {
@@ -397,6 +405,7 @@ fn worker(url: String, verify: bool, shared: Arc<Mutex<Shared>>, rx: mpsc::Recei
                     }
                 }
                 let outcome = run(&mut client, &sql);
+                let outcome = if starts_with_word(&sql, "explain") { as_plan(outcome) } else { outcome };
                 let schema_changed = matches!(outcome, Outcome::Done(_))
                     && sql.to_lowercase().split_whitespace().any(|w| {
                         matches!(w, "create" | "alter" | "drop")
@@ -413,6 +422,15 @@ fn worker(url: String, verify: bool, shared: Arc<Mutex<Shared>>, rx: mpsc::Recei
                     }
                 }
                 send_event(AppEvent::Redraw);
+            }
+            Job::Explain(sql, analyze) => {
+                let outcome = explain(&mut client, &sql, analyze);
+                publish(Run {
+                    outcome,
+                    elapsed: started.elapsed(),
+                    page: None,
+                    edit: None,
+                });
             }
             Job::Page(offset) => reload(&mut client, &shared, offset, started, &publish),
             Job::Save(updates) => {
@@ -487,6 +505,48 @@ fn reload(
     });
 }
 
+/// One statement only reads, so EXPLAIN ANALYZE can run it.
+pub fn read_only(sql: &str) -> bool {
+    pageable(sql).is_some()
+}
+
+fn starts_with_word(sql: &str, word: &str) -> bool {
+    sql.trim_start()
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()
+        .is_some_and(|w| w.eq_ignore_ascii_case(word))
+}
+
+/// A one-cell result that holds a JSON plan, as a plan.
+fn as_plan(outcome: Outcome) -> Outcome {
+    if let Outcome::Rows(set) = &outcome {
+        if let ([_], [row]) = (set.columns.as_slice(), set.rows.as_slice()) {
+            if let Some(plan) = row.first().cloned().flatten().and_then(|raw| super::explain::parse(&raw)) {
+                return Outcome::Plan(plan);
+            }
+        }
+    }
+    outcome
+}
+
+/// `explain (format json)`, or with `analyze, buffers`, in a read-only
+/// transaction that's rolled back. Preparing it first refuses more than one
+/// statement, so nothing after a `;` can run.
+fn explain(client: &mut Client, sql: &str, analyze: bool) -> Outcome {
+    let options = if analyze { "analyze, buffers, format json" } else { "format json" };
+    let q = format!("explain ({options}) {}", sql.trim().trim_end_matches(';'));
+    let mut tx = match client.build_transaction().read_only(true).start() {
+        Ok(tx) => tx,
+        Err(e) => return Outcome::Error(error_text(&e)),
+    };
+    if let Err(e) = tx.prepare(&q) {
+        return Outcome::Error(error_text(&e));
+    }
+    let outcome = as_plan(run(&mut tx, &q));
+    tx.rollback().ok();
+    outcome
+}
+
 /// The query, ready to wrap in `select * from (…)`, if it only reads and is
 /// one statement.
 fn pageable(sql: &str) -> Option<String> {
@@ -530,7 +590,7 @@ fn count(client: &mut Client, sql: &str) -> Option<u64> {
 }
 
 /// Runs everything in `sql`; the result is the last statement's.
-fn run(client: &mut Client, sql: &str) -> Outcome {
+fn run(client: &mut impl postgres::GenericClient, sql: &str) -> Outcome {
     let messages = match client.simple_query(sql) {
         Ok(m) => m,
         Err(e) => return Outcome::Error(error_text(&e)),
@@ -606,6 +666,28 @@ fn load_schema(client: &mut Client) -> Result<Schema, postgres::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analyze_only_for_reads_and_plans_detected() {
+        assert!(read_only("select * from users where id = 1;"));
+        assert!(read_only("with x as (select 1) select * from x"));
+        assert!(!read_only("delete from users"));
+        assert!(!read_only("with d as (delete from users returning *) select * from d"));
+        assert!(!read_only("select 1; delete from users"));
+        assert!(!read_only("select * from users for update"));
+        assert!(starts_with_word("  EXPLAIN (format json) select 1", "explain"));
+        assert!(!starts_with_word("explained", "explain"));
+        let cell = |v: &str| {
+            Outcome::Rows(ResultSet {
+                columns: vec!["QUERY PLAN".into()],
+                rows: vec![vec![Some(v.into())]],
+                total: 1,
+            })
+        };
+        let json = r#"[{"Plan": {"Node Type": "Result", "Total Cost": 0.01, "Plan Rows": 1}}]"#;
+        assert!(matches!(as_plan(cell(json)), Outcome::Plan(_)));
+        assert!(matches!(as_plan(cell("Result  (cost=0.00..0.01 rows=1 width=4)")), Outcome::Rows(_)));
+    }
 
     #[test]
     fn updates_group_by_row_and_quote() {

@@ -98,6 +98,40 @@ and several statements run together, comes back in one go, up to 10,000 rows.
 A statement that returns no rows shows how many it changed; an error shows
 Postgres's message.
 
+## Explaining a query
+
+See how Postgres plans to run a statement, and where the time goes.
+
+| | |
+|---|---|
+| ⌘⌥↵ | Explain the statement under the cursor, without running it |
+| ⌘⌥⇧↵ | Explain it with ANALYZE: run it and show what actually happened |
+| j k, arrows | Move between steps |
+| g, G | First step, last step |
+| h l, ← → | Fold, unfold (h on a step without any goes to its parent) |
+| ↵ | Fold or unfold; on a step without any, keep its details open |
+| y | Copy the plan as JSON |
+| esc, i, ctrl+k | Back to the editor |
+
+The result shows the plan as a tree, one row per step, with the steps it reads
+from below it. Click a row to select it, or its chevron to fold it. Each row
+shows the estimated rows and cost, and with ANALYZE also the time spent in it
+(over all its loops, in ms), the rows it actually returned and how many times it
+ran. The bar beside it is the step's own share of the time, or of the cost
+without ANALYZE, so the step doing the most work stands out.
+
+The selected step shows its conditions, sort and group keys, rows removed by
+filters, and with ANALYZE the buffers it read. A warning icon marks steps that
+look wrong: a row estimate off by more than 10×, a sequential scan whose filter
+throws away most of the table, or a sequential scan that is most of the plan's
+cost. The line under the editor shows the planning and execution times.
+
+ANALYZE runs the statement, so ⌘⌥⇧↵ only works on statements that just read
+(`select`, `with`, `table`, `values`). Both run in a read-only transaction that's
+rolled back. A statement you write yourself that starts with `explain` runs as
+written: with `format json` it shows the tree, otherwise the plan's text in the
+table.
+
 ## Changing values
 
 Change a cell in place, then save every change at once.
