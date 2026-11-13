@@ -339,12 +339,33 @@ fn paint_pane(
                 }),
             };
             let narrow = text.chars().count() == cols;
-            let shaped = window.text_system().shape_line(
+            let mut shaped = window.text_system().shape_line(
                 text.into(),
                 m.font_size,
                 &[run],
-                narrow.then_some(m.cell_w),
+                None,
             );
+            if narrow {
+                // GPUI's force_width counts glyphs, not source characters. A
+                // ligature consumes several cells but only one glyph, shifting
+                // every following glyph to the left. Position by UTF-8 cluster
+                // index instead, and leave the shared cached layout untouched.
+                let mut runs = shaped.runs.clone();
+                for run in &mut runs {
+                    for glyph in &mut run.glyphs {
+                        glyph.position.x = m.cell_w
+                            * grid_column(&shaped.text, glyph.index) as f32;
+                    }
+                }
+                *shaped = Arc::new(gpui::LineLayout {
+                    font_size: shaped.font_size,
+                    width: m.cell_w * cols as f32,
+                    ascent: shaped.ascent,
+                    descent: shaped.descent,
+                    runs,
+                    len: shaped.len(),
+                });
+            }
             shaped.paint(point(x, y), m.line_h, window, cx).ok();
         }
     }
@@ -389,9 +410,16 @@ fn paint_pane(
                         {
                             let text = cell.str().to_string();
                             if !text.trim().is_empty() {
+                                let mut font = m.font.clone();
+                                if cell.attrs().intensity() == Intensity::Bold {
+                                    font.weight = FontWeight::BOLD;
+                                }
+                                if cell.attrs().italic() {
+                                    font.style = FontStyle::Italic;
+                                }
                                 let run = TextRun {
                                     len: text.len(),
-                                    font: m.font.clone(),
+                                    font,
                                     color: color(p.palette.cursor_fg),
                                     background_color: None,
                                     underline: None,
@@ -414,6 +442,29 @@ fn paint_pane(
                 None => {}
             }
         }
+    }
+}
+
+// Used only for spans with one Unicode scalar per terminal column.
+fn grid_column(text: &str, byte_index: usize) -> usize {
+    text[..byte_index].chars().count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grid_column;
+
+    #[test]
+    fn grid_positions_follow_source_text_not_glyph_count() {
+        // Even if `ffi` becomes one glyph, the following `c` stays in column 4.
+        assert_eq!(grid_column("office event", 4), 4);
+        assert_eq!(grid_column("office event", 8), 8);
+    }
+
+    #[test]
+    fn grid_positions_use_columns_not_utf8_bytes() {
+        assert_eq!(grid_column("évent", 2), 1);
+        assert_eq!(grid_column("évent", 4), 3);
     }
 }
 

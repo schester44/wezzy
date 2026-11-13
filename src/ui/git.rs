@@ -152,30 +152,7 @@ impl TermApp {
                                     cx.notify();
                                 })),
                         )
-                    })
-                    .child(
-                        div()
-                            .id("git-help")
-                            .ml_1()
-                            .size(px(18.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .border_1()
-                            .border_color(t.border)
-                            .text_size(px(10.))
-                            .text_color(t.fg_subtle)
-                            .cursor_pointer()
-                            .hover(|s| s.text_color(t.fg).bg(t.hover))
-                            .child("?")
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.git.help = Some(String::new());
-                                this.region = crate::regions::Region::Diff;
-                                this.focus.focus(window);
-                                cx.notify();
-                            })),
-                    ),
+                    }),
             )
             .child(
                 div()

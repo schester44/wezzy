@@ -35,7 +35,7 @@ The header has the repo, the branch and the last commit, plus:
 - **No upstream:** a crossed-out cloud when the branch hasn't been pushed yet.
 - **Pull request:** the branch's pull request number with an icon for its
   state: open, draft, merged or closed. Click it to open the PR in your browser.
-- **+/− counts** for everything that's changed, and **?** for the shortcut sheet.
+- **+/− counts** for everything that's changed.
 
 Below that, changes are grouped into **Untracked**, **Unstaged** and **Staged**.
 Expand a file to see its hunks.

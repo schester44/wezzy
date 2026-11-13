@@ -39,7 +39,11 @@
   (`install_schedulers`), which that run loop drains.
 - **Mux → UI.** `Mux::subscribe` turns notifications into `AppEvent`s on a
   channel. `TermApp` drains it on the gpui foreground executor and calls
-  `cx.notify()`. Pane output is coalesced into one redraw.
+  `cx.notify()`. Pane output is coalesced into one redraw; output from panes
+  not on screen (other tabs / workspaces) redraws at most every 500 ms.
+- **No per-frame animations.** A gpui `Animation` repaints the whole window,
+  every pane included, at display rate. `ui::spinner` steps on a 125 ms timer
+  that only runs while a spinner was drawn.
 - **Background threads** (git polling, `lsof`, hook polling, builds) publish
   through `send_event(AppEvent::…)` or shared snapshots under a mutex.
 
@@ -73,9 +77,13 @@ positioned pane's visible lines, and paints:
   are placed inside their card (`view_bounds`). The corner radius is the
   window's (`WINDOW_RADIUS`, a guess at macOS's 16pt) minus the gap, so cards
   in the window's corners curve parallel to it.
-- **Background runs and text:** same-styled cells are shaped as one run, with
-  a forced grid advance so ligatures and nerd-font glyphs can't drift.
-- **Cursor:** block cursors repaint the glyph underneath in `cursor_fg`.
+- **Background runs and text:** same-styled cells are shaped as one run. For
+  one-scalar-per-column spans, glyph positions are mapped from their UTF-8
+  source indices to grid columns in a private copy of the shaped layout.
+  GPUI's `force_width` counts glyphs instead, which shifts text after ligatures.
+  Wide glyphs are shaped separately with their natural advance.
+- **Cursor:** block cursors repaint the glyph underneath in `cursor_fg`,
+  retaining its bold and italic font styling.
 - **Splits, then overlays:** split lines, then QuickSelect hints.
 
 Chrome colors come from `Theme`, derived from the active pane's palette, so

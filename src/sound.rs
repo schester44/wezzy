@@ -19,12 +19,15 @@ pub fn play(name: &str) {
     }
     let p = path(name);
     if std::path::Path::new(&p).exists() {
-        std::process::Command::new("/usr/bin/afplay")
+        let child = std::process::Command::new("/usr/bin/afplay")
             .arg(p)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok();
+            .spawn();
+        // reap it, or every chime leaves a zombie behind
+        if let Ok(mut child) = child {
+            std::thread::spawn(move || child.wait().ok());
+        }
     }
 }
 

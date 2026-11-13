@@ -112,19 +112,34 @@ pub enum Icon {
     Eye,
 }
 
-/// A spinning loader, for "working" states.
+/// How often a visible spinner steps. A gpui `Animation` would repaint the
+/// whole window (every pane) at display rate for as long as it's on screen.
+pub const SPINNER_TICK: std::time::Duration = std::time::Duration::from_millis(125);
+const SPINNER_STEPS: u128 = 8;
+
+/// Set while painting a spinner; the app's spinner timer repaints only while
+/// one was drawn (`spinner_drawn`).
+static SPINNER_DRAWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a spinner was painted since the last call.
+pub fn spinner_drawn() -> bool {
+    SPINNER_DRAWN.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+/// A spinning loader, for "working" states. Steps an eighth of a turn every
+/// `SPINNER_TICK`, from one shared clock so every spinner agrees.
 pub fn spinner(size: f32, color: Hsla) -> impl IntoElement {
-    use gpui::{percentage, Animation, AnimationExt, Transformation};
+    use gpui::{percentage, Transformation};
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    SPINNER_DRAWN.store(true, std::sync::atomic::Ordering::Release);
+    let ticks = EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() / SPINNER_TICK.as_millis();
+    let step = (ticks % SPINNER_STEPS) as f32 / SPINNER_STEPS as f32;
     svg()
         .path("icons/spinner.svg")
         .size(px(size))
         .flex_none()
         .text_color(color)
-        .with_animation(
-            "spinner",
-            Animation::new(std::time::Duration::from_millis(900)).repeat(),
-            |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
-        )
+        .with_transformation(Transformation::rotate(percentage(step)))
 }
 
 pub fn icon(icon: Icon, size: f32, color: Hsla) -> impl IntoElement {

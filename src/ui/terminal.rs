@@ -66,16 +66,14 @@ impl TermApp {
     ) -> impl IntoElement {
         let config = config::configuration();
         let metrics = render::metrics(window, &config, self.font_scale);
+        let panes = self.active_tab().map(|tab| tab.iter_panes()).unwrap_or_default();
+        // output from these redraws right away; the rest is batched (app.rs)
+        crate::app::set_visible_panes(panes.iter().map(|p| p.pane.pane_id()).collect());
         // each pane's first row: scrolled back, or lifted above a run card
-        let tops: std::collections::HashMap<_, _> = self
-            .active_tab()
-            .map(|tab| {
-                tab.iter_panes()
-                    .iter()
-                    .filter_map(|p| Some((p.pane.pane_id(), self.view_top(p.pane.pane_id())?)))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let tops: std::collections::HashMap<_, _> = panes
+            .iter()
+            .filter_map(|p| Some((p.pane.pane_id(), self.view_top(p.pane.pane_id())?)))
+            .collect();
         let grid = self.grid.clone();
         // dividers: a visible hairline at rest, accent while hovered / dragged
         let fg = render::color(palette.foreground);

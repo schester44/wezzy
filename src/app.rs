@@ -378,6 +378,20 @@ pub(crate) fn last_output(pane_id: PaneId) -> Option<Instant> {
     PANE_ACTIVITY.lock().as_ref()?.get(&pane_id).copied()
 }
 
+/// Panes the terminal canvas painted last frame; output from any other pane
+/// is batched (`HIDDEN_OUTPUT`) instead of redrawing right away.
+static VISIBLE_PANES: Mutex<Vec<PaneId>> = Mutex::new(Vec::new());
+static HIDDEN_OUTPUT: AtomicBool = AtomicBool::new(false);
+const HIDDEN_OUTPUT_TICK: Duration = Duration::from_millis(500);
+
+pub(crate) fn set_visible_panes(panes: Vec<PaneId>) {
+    *VISIBLE_PANES.lock() = panes;
+}
+
+fn is_visible_pane(pane_id: PaneId) -> bool {
+    VISIBLE_PANES.lock().contains(&pane_id)
+}
+
 /// Panes that rang the bell / sent a notification and haven't been answered.
 /// For agents this means "waiting on you". Cleared when you type into the pane.
 pub(crate) static PANE_ALERTS: Mutex<Option<HashMap<PaneId, Instant>>> = Mutex::new(None);
@@ -410,7 +424,14 @@ impl TermApp {
                         .lock()
                         .get_or_insert_with(HashMap::new)
                         .insert(id, Instant::now());
-                    send_event(AppEvent::MuxChanged);
+                    // Busy agents in other tabs / workspaces redraw their TUI
+                    // many times a second; only the sidebar cares, and it can
+                    // catch up on HIDDEN_OUTPUT_TICK.
+                    if is_visible_pane(id) {
+                        send_event(AppEvent::MuxChanged);
+                    } else {
+                        HIDDEN_OUTPUT.store(true, Ordering::Release);
+                    }
                 }
                 MuxNotification::Alert {
                     pane_id,
@@ -452,6 +473,35 @@ impl TermApp {
                 {
                     break;
                 }
+            }
+        })
+        .detach();
+
+        // Output from panes off screen: one redraw per tick, not per chunk.
+        cx.background_executor()
+            .spawn({
+                let executor = cx.background_executor().clone();
+                async move {
+                    loop {
+                        executor.timer(HIDDEN_OUTPUT_TICK).await;
+                        if HIDDEN_OUTPUT.swap(false, Ordering::AcqRel) {
+                            send_event(AppEvent::MuxChanged);
+                        }
+                    }
+                }
+            })
+            .detach();
+
+        // Step visible spinners (ui::spinner); idle when none were drawn.
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(crate::ui::SPINNER_TICK)
+                .await;
+            if !crate::ui::spinner_drawn() {
+                continue;
+            }
+            if this.update(cx, |_, cx| cx.notify()).is_err() {
+                break;
             }
         })
         .detach();
