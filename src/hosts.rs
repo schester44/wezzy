@@ -19,7 +19,7 @@
 //! target nobody configured ("ssh pi@10.0.0.9") still connects.
 //!
 //! These are plain `ssh` sessions in a local pane. The same `name`/`ssh` list is
-//! what docs/roadmap/remote-compute.md (phase 1) turns into SSH mux domains.
+//! what docs/roadmap/remote-compute.md (phase 1) turns into remote mux domains.
 
 use crate::app::TermApp;
 use crate::launch::Placement;
