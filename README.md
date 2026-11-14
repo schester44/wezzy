@@ -64,6 +64,8 @@ Enough to start. Everything else is one of these away.
 |---|---|
 | ⌘K | Find anything: agents, tabs, workspaces, hosts, commands |
 | ⌘I | Start an agent |
+| ⌘N | New pane: a terminal split into the current tab |
+| ⌘T | New tab |
 | ⌘J | Agents: what's waiting on you, what each one has done |
 | ⌘⇧J | Board: what agents need from you, what you've queued for them |
 | ⌘G | Git panel: review what an agent changed |
