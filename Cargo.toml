@@ -30,6 +30,8 @@ mlua = "0.9"
 wezterm-client = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
 # the `wezzy` command line (cli/); the server half stays out of the app
 wezzy-cli = { path = "cli", default-features = false }
+# the board's data and its `handoff` command (handoff/); nothing in it knows Wezzy
+handoff = { path = "handoff" }
 procinfo = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
 libc = "0.2"
 nucleo-matcher = "0.3"

@@ -38,21 +38,67 @@ pub enum Key {
     Wait(PaneId),
     /// a pane's run, by its start time
     Run(PaneId, u64),
+    /// an agent's header, above its runs
+    Agent(PaneId),
 }
+
+/// How much of an agent's timeline shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Fold {
+    /// just its header
+    None,
+    /// its newest runs (`RECENT`): how an agent starts, never chosen
+    #[default]
+    Recent,
+    All,
+}
+
+impl Fold {
+    /// Folding is open or shut: `Recent` is only where an agent starts,
+    /// before you've touched it.
+    pub fn toggle(self) -> Self {
+        match self {
+            Fold::All => Fold::None,
+            _ => Fold::All,
+        }
+    }
+}
+
+/// Runs shown per agent until you ask for all of them.
+const RECENT: usize = 2;
 
 pub struct QueueState {
     /// The selected row; follows it when others come and go.
     pub selected: Option<Key>,
     /// Waiting for a second ↩ before approving this pane's risky request.
     pub confirm: Option<PaneId>,
+    /// Agents whose timeline isn't at the default (`Fold::Recent`).
+    pub folds: HashMap<PaneId, Fold>,
+    /// The shortcut sheet (`?`) is up, with what's typed to filter it.
+    pub help: Option<String>,
     pub scroll: ScrollHandle,
 }
 
 impl QueueState {
+    /// Show more or less of an agent's timeline. A cursor on a run that
+    /// goes away moves to the agent's header.
+    pub fn set_fold(&mut self, pane: PaneId, fold: Fold) {
+        if fold == Fold::default() {
+            self.folds.remove(&pane);
+        } else {
+            self.folds.insert(pane, fold);
+        }
+        if matches!(self.selected, Some(Key::Run(p, _)) if p == pane) && fold != Fold::All {
+            self.selected = Some(Key::Agent(pane));
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             selected: None,
             confirm: None,
+            folds: HashMap::new(),
+            help: None,
             scroll: ScrollHandle::new(),
         }
     }
@@ -103,8 +149,9 @@ pub enum Entry {
     /// "Waiting", above the items
     WaitHeader(usize),
     Wait(Item),
-    /// an agent's name and project, above its runs
-    Agent { name: String, project: String },
+    /// an agent's name and project, above its runs: how many it has, and
+    /// how many of them show
+    Agent { pane_id: PaneId, name: String, project: String, runs: usize, fold: Fold },
     Run(RunRow),
 }
 
@@ -113,6 +160,7 @@ impl Entry {
         match self {
             Entry::Wait(it) => Some(Key::Wait(it.pane_id)),
             Entry::Run(r) => Some(Key::Run(r.pane_id, r.started)),
+            Entry::Agent { pane_id, .. } => Some(Key::Agent(*pane_id)),
             _ => None,
         }
     }
@@ -125,8 +173,9 @@ pub fn items() -> Vec<Item> {
     agents.into_iter().map(item).collect()
 }
 
-/// Everything the overlay lists, in order.
-pub fn entries() -> Vec<Entry> {
+/// Everything the overlay lists, in order. Each agent shows its newest runs,
+/// all of them, or only its header, per `folds`.
+pub fn entries(folds: &HashMap<PaneId, Fold>) -> Vec<Entry> {
     let items = items();
     let mut out = vec![];
     if !items.is_empty() {
@@ -141,11 +190,20 @@ pub fn entries() -> Vec<Entry> {
         if rows.is_empty() {
             continue;
         }
+        let fold = folds.get(&a.pane_id).copied().unwrap_or_default();
         out.push(Entry::Agent {
+            pane_id: a.pane_id,
             name: a.display_name().to_string(),
             project: a.project.clone(),
+            runs: rows.len(),
+            fold,
         });
-        out.extend(rows.into_iter().map(Entry::Run));
+        let shown = match fold {
+            Fold::None => 0,
+            Fold::Recent => RECENT,
+            Fold::All => usize::MAX,
+        };
+        out.extend(rows.into_iter().take(shown).map(Entry::Run));
     }
     out
 }
@@ -297,10 +355,20 @@ impl TermApp {
 
     pub(crate) fn queue_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
-        let entries = entries();
         let Some(Overlay::Queue(state)) = self.overlay.as_mut() else {
             return;
         };
+        if let Some(query) = state.help.as_mut() {
+            if crate::shortcuts::sheet_key(query, ks, cx) {
+                state.help = None;
+            }
+            return;
+        }
+        if ks.key_char.as_deref() == Some("?") || ks.key == "?" {
+            state.help = Some(String::new());
+            return;
+        }
+        let entries = entries(&state.folds);
         let idx = selected_index(state, &entries);
         let current = idx.map(|i| entries[i].clone());
         let item = match &current {
@@ -333,6 +401,36 @@ impl TermApp {
             }
             "j" | "down" => select(state, idx.and_then(|i| step(&entries, i, true)).or(idx)),
             "k" | "up" => select(state, idx.and_then(|i| step(&entries, i, false)).or(idx)),
+            // the agent the cursor is in: all of its work, none, or the other
+            "l" | "right" | "h" | "left" | "tab" => {
+                let pane = match current.as_ref().and_then(Entry::key) {
+                    Some(Key::Agent(p) | Key::Run(p, _)) => p,
+                    _ => return,
+                };
+                let fold = state.folds.get(&pane).copied().unwrap_or_default();
+                let to = match ks.key.as_str() {
+                    "l" | "right" => Fold::All,
+                    "h" | "left" => Fold::None,
+                    _ => fold.toggle(),
+                };
+                state.set_fold(pane, to);
+            }
+            // every agent down to its header, to see them all; again opens
+            // them all
+            "z" => {
+                let panes: Vec<PaneId> = entries
+                    .iter()
+                    .filter_map(|e| match e {
+                        Entry::Agent { pane_id, .. } => Some(*pane_id),
+                        _ => None,
+                    })
+                    .collect();
+                let all_folded = panes.iter().all(|p| state.folds.get(p) == Some(&Fold::None));
+                let to = if all_folded { Fold::All } else { Fold::None };
+                for p in panes {
+                    state.set_fold(p, to);
+                }
+            }
             "g" | "home" => select(state, first),
             "G" | "end" => select(state, last),
             k if k.len() == 1 && k.as_bytes()[0].is_ascii_digit() && k != "0" => {
@@ -346,7 +444,7 @@ impl TermApp {
                 select(state, i)
             }
             "enter" | "o" => match current.as_ref().and_then(Entry::key) {
-                Some(Key::Wait(p) | Key::Run(p, _)) => self.open_queue_item(p, window, cx),
+                Some(Key::Wait(p) | Key::Run(p, _) | Key::Agent(p)) => self.open_queue_item(p, window, cx),
                 None => {}
             },
             "v" => {
@@ -398,7 +496,7 @@ impl TermApp {
             self.flash(format!("Couldn't reach the agent: {e:#}"));
             return;
         }
-        let idx = entries()
+        let idx = entries(&self.queue_folds())
             .iter()
             .position(|e| e.key() == Some(Key::Wait(it.pane_id)))
             .unwrap_or(0);
@@ -414,7 +512,7 @@ impl TermApp {
     /// An item went away: select the row now in its place, or close an
     /// empty overlay.
     pub(crate) fn after_answer(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let entries = entries();
+        let entries = entries(&self.queue_folds());
         if entries.is_empty() {
             self.overlay = None;
         } else if let Some(Overlay::Queue(state)) = self.overlay.as_mut() {
@@ -426,6 +524,14 @@ impl TermApp {
             }
         }
         cx.notify();
+    }
+
+    /// The open overlay's folds.
+    fn queue_folds(&self) -> HashMap<PaneId, Fold> {
+        match &self.overlay {
+            Some(Overlay::Queue(s)) => s.folds.clone(),
+            _ => HashMap::new(),
+        }
     }
 
     /// Go to the agent's pane and close the queue.

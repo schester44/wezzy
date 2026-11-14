@@ -4,15 +4,57 @@
 use super::widgets::{button, section_header, term_family, with_alpha, ButtonKind};
 use super::{icon, spinner, Icon, Theme};
 use crate::app::TermApp;
-use crate::queue::{Ask, Entry, Item, Key, QueueState, RunRow};
+use crate::queue::{Ask, Entry, Fold, Item, Key, QueueState, RunRow};
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString};
 
 /// Lines of a request shown on the selected row before it's cut off.
 const DETAIL_LINES: usize = 12;
 
 impl TermApp {
+    /// The agents overlay's shortcut sheet (`?` in it).
+    pub(super) fn queue_help_modal(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let Some(crate::app::Overlay::Queue(state)) = &self.overlay else { return None };
+        let query = state.help.as_deref()?;
+        use super::help::group;
+        let left = vec![
+            group(
+                "Navigate",
+                &[
+                    ("j k", "Move"),
+                    ("g G", "First / last"),
+                    ("1-9", "Select that waiting item"),
+                    ("enter o", "Go to the agent's pane"),
+                ],
+            ),
+            group(
+                "Agents",
+                &[
+                    ("tab", "Expand / collapse an agent"),
+                    ("l h", "Expand / collapse"),
+                    ("z", "Collapse every agent"),
+                ],
+            ),
+        ];
+        let right = vec![
+            group(
+                "Waiting",
+                &[
+                    ("a", "Approve a permission prompt"),
+                    ("r", "Reject a permission prompt"),
+                    ("d", "Dismiss a finished agent"),
+                    ("v", "Review a run's changes"),
+                ],
+            ),
+        ];
+        Some(super::help::sheet("Agents", query, vec![left, right], 600., t, cx, |this| {
+            if let Some(crate::app::Overlay::Queue(s)) = this.overlay.as_mut() {
+                s.help = None;
+            }
+        }))
+    }
+
     pub(super) fn queue_view(&self, state: &QueueState, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let entries = crate::queue::entries();
+        let entries = crate::queue::entries(&state.folds);
         let selected = crate::queue::selected_index(state, &entries);
         let confirm = state.confirm.and_then(|p| {
             entries.iter().find_map(|e| match e {
@@ -33,7 +75,9 @@ impl TermApp {
                         wait_n += 1;
                         self.queue_row(wait_n - 1, it, sel, t, cx)
                     }
-                    Entry::Agent { name, project } => agent_header(&name, &project, t).into_any_element(),
+                    Entry::Agent { pane_id, name, project, runs, fold } => {
+                        agent_header(pane_id, &name, &project, runs, fold, sel, t, cx)
+                    }
                     Entry::Run(r) => self.run_row(r, sel, t, cx),
                 }
             })
@@ -379,15 +423,71 @@ fn confirm_footer(it: &Item, t: &Theme, cx: &mut Context<TermApp>) -> impl IntoE
 }
 
 /// The agent's name and project, above its runs.
-fn agent_header(name: &str, project: &str, t: &Theme) -> impl IntoElement {
-    section_header(name, None, t).when(!project.is_empty(), |d| {
-        d.child(
+/// An agent's name and project over its runs, with how many it has. Click
+/// opens or shuts its timeline.
+#[allow(clippy::too_many_arguments)]
+fn agent_header(
+    pane_id: mux::pane::PaneId,
+    name: &str,
+    project: &str,
+    runs: usize,
+    fold: Fold,
+    sel: bool,
+    t: &Theme,
+    cx: &mut Context<TermApp>,
+) -> AnyElement {
+    let chevron = if fold == Fold::None { Icon::ChevronRight } else { Icon::ChevronDown };
+    div()
+        .id(("queue-agent", pane_id as u64))
+        .relative()
+        .flex_none()
+        .h(px(32.))
+        .mt_1()
+        .px_4()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .cursor_pointer()
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(if sel { t.fg } else { t.fg_muted })
+        .map(|d| {
+            if sel {
+                d.bg(with_alpha(t.fg, 0.07))
+                    .child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent))
+            } else {
+                d.hover(|s| s.bg(with_alpha(t.fg, 0.03)))
+            }
+        })
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            if let Some(crate::app::Overlay::Queue(s)) = this.overlay.as_mut() {
+                let to = s.folds.get(&pane_id).copied().unwrap_or_default().toggle();
+                s.set_fold(pane_id, to);
+                s.selected = Some(Key::Agent(pane_id));
+                s.confirm = None;
+                cx.notify();
+            }
+        }))
+        .child(icon(chevron, 11., t.fg_subtle))
+        .child(SharedString::from(name.to_string()))
+        .when(!project.is_empty(), |d| {
+            d.child(
+                div()
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(t.fg_subtle)
+                    .child(SharedString::from(project.to_string())),
+            )
+        })
+        .child(div().flex_1())
+        .child(
             div()
+                .font_family(term_family())
+                .text_size(px(11.))
                 .font_weight(FontWeight::NORMAL)
                 .text_color(t.fg_subtle)
-                .child(SharedString::from(project.to_string())),
+                .child(runs.to_string()),
         )
-    })
+        .into_any_element()
 }
 
 fn empty(t: &Theme) -> impl IntoElement {

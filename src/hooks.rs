@@ -495,7 +495,7 @@ fn write_atomic(path: &Path, contents: &str) -> anyhow::Result<()> {
 
 /// Read-modify-write a JSON config, keeping everything we don't touch.
 /// Leaves the file alone when nothing changed.
-fn edit_json(path: &Path, f: impl FnOnce(&mut Value) -> anyhow::Result<()>) -> anyhow::Result<()> {
+pub(crate) fn edit_json(path: &Path, f: impl FnOnce(&mut Value) -> anyhow::Result<()>) -> anyhow::Result<()> {
     let before = read_json(path)?;
     let mut root = before.clone().unwrap_or_else(|| Value::Object(Default::default()));
     f(&mut root)?;
@@ -529,7 +529,7 @@ fn is_our_command(c: &str) -> bool {
     c.contains("/bin/agent-hook")
 }
 
-fn has_command(groups: &Value, cmd: &str) -> bool {
+pub(crate) fn has_command(groups: &Value, cmd: &str) -> bool {
     groups.as_array().is_some_and(|groups| {
         groups.iter().any(|g| {
             g["hooks"]
@@ -582,6 +582,51 @@ fn merge_hooks(root: &mut Value, events: &[&str], cmd: &str, timeout: u64) -> an
         }
     }
     Ok(())
+}
+
+/// Add one command hook to one event in `root.hooks`, for a hook that isn't
+/// the status script (the board's, `board.rs`). Everything else is kept.
+pub(crate) fn add_hook(root: &mut Value, event: &str, cmd: &str, timeout: u64) -> anyhow::Result<()> {
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("the file isn't a JSON object"))?;
+    let hooks = obj
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Default::default()))
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("`hooks` isn't an object"))?;
+    let groups = hooks
+        .entry(event)
+        .or_insert_with(|| Value::Array(vec![]))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("hooks.{event} isn't an array"))?;
+    if !has_command(&Value::Array(groups.clone()), cmd) {
+        groups.push(serde_json::json!({
+            "hooks": [{ "type": "command", "command": cmd, "timeout": timeout }]
+        }));
+    }
+    Ok(())
+}
+
+/// Remove exactly `cmd` from one event; a group or event left empty goes too.
+pub(crate) fn remove_hook(root: &mut Value, event: &str, cmd: &str) {
+    let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(groups) = hooks.get_mut(event).and_then(Value::as_array_mut) else {
+        return;
+    };
+    groups.retain_mut(|g| {
+        let Some(hs) = g.get_mut("hooks").and_then(Value::as_array_mut) else {
+            return true;
+        };
+        let before = hs.len();
+        hs.retain(|h| h["command"].as_str() != Some(cmd));
+        !(hs.is_empty() && before > 0)
+    });
+    if groups.is_empty() {
+        hooks.remove(event);
+    }
 }
 
 /// Remove every hook of ours; drop groups and events left empty by that.

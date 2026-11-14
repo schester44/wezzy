@@ -225,6 +225,9 @@ fn commands() -> Vec<(&'static str, PaletteAction)> {
         ("Toggle Sidebar", App(AppCommand::ToggleSidebar)),
         ("Find Agent…", App(AppCommand::FindAgent)),
         ("Agents", App(AppCommand::AttentionQueue)),
+        ("Board", App(AppCommand::Board)),
+        ("Install Handoff", App(AppCommand::InstallHandoff)),
+        ("Uninstall Handoff", App(AppCommand::UninstallHandoff)),
         ("Rename Agent…", App(AppCommand::RenameAgent)),
         ("Find Tab…", App(AppCommand::FindTab)),
         ("Switch Workspace…", App(AppCommand::SwitchWorkspace)),
@@ -451,6 +454,7 @@ impl TermApp {
         let hooks = crate::hooks::harness_hooks();
         let hooks_installed = crate::hooks::all_installed();
         let any_hooks = hooks.iter().any(|h| h.installed);
+        let handoff = crate::board::installed();
         let dev_build = crate::restart::source_dir().is_some();
         let staged = crate::update::staged();
         for (title, action) in commands() {
@@ -460,6 +464,11 @@ impl TermApp {
                 continue;
             }
             if !any_hooks && matches!(action, PaletteAction::App(AppCommand::UninstallAgentHooks)) {
+                continue;
+            }
+            if matches!(action, PaletteAction::App(AppCommand::InstallHandoff)) && handoff
+                || matches!(action, PaletteAction::App(AppCommand::UninstallHandoff)) && !handoff
+            {
                 continue;
             }
             if !dev_build && matches!(action, PaletteAction::App(AppCommand::RebuildRestart)) {
@@ -810,6 +819,15 @@ impl TermApp {
             AppCommand::CommandPalette => self.open_palette(Scope::All, cx),
             AppCommand::FindAgent => self.open_palette(Scope::Agents, cx),
             AppCommand::AttentionQueue => self.open_queue(cx),
+            AppCommand::Board => self.open_board(cx),
+            AppCommand::InstallHandoff => match crate::board::install() {
+                Ok(()) => self.flash("Handoff installed"),
+                Err(e) => self.flash(format!("Handoff: {e:#}")),
+            },
+            AppCommand::UninstallHandoff => match crate::board::uninstall() {
+                Ok(()) => self.flash("Handoff removed"),
+                Err(e) => self.flash(format!("Handoff: {e:#}")),
+            },
             AppCommand::RenameAgent => self.start_agent_rename(None, cx),
             AppCommand::FindTab => self.open_palette(Scope::Tabs, cx),
             AppCommand::SwitchWorkspace => self.open_palette(Scope::Workspaces, cx),

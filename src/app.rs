@@ -254,6 +254,8 @@ pub(crate) enum Overlay {
     Settings(crate::settings_ui::SettingsState),
     /// The agents overlay (⌘J): what's waiting on you, and each agent's runs.
     Queue(crate::queue::QueueState),
+    /// The board (⌘⇧J): Handoff's lanes and cards for the project you're in.
+    Board(Box<crate::board::BoardState>),
     /// The global shortcut sheet (Leader ?), with what's typed to filter it.
     Shortcuts(String),
     /// A view's own sheet (`?` in it), for the view in this pane.
@@ -348,6 +350,8 @@ pub struct TermApp {
     /// ⌥⌘ held: the sidebar numbers agents for ⌥⌘1–9.
     pub(crate) agent_keys_held: bool,
     pub(crate) overlay: Option<Overlay>,
+    /// The open board's poll for outside changes is running (`board_watch`).
+    pub(crate) board_watching: bool,
     pub(crate) flash: Option<(String, Instant)>,
     /// The agent a toast is about; clicking the toast goes to its pane.
     pub(crate) flash_agent: Option<AgentToast>,
@@ -566,6 +570,7 @@ impl TermApp {
             hovered_tab: None,
             agent_keys_held: false,
             overlay: None,
+            board_watching: false,
             flash: None,
             flash_agent: None,
             grid: Rc::default(),
@@ -601,6 +606,7 @@ impl TermApp {
         crate::servers::start();
         crate::actions::start();
         crate::diff::start();
+        crate::board::start();
         if crate::session::persistent() {
             crate::session::start();
         } else {
@@ -864,6 +870,7 @@ impl TermApp {
                 (&self.overlay, c),
                 (Some(Overlay::Settings(_)), AppCommand::OpenSettings)
                     | (Some(Overlay::Queue(_)), AppCommand::AttentionQueue)
+                    | (Some(Overlay::Board(_)), AppCommand::Board)
             );
             if closes {
                 self.overlay = None;
@@ -883,6 +890,11 @@ impl TermApp {
         }
         if matches!(self.overlay, Some(Overlay::Queue(_))) {
             self.queue_key(ev, window, cx);
+            cx.notify();
+            return;
+        }
+        if matches!(self.overlay, Some(Overlay::Board(_))) {
+            self.board_key(ev, window, cx);
             cx.notify();
             return;
         }
@@ -1055,7 +1067,7 @@ impl TermApp {
                     self.overlay = None;
                 }
             }
-            Overlay::Palette(_) | Overlay::Settings(_) | Overlay::Queue(_) => {}
+            Overlay::Palette(_) | Overlay::Settings(_) | Overlay::Queue(_) | Overlay::Board(_) => {}
         }
     }
 

@@ -417,6 +417,7 @@ fn default_bindings() -> Vec<((WKey, Mods), KeyAssignment)> {
         ((WKey::Char('I'), s), AppCommand::NewAgentTab.action()),
         ((WKey::Char('g'), s), AppCommand::ToggleGitPanel.action()),
         ((WKey::Char('j'), s), AppCommand::AttentionQueue.action()),
+        ((WKey::Char('J'), s), AppCommand::Board.action()),
         ((WKey::Char('r'), s), AppCommand::RunRecipe.action()),
         ((WKey::Char('S'), s), AppCommand::SshHost.action()),
         ((WKey::Char('e'), s), AppCommand::OpenEditor.action()),

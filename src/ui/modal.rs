@@ -8,7 +8,7 @@ use config::keyassignment::KeyAssignment;
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, MouseButton, MouseDownEvent};
 
 impl TermApp {
-    pub(super) fn modal(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+    pub(super) fn modal(&self, t: &Theme, window: &gpui::Window, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let overlay = self.overlay.as_ref()?;
         let card = |w: f32| {
             div()
@@ -149,6 +149,16 @@ impl TermApp {
                 56.,
                 card(560.).child(self.queue_view(state, t, cx)).into_any_element(),
             ),
+            Overlay::Board(state) => {
+                // as wide and tall as the window allows: lanes need the room
+                let view = window.viewport_size();
+                let width = (f32::from(view.width) - 64.).clamp(480., 1280.);
+                let lanes = (f32::from(view.height) - CHROME_H - 40. - 48. - 96.).clamp(240., 720.);
+                (
+                    40.,
+                    card(width).child(self.board_view(state, lanes, t, cx)).into_any_element(),
+                )
+            }
             Overlay::Shortcuts(_) | Overlay::ViewShortcuts(..) => return None,
         };
 

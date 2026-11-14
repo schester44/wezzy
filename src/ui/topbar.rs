@@ -312,6 +312,7 @@ impl TermApp {
                     .when(leader, |d| d.child(pill("Leader", t.accent)))
                     .when_some(table, |d, name| d.child(pill(&name, t.warning))),
             )
+            .children(board_chip(crate::board::waiting(), t, cx))
             .children(attention_chip(blocked, finished, t, cx))
     }
 
@@ -462,6 +463,87 @@ impl TermApp {
             }))
             .into_any_element()
     }
+}
+
+/// The chip's tooltip: where the cards that need you came from.
+struct WaitingTip {
+    rows: Vec<(String, usize)>,
+    t: Theme,
+}
+
+impl gpui::Render for WaitingTip {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+        let t = &self.t;
+        div()
+            .mt_1()
+            .min_w(px(160.))
+            .py_1p5()
+            .rounded_lg()
+            .bg(t.elevated)
+            .border_1()
+            .border_color(t.border)
+            .shadow_md()
+            .font_family(super::view::UI_FONT)
+            .text_size(px(12.))
+            .children(self.rows.iter().map(|(source, n)| {
+                div()
+                    .h(px(24.))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .gap_4()
+                    .child(div().flex_1().text_color(t.fg).child(source.clone()))
+                    .child(
+                        div()
+                            .font_family(term_family())
+                            .text_size(px(11.))
+                            .text_color(t.fg_subtle)
+                            .child(n.to_string()),
+                    )
+            }))
+    }
+}
+
+/// Cards that need you, on every board: the count, and on hover where they
+/// came from. Absent when there are none; click opens the board they're on.
+fn board_chip(waiting: Vec<(String, usize)>, t: &Theme, cx: &mut Context<TermApp>) -> Option<impl IntoElement> {
+    let total: usize = waiting.iter().map(|(_, n)| n).sum();
+    if total == 0 {
+        return None;
+    }
+    let theme = *t;
+    Some(
+        div()
+            .id("board-chip")
+            .flex_none()
+            .h(px(22.))
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_1()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|s| s.bg(t.hover))
+            .child(icon(Icon::Inbox, 12., t.warning))
+            .child(
+                div()
+                    .font_family(term_family())
+                    .text_size(px(11.))
+                    .text_color(t.fg_muted)
+                    .child(total.to_string()),
+            )
+            .tooltip(move |_, cx| cx.new(|_| WaitingTip { rows: waiting.clone(), t: theme }).into())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                if matches!(this.overlay, Some(crate::app::Overlay::Board(_))) {
+                    this.overlay = None;
+                    cx.notify();
+                } else {
+                    this.open_board_waiting(cx);
+                }
+            })),
+    )
 }
 
 /// What's waiting in Agents (⌘J) at a glance: agents blocked on you (warning icon) and

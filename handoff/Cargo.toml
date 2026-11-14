@@ -1,0 +1,33 @@
+# Handoff: a board shared by you and your coding agents. Agents file what they
+# need from you; you mark it done, answer, and queue their next work.
+#
+# One SQLite file, this library, and the `handoff` command (CLI, stdio MCP
+# server, agent hooks). It knows nothing about Wezzy: the app is one frontend,
+# linking the library and reading the same file.
+[package]
+name = "handoff"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "handoff"
+path = "src/lib.rs"
+
+[[bin]]
+name = "handoff"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Builds on its own (`cd handoff && cargo build`), so it's its own workspace.
+[workspace]
+
+[profile.release]
+opt-level = 2

@@ -8,6 +8,7 @@ mod actions;
 mod activity;
 mod agents;
 mod app;
+mod board;
 mod clipboard;
 mod commands;
 mod copymode;
@@ -57,6 +58,10 @@ use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<OsString> = std::env::args_os().collect();
+    // started through the `handoff` link (board.rs): the board's own command
+    if args.first().is_some_and(|a| board::is_handoff(std::path::Path::new(a))) {
+        std::process::exit(handoff::cli::run(args));
+    }
     if is_cli(&args) {
         std::process::exit(wezzy_cli::main(args));
     }

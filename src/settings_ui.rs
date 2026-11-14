@@ -18,6 +18,7 @@ pub enum Row {
     Notifications,
     Updates,
     AgentHooks,
+    Handoff,
     ConfigFile,
 }
 
@@ -33,6 +34,7 @@ pub const ROWS: &[Row] = &[
     Row::Notifications,
     Row::Updates,
     Row::AgentHooks,
+    Row::Handoff,
     Row::ConfigFile,
 ];
 
@@ -76,6 +78,7 @@ impl Row {
             Row::Notifications => "Notifications",
             Row::Updates => "Updates",
             Row::AgentHooks => "Agent hooks",
+            Row::Handoff => "Handoff",
             Row::ConfigFile => "Config file",
         }
     }
@@ -113,6 +116,7 @@ impl Row {
             Row::Notifications => if s.notifications { "On" } else { "Off" }.into(),
             Row::PaneCards => if s.pane_cards { "On" } else { "Off" }.into(),
             Row::Updates => if s.auto_update { "Automatic" } else { "Off" }.into(),
+            Row::Handoff => if crate::board::installed() { "Installed" } else { "Not installed" }.into(),
             Row::AgentHooks => {
                 // the agents still missing hooks, else the ones that have them
                 let hs = crate::hooks::harness_hooks();
@@ -211,6 +215,15 @@ impl TermApp {
                 if let Some(Overlay::Settings(st)) = self.overlay.as_mut() {
                     st.editing = Some(Row::Editor.value(true));
                 }
+            }
+            Row::Handoff => {
+                use crate::commands::AppCommand;
+                let cmd = if crate::board::installed() {
+                    AppCommand::UninstallHandoff
+                } else {
+                    AppCommand::InstallHandoff
+                };
+                self.run_app_command(cmd, window, cx)
             }
             Row::AgentHooks => {
                 use crate::commands::AppCommand;

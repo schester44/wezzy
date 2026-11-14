@@ -49,6 +49,7 @@ cargo test
 | `session.rs` | attach to the session server (`wezterm-mux-server`) and to hosts' (`connect_host`), pane ids per server (`ServerPane`) |
 | `hooks.rs`, `agents.rs`, `procs.rs` | agent hook install/polling, agent detection + status, foreground process lookup |
 | `activity.rs`, `runs.rs`, `ui/run_card.rs` | agent runs: per-turn snapshots, stats and undo; the run card, the git panel's run filter, commit / review / undo actions |
+| `board.rs`, `ui/board.rs` | the board (⌘⇧J): a frontend for Handoff; installing its hooks + MCP server for agents |
 | `notify.rs` | macOS notifications and the Dock badge for agents waiting on you |
 | `launch.rs`, `recipes.rs` | harness launcher (⌘I), recipes |
 | `hosts.rs` | SSH hosts (⌘⇧S / "ssh …" in ⌘K): config + `~/.ssh/config` aliases; asking to set a host up when you pick it |
@@ -63,6 +64,7 @@ cargo test
 | `cli/` | the `wezzy` command: pane commands, `-S <host>`, and on a Linux host the session server (`server`) and the ssh `proxy` the app connects through. Own crate; the app links it without `server` |
 | `scripts/set-up-host.sh`, `install-server.sh` | Setting a host up: send the host the app's Linux build of `wezzy` over ssh, then install it + its systemd service there (downloads or builds when there's no build for the host) |
 | `scripts/build-server.sh` | builds those Linux binaries (x86-64, ARM64) in Docker; `bundle.sh` puts them in the app. See `docs/development/releasing.md` |
+| `handoff/` | Handoff: the board's data (SQLite), library and `handoff` command (CLI, MCP server, agent hooks). Own crate with no Wezzy in it; the app links it and runs as `handoff` through a link |
 | `vendor/wezterm-client` | patched copy; see its `Cargo.toml` for the diff |
 | `config/wezzy.lua` | default config written on first run (embedded) |
 | `assets/` | icons (SVG, embedded), app icon, agent hook script |

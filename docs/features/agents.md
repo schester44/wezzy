@@ -18,6 +18,10 @@ through its output or asking it for a recap.
 | `r` | Reject a permission prompt |
 | `d` | Dismiss a finished agent without going to it |
 | `v` | Review a run's changes in the git panel |
+| tab | Expand or collapse the agent: all of its work, or only its name |
+| `l` / `h` | Expand / collapse |
+| `z` | Collapse every agent to its name (again expands them all) |
+| `?` | Every key |
 | esc | Close |
 
 While anything is waiting, the right end of the tab bar shows how many agents
@@ -43,6 +47,12 @@ Under each agent's name and project, a line for each piece of work, newest
 first: the first sentence of the agent's last message, what it changed (`+/−`
 and files) and how long ago it finished. While the agent is on it, the line
 has a spinner and shows your prompt.
+
+An agent starts with its two newest lines, with the number it has in all at
+the right of its name. Click the name, or press tab on it or on any of its
+lines, to show all of them; again shows none. `z` collapses every agent to
+its name, which is the quickest way to see all your agents at once; ↵ on a
+name goes to that agent.
 
 Your follow-up prompts stay on the same line. The next prompt starts a new
 line when:

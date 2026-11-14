@@ -1,5 +1,6 @@
 //! Visual layer: theme tokens derived from the WezTerm palette, icons, and the view.
 
+mod board;
 mod git;
 mod help;
 mod modal;
@@ -70,7 +71,9 @@ impl AssetSource for Assets {
             "cloud-off",
             "code",
             "shield",
-            "eye"
+            "eye",
+            "user",
+            "inbox"
         ))
     }
 
@@ -110,6 +113,8 @@ pub enum Icon {
     Code,
     Shield,
     Eye,
+    User,
+    Inbox,
 }
 
 /// How often a visible spinner steps. A gpui `Animation` would repaint the
@@ -173,6 +178,8 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> impl IntoElement {
         Icon::Code => "icons/code.svg",
         Icon::Shield => "icons/shield.svg",
         Icon::Eye => "icons/eye.svg",
+        Icon::User => "icons/user.svg",
+        Icon::Inbox => "icons/inbox.svg",
     };
     svg()
         .path(path)

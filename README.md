@@ -47,6 +47,7 @@ macOS only for now. Download `Wezzy.dmg` from the
 | ⌘I / ⌘⇧I | New agent in a split / tab |
 | ⌥⌘1–9 | Jump to agent 1–9 (numbers show in the sidebar while ⌥⌘ is held) |
 | ⌘G | Git panel |
+| ⌘⇧J | Board |
 | ⌘R | Recipes |
 | ⌘⇧S | SSH hosts |
 | ⌘E | Editor |

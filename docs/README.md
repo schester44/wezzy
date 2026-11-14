@@ -8,6 +8,7 @@ How to use Wezzy.
 |---|---|
 | [Agent runs](features/agent-runs.md) | A card when an agent finishes: review its changes, send comments back, commit or undo them |
 | [Agents](features/agents.md) | What's waiting on you and what each agent has done this session (⌘J); approve or reject permission prompts from it |
+| [Board](features/board.md) | A board you share with your agents (⌘⇧J): what they need from you, what you've queued for them |
 | [Configuration](features/config.md) | `wezzy.lua`: window, font, keys, plugins and the app's options in one `wezzy.setup` table |
 | [Git panel](features/git-panel.md) | Review, stage and commit agent changes, comment back, open a pull request |
 | [Keys](features/keys.md) | The leader key, panes and tabs, mouse selection, copy mode, changing keys |

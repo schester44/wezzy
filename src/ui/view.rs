@@ -183,8 +183,10 @@ impl Render for TermApp {
             // they anchor to the window's corner / center rather than the terminal's
             .children(self.toast(&t, cx))
             .children(self.copy_search(&t))
-            .children(self.modal(&t, cx))
+            .children(self.modal(&t, window, cx))
             .children(self.git_help_modal(&t, cx))
+            .children(self.queue_help_modal(&t, cx))
+            .children(self.board_help_modal(&t, cx))
             .children(self.shortcuts_modal(&t, cx))
             .children(self.view_shortcuts_modal(&t, cx))
     }
