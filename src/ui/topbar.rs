@@ -41,7 +41,11 @@ impl TermApp {
             .cursor_pointer()
             .when(open, |d| d.bg(t.selected))
             .hover(|s| s.bg(t.hover))
-            .child(icon(Icon::Home, 13., t.fg_muted))
+            .child(icon(
+                if crate::session::is_host_workspace(&active) { Icon::Server } else { Icon::Home },
+                13.,
+                t.fg_muted,
+            ))
             .child(
                 div()
                     .max_w(px(180.))
@@ -70,6 +74,7 @@ impl TermApp {
                 let running = ws.tabs.is_some();
                 let detail = ws.detail();
                 let name = ws.name.clone();
+                let on_host = crate::session::is_host_workspace(&ws.name);
                 menu_row(("ws", i), t)
                     .when(self.ws_cursor == i, |d| d.bg(with_alpha(t.fg, 0.07)))
                     .child(
@@ -88,6 +93,7 @@ impl TermApp {
                             .when(!running, |d| d.text_color(t.fg_muted))
                             .child(ws.name),
                     )
+                    .when(on_host, |d| d.child(icon(Icon::Server, 12., t.fg_subtle)))
                     .child(
                         div()
                             .flex_none()

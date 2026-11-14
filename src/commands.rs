@@ -6,7 +6,7 @@
 //!
 //! ```lua
 //! local wezzy = require("wezzy")
-//! table.insert(config.keys, { key = "b", mods = "CMD", action = wezzy.action.ToggleSidebar })
+//! wezzy.bind("cmd+b", wezzy.action.ToggleSidebar)
 //! ```
 
 use config::keyassignment::KeyAssignment;
@@ -228,21 +228,65 @@ impl AppCommand {
     }
 }
 
-/// Exposes `require("wezzy")` to the config: `wezzy.action.<Name>`.
+/// The `wezzy` Lua module (`src/lua/wezzy.lua`): `setup`, `bind`, `action`.
+pub const LUA_MODULE: &str = include_str!("lua/wezzy.lua");
+
+/// Lua name → event name for every app command, as the module's `actions`.
+fn lua_actions() -> Vec<(&'static str, String)> {
+    let mut v: Vec<_> = AppCommand::ALL.iter().map(|c| (c.lua_name(), c.event_name())).collect();
+    // pre-rename name for the git panel
+    v.push(("ToggleDiffPanel", AppCommand::ToggleGitPanel.event_name()));
+    v
+}
+
+/// The module's `actions` as a Lua table literal, for the session server's
+/// entry file (`session::server_config`).
+pub fn lua_actions_literal() -> String {
+    let items: Vec<String> =
+        lua_actions().into_iter().map(|(name, event)| format!("{name} = {event:?}")).collect();
+    format!("{{ {} }}", items.join(", "))
+}
+
+/// LuaLS types for the module (`src/lua/types.lua`), with a field for every
+/// app command.
+const LUA_TYPES: &str = include_str!("lua/types.lua");
+
+pub fn lua_types() -> String {
+    let fields: String = AppCommand::ALL
+        .iter()
+        .map(|c| format!("---{}\n---@field {} wezzy.Action\n", c.label(), c.lua_name()))
+        .collect();
+    LUA_TYPES.replace("--@ACTIONS@\n", &fields)
+}
+
+/// Where `lua_types` goes, for `workspace.library`.
+pub fn lua_types_dir() -> std::path::PathBuf {
+    crate::paths::data_dir().join("types")
+}
+
+/// Writes the types when they changed (a new build's commands).
+pub fn write_lua_types() {
+    let file = lua_types_dir().join("wezzy.lua");
+    let text = lua_types();
+    if std::fs::read_to_string(&file).ok().as_deref() != Some(text.as_str()) {
+        let written = std::fs::create_dir_all(lua_types_dir()).and_then(|_| std::fs::write(&file, text));
+        if let Err(err) = written {
+            log::warn!("writing {}: {err}", file.display());
+        }
+    }
+}
+
+/// Exposes `require("wezzy")` to the config, with the app's settings hook.
 pub fn register_lua() {
     fn setup(lua: &mlua::Lua) -> anyhow::Result<()> {
-        let module = lua.create_table()?;
+        let ctx = lua.create_table()?;
         let actions = lua.create_table()?;
-        for c in AppCommand::ALL {
-            let t = lua.create_table()?;
-            t.set("EmitEvent", c.event_name())?;
-            actions.set(c.lua_name(), t)?;
+        for (name, event) in lua_actions() {
+            actions.set(name, event)?;
         }
-        // pre-rename name for the git panel
-        let git: mlua::Value = actions.get("ToggleGitPanel")?;
-        actions.set("ToggleDiffPanel", git)?;
-        module.set("action", actions)?;
-        module.set("setup", lua.create_function(crate::settings::lua_setup)?)?;
+        ctx.set("actions", actions)?;
+        ctx.set("settings", lua.create_function(crate::settings::lua_setup)?)?;
+        let module: mlua::Table = lua.load(LUA_MODULE).set_name("=wezzy").call(ctx)?;
         let package: mlua::Table = lua.globals().get("package")?;
         let loaded: mlua::Table = package.get("loaded")?;
         loaded.set("wezzy", module.clone())?;
@@ -251,4 +295,36 @@ pub fn register_lua() {
         Ok(())
     }
     config::lua::add_context_setup_func(setup);
+}
+
+#[cfg(test)]
+mod lua_types_tests {
+    use super::*;
+
+    /// Every option `setup` accepts has a field in `wezzy.Setup`.
+    #[test]
+    fn types_cover_setup_options() {
+        let types = lua_types();
+        let setup = types.split("---@class wezzy.Setup").nth(1).unwrap();
+        let setup = setup.split("---@class").next().unwrap();
+        let mut names = vec![];
+        for list in ["local APP = set({", "local OPTIONS = set({"] {
+            let rest = LUA_MODULE.split(list).nth(1).unwrap();
+            let body = rest.split("})").next().unwrap();
+            names.extend(body.split(',').map(|n| n.trim().trim_matches('"').to_string()).filter(|n| !n.is_empty()));
+        }
+        assert!(names.len() > 15);
+        for name in names {
+            assert!(setup.contains(&format!("---@field {name}? ")), "wezzy.Setup has no field {name}");
+        }
+    }
+
+    #[test]
+    fn types_list_every_action() {
+        let types = lua_types();
+        assert!(!types.contains("@ACTIONS@"));
+        for c in AppCommand::ALL {
+            assert!(types.contains(&format!("---@field {} wezzy.Action\n", c.lua_name())));
+        }
+    }
 }

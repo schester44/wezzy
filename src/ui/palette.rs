@@ -14,9 +14,10 @@ impl TermApp {
     ) -> impl IntoElement {
         use crate::palette::{Kind, Scope};
         let results = self.palette_results();
-        let grouped = state.query.trim().is_empty();
+        let grouped = crate::palette::grouped(&state.query);
         let selected = state.selected.min(results.len().saturating_sub(1));
 
+        use crate::palette::PaletteAction;
         let mut rows: Vec<AnyElement> = vec![];
         let mut last_kind = None;
         for (i, item) in results.into_iter().enumerate() {
@@ -35,18 +36,29 @@ impl TermApp {
                 );
             }
             let is_sel = i == selected;
+            // a Wezzy host's row: a dot while it's connected
+            let connected = matches!(&item.action, PaletteAction::ConnectHost(h) if crate::session::host_connected(&h.name));
             let leading: AnyElement = match (item.kind, item.status) {
                 (Kind::Agent, Some((status, unseen))) => status_indicator(status, unseen, t).into_any_element(),
+                (Kind::Workspace, _)
+                    if matches!(&item.action, PaletteAction::Workspace(n) if crate::session::is_host_workspace(n)) =>
+                {
+                    icon(Icon::Server, 14., if is_sel { t.fg } else { t.fg_subtle }).into_any_element()
+                }
                 (kind, _) => icon(
-                    match kind {
+                    match (kind, &item.action) {
+                        (_, PaletteAction::DisconnectHost(_)) => Icon::CloudOff,
+                        (Kind::Host, PaletteAction::Ssh(_)) => Icon::Terminal,
+                        (kind, _) => match kind {
                         Kind::Agent | Kind::Launch => Icon::Bot,
                         Kind::Tab => Icon::Terminal,
                         Kind::Window => Icon::Window,
                         Kind::Workspace => Icon::Layers,
                         Kind::Command => Icon::Bolt,
                         Kind::Recipe => Icon::Sparkles,
-                        Kind::Host => Icon::Server,
+                        Kind::Remote | Kind::Host => Icon::Server,
                         Kind::Database => Icon::Database,
+                        },
                     },
                     14.,
                     if is_sel { t.fg } else { t.fg_subtle },
@@ -106,6 +118,9 @@ impl TermApp {
                                     .text_color(t.fg)
                                     .child(item.title),
                             )
+                            .when(connected, |d| {
+                                d.child(div().flex_none().size(px(6.)).rounded_full().bg(t.success))
+                            })
                             .child(
                                 div()
                                     .flex_1()
@@ -178,8 +193,12 @@ impl TermApp {
                                 )
                             })
                             .when(!state.query.is_empty(), |d| {
-                                d.child(state.query.clone())
-                                    .child(div().ml_px().w(px(1.5)).h(px(17.)).bg(t.accent))
+                                d.child(
+                                    div()
+                                        .when(state.all_selected, |d| d.bg(with_alpha(t.accent, 0.3)))
+                                        .child(state.query.clone()),
+                                )
+                                .child(div().ml_px().w(px(1.5)).h(px(17.)).bg(t.accent))
                             }),
                     ),
             )

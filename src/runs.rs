@@ -234,6 +234,7 @@ impl TermApp {
             message: if whole { "Undo the agent's run?" } else { "Undo the agent's last turn?" }.into(),
             detail,
             verb: "Undo",
+            cancel_verb: None,
             action: KeyAssignment::EmitEvent(if whole { UNDO_RUN } else { UNDO_TURN }.into()),
             cancel: None,
             pane_id: pane,

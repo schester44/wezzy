@@ -55,11 +55,8 @@ git repo.
 To put the commands on keys, bind them in `~/.config/wezzy/wezzy.lua`:
 
 ```lua
-local in_app, wezzy = pcall(require, "wezzy")
-if in_app then
-  table.insert(config.keys, { key = "c", mods = "LEADER", action = wezzy.action.ReviewAgentRun })
-  table.insert(config.keys, { key = "u", mods = "LEADER", action = wezzy.action.UndoAgentTurn })
-end
+wezzy.bind("leader+c", wezzy.action.ReviewAgentRun)
+wezzy.bind("leader+u", wezzy.action.UndoAgentTurn)
 ```
 
 `wezzy.action.UndoAgentRun` and `wezzy.action.DismissAgentRun` bind the same way.

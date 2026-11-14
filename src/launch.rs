@@ -42,11 +42,10 @@ impl TermApp {
         cx: &mut Context<Self>,
     ) {
         match placement {
-            Placement::Tab => self.spawn_tab(
-                SpawnTabDomain::CurrentPaneDomain,
-                Some(spawn_command(harness)),
-                None,
-            ),
+            Placement::Tab => {
+                let spawn = spawn_command(harness, self.on_host());
+                self.spawn_tab(SpawnTabDomain::CurrentPaneDomain, Some(spawn), None)
+            }
             Placement::Split => self.run_in_split(harness, window, cx),
         }
         cx.notify();
@@ -99,22 +98,23 @@ impl TermApp {
 
     /// ⌘\: a shell in a split of the current tab, placed like a new agent.
     pub(crate) fn new_terminal(&mut self, cx: &mut Context<Self>) {
+        self.spawn_in_new_pane(SpawnCommand::default(), cx)
+    }
+
+    /// A command in a split of the current tab, placed like a new agent; a
+    /// shell when it has no args (`SpawnCommandInNewPane`). In a new tab when
+    /// there's nowhere to split.
+    pub(crate) fn spawn_in_new_pane(&mut self, spawn: SpawnCommand, cx: &mut Context<Self>) {
         let split = self.next_split.take();
         let Some((target, request)) = split.or_else(|| self.agent_split(settings::get().agent_layout)) else {
-            self.spawn_tab(SpawnTabDomain::CurrentPaneDomain, None, None);
+            self.spawn_tab(spawn.domain.clone(), Some(spawn), None);
             return;
         };
+        let domain = spawn.domain.clone();
+        let (command, command_dir) = crate::app::build_command(Some(&spawn));
         promise::spawn::spawn(async move {
             match Mux::get()
-                .split_pane(
-                    target,
-                    request,
-                    mux::domain::SplitSource::Spawn {
-                        command: None,
-                        command_dir: None,
-                    },
-                    SpawnTabDomain::CurrentPaneDomain,
-                )
+                .split_pane(target, request, mux::domain::SplitSource::Spawn { command, command_dir }, domain)
                 .await
             {
                 Ok((pane, _)) => pane.set_config(std::sync::Arc::new(config::TermConfig::new())),
@@ -125,8 +125,13 @@ impl TermApp {
         cx.notify();
     }
 
+    /// Whether the active pane runs on a host (where new splits and tabs go).
+    fn on_host(&self) -> bool {
+        self.active_pane().is_some_and(|p| crate::session::on_host(&p))
+    }
+
     fn run_in_split(&mut self, harness: &Harness, _window: &mut Window, cx: &mut Context<Self>) {
-        let spawn = spawn_command(harness);
+        let spawn = spawn_command(harness, self.on_host());
         let split = self.next_split.take();
         let Some((target, request)) = split.or_else(|| self.agent_split(settings::get().agent_layout)) else {
             self.spawn_tab(SpawnTabDomain::CurrentPaneDomain, Some(spawn), None);
@@ -210,19 +215,27 @@ fn parent_split(node: &mux::tab::PaneNode, pane: mux::pane::PaneId) -> Option<Sp
 }
 
 /// Run the harness through the login shell (so PATH/env from your dotfiles
-/// apply) and drop back to a shell when it exits.
-fn spawn_command(h: &Harness) -> SpawnCommand {
-    let shell = login_shell();
+/// apply) and drop back to a shell when it exits. On a host, that's the
+/// host's login shell, which only the host knows: `$SHELL` there (the client
+/// domain sends host commands without this Mac's environment).
+fn spawn_command(h: &Harness, on_host: bool) -> SpawnCommand {
     let cmd = shell_words::join(&h.argv);
     let mut env = std::collections::HashMap::new();
     env.insert("WEZZY_HARNESS".to_string(), h.name.clone());
+    let args = if on_host {
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            r#"exec "$SHELL" -lic "$0; exec \"$SHELL\" -l""#.into(),
+            cmd,
+        ]
+    } else {
+        let shell = login_shell();
+        vec![shell.clone(), "-lic".into(), format!("{cmd}; exec {} -l", shell_words::quote(&shell))]
+    };
     SpawnCommand {
         label: Some(h.label()),
-        args: Some(vec![
-            shell.clone(),
-            "-lic".into(),
-            format!("{cmd}; exec {} -l", shell_words::quote(&shell)),
-        ]),
+        args: Some(args),
         set_environment_variables: env,
         domain: SpawnTabDomain::CurrentPaneDomain,
         ..Default::default()

@@ -1,0 +1,62 @@
+# The `wezzy` command line: the session server, the ssh proxy the app connects
+# through, and pane commands. On a Linux host this binary is all of Wezzy; on
+# the Mac the app links the library and hands it any subcommand
+# (`Wezzy.app/Contents/MacOS/wezzy split …`).
+#
+# The WezTerm crates are pinned to the same commit as the app (`../Cargo.toml`):
+# the mux protocol has to match. Bump them together.
+[package]
+name = "wezzy-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "wezzy_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wezzy"
+path = "src/main.rs"
+
+[features]
+# the mux server (`wezzy server`); the app leaves it out, its session server is
+# the bundled wezterm-mux-server
+default = ["server"]
+server = ["dep:wezterm-mux-server-impl", "dep:env-bootstrap", "dep:umask", "dep:wezterm-blob-leases", "dep:mlua"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+libc = "0.2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+smol = "2"
+mlua = { version = "0.9", optional = true }
+
+codec = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+config = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+env-bootstrap = { optional = true, git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+mux = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+portable-pty = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6", features = ["serde_support"] }
+promise = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+umask = { optional = true, git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+wezterm-blob-leases = { optional = true, git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6", features = ["simple_tempdir"] }
+wezterm-client = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+wezterm-mux-server-impl = { optional = true, git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+termwiz-funcs = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "e68a8ec27727fbbda15e07f0a0737cd5e16481f6" }
+
+# WezTerm links the distro's OpenSSL on Linux. A host binary has to run on any
+# distro, so build it in (one libssl version or another is the most common
+# reason a Linux binary won't start).
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }
+
+# Built on its own (`cargo install --git … wezzy-cli`), it's its own workspace.
+[workspace]
+
+[profile.release]
+opt-level = 2

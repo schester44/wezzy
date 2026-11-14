@@ -14,6 +14,7 @@ use mux::{Mux, MuxNotification};
 use portable_pty::CommandBuilder;
 use promise::spawn::spawn_into_new_thread;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use wezterm_term::TerminalSize;
 
@@ -26,9 +27,162 @@ pub struct ClientInner {
     remote_to_local_tab: Mutex<HashMap<TabId, TabId>>,
     remote_to_local_pane: Mutex<HashMap<PaneId, PaneId>>,
     pub focused_remote_pane_id: Mutex<Option<PaneId>>,
+    /// wezzy: "devbox/" for a host's server. Its workspaces show up locally
+    /// with the prefix (two servers can both have a "default") and lose it on
+    /// the way back.
+    pub workspace_prefix: Option<String>,
+    /// wezzy: when each remote tab last had its pane sizes resent after a
+    /// refit. Each resend makes the server send TabResized, which resyncs;
+    /// if the server's layout stays inconsistent that loops (and floods the
+    /// connection) unless it's rate limited.
+    refit_resent: Mutex<HashMap<TabId, std::time::Instant>>,
+    /// wezzy: remote tabs with a resync scheduled for when their resend
+    /// interval ends (a resend was due but rate limited). At most one each.
+    refit_retry_pending: Mutex<HashSet<TabId>>,
+    /// wezzy: layout changes sent to the server and not answered yet (pane
+    /// resizes, kills). While any are in flight the server's tree is older
+    /// than ours, so a resync waits for them instead of applying it.
+    layout_in_flight: AtomicUsize,
+    /// wezzy: a resync was put off by `layout_in_flight`; run it once they land.
+    resync_deferred: AtomicBool,
 }
 
+/// wezzy: a host's basics, for a command whose environment was cleared
+/// (`for_host`), then the command itself ("$@").
+const HOST_ENV: &str = r#"u=$(id -un)
+[ -n "$PATH" ] || PATH=/usr/local/bin:/usr/bin:/bin
+[ -n "$HOME" ] || HOME=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
+[ -n "$HOME" ] || HOME=$(eval "echo ~$u")
+[ -n "$SHELL" ] || SHELL=$(getent passwd "$u" 2>/dev/null | cut -d: -f7)
+[ -n "$SHELL" ] || SHELL=/bin/sh
+[ -n "$LANG" ] || { [ -r /etc/default/locale ] && . /etc/default/locale; [ -n "$LANG" ] || LANG=C.UTF-8; }
+USER=$u LOGNAME=$u
+export PATH HOME SHELL LANG USER LOGNAME
+exec "$@""#;
+
+/// wezzy: a command for a host's server. A CommandBuilder carries this
+/// process's whole environment (this Mac's HOME, SHELL, PATH), and the server
+/// starts the command with it as is: a shell that isn't on the host, a home
+/// that isn't there. Keep only the variables the caller set, and have the
+/// host fill in its own basics first. A default program goes as no command,
+/// so the server starts its own with its own environment.
+fn for_host(
+    cmd: Option<CommandBuilder>,
+    command_dir: Option<String>,
+) -> (Option<CommandBuilder>, Option<String>) {
+    let Some(cmd) = cmd else {
+        return (None, command_dir);
+    };
+    let cwd = cmd.get_cwd().cloned();
+    if cmd.is_default_prog() {
+        let dir = command_dir.or_else(|| cwd.and_then(|c| c.into_string().ok()));
+        return (None, dir);
+    }
+    let mut argv: Vec<std::ffi::OsString> =
+        vec!["/bin/sh".into(), "-c".into(), HOST_ENV.into(), "sh".into()];
+    argv.extend(cmd.get_argv().iter().cloned());
+    let mut out = CommandBuilder::from_argv(argv);
+    out.env_clear();
+    for (k, v) in cmd.iter_extra_env_as_str() {
+        out.env(k, v);
+    }
+    if let Some(cwd) = cwd {
+        out.cwd(cwd);
+    }
+    (Some(out), command_dir)
+}
+
+/// wezzy: how often a tab's pane sizes may be resent after a refit.
+const REFIT_RESEND_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl ClientInner {
+    /// wezzy: `None` when `remote_tab_id`'s pane sizes may be resent now
+    /// (and records it), else how long until they may.
+    fn resend_sizes_wait(&self, remote_tab_id: TabId) -> Option<std::time::Duration> {
+        let now = std::time::Instant::now();
+        let mut map = self.refit_resent.lock().unwrap();
+        match map.get(&remote_tab_id) {
+            Some(last) if now.duration_since(*last) < REFIT_RESEND_INTERVAL => {
+                Some(REFIT_RESEND_INTERVAL - now.duration_since(*last))
+            }
+            _ => {
+                map.insert(remote_tab_id, now);
+                None
+            }
+        }
+    }
+
+    /// wezzy: a resend for `remote_tab_id` was due but rate limited: resync
+    /// once the interval is over, so the server doesn't stay wrong until some
+    /// unrelated event. Only one such timer per tab.
+    fn schedule_refit_retry(
+        self: &Arc<Self>,
+        remote_tab_id: TabId,
+        wait: std::time::Duration,
+    ) {
+        if !self.refit_retry_pending.lock().unwrap().insert(remote_tab_id) {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let domain_id = self.local_domain_id;
+        promise::spawn::spawn_into_main_thread(async move {
+            smol::Timer::after(wait).await;
+            if let Some(inner) = weak.upgrade() {
+                inner.refit_retry_pending.lock().unwrap().remove(&remote_tab_id);
+            }
+            let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+            let domain = mux
+                .get_domain(domain_id)
+                .ok_or_else(|| anyhow!("no such domain {domain_id}"))?;
+            match domain.downcast_ref::<ClientDomain>() {
+                Some(d) => d.resync().await,
+                None => Ok(()),
+            }
+        })
+        .detach();
+    }
+
+    /// wezzy: whether a resync should wait for our in-flight layout changes
+    /// (and is now flagged to run when the last one lands).
+    fn defer_resync(&self) -> bool {
+        if self.layout_in_flight.load(Ordering::SeqCst) == 0 {
+            return false;
+        }
+        self.resync_deferred.store(true, Ordering::SeqCst);
+        if self.layout_in_flight.load(Ordering::SeqCst) > 0 {
+            return true;
+        }
+        // they landed meanwhile: whoever finished may have missed the flag
+        self.resync_deferred.store(false, Ordering::SeqCst);
+        false
+    }
+
+    /// wezzy: a layout change is about to go to the server.
+    pub(crate) fn begin_layout_op(&self) {
+        self.layout_in_flight.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// wezzy: the server answered a layout change. When it was the last one,
+    /// run the resync it held back.
+    pub(crate) fn end_layout_op(&self) {
+        if self.layout_in_flight.fetch_sub(1, Ordering::SeqCst) == 1
+            && self.resync_deferred.swap(false, Ordering::SeqCst)
+        {
+            let domain_id = self.local_domain_id;
+            promise::spawn::spawn_into_main_thread(async move {
+                let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+                let domain = mux
+                    .get_domain(domain_id)
+                    .ok_or_else(|| anyhow!("no such domain {domain_id}"))?;
+                match domain.downcast_ref::<ClientDomain>() {
+                    Some(d) => d.resync().await,
+                    None => Ok(()),
+                }
+            })
+            .detach();
+        }
+    }
+
     fn remote_to_local_window(&self, remote_window_id: WindowId) -> Option<WindowId> {
         let map = self.remote_to_local_window.lock().unwrap();
         map.get(&remote_window_id).cloned()
@@ -246,6 +400,27 @@ impl ClientInner {
             remote_to_local_tab: Mutex::new(HashMap::new()),
             remote_to_local_pane: Mutex::new(HashMap::new()),
             focused_remote_pane_id: Mutex::new(None),
+            workspace_prefix: None,
+            refit_resent: Mutex::new(HashMap::new()),
+            refit_retry_pending: Mutex::new(HashSet::new()),
+            layout_in_flight: AtomicUsize::new(0),
+            resync_deferred: AtomicBool::new(false),
+        }
+    }
+
+    /// wezzy: the server's workspace name as it shows here.
+    pub fn local_workspace(&self, remote: &str) -> String {
+        match &self.workspace_prefix {
+            Some(p) => format!("{p}{remote}"),
+            None => remote.to_string(),
+        }
+    }
+
+    /// wezzy: a workspace name here as the server knows it.
+    pub fn remote_workspace(&self, local: &str) -> String {
+        match &self.workspace_prefix {
+            Some(p) => local.strip_prefix(p.as_str()).unwrap_or(local).to_string(),
+            None => local.to_string(),
         }
     }
 }
@@ -255,6 +430,7 @@ pub struct ClientDomain {
     label: String,
     inner: Mutex<Option<Arc<ClientInner>>>,
     local_domain_id: DomainId,
+    workspace_prefix: Option<String>,
 }
 
 async fn update_remote_workspace(
@@ -286,8 +462,17 @@ fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -
             new_workspace,
         } => {
             if let Some(inner) = client_domain.inner() {
-                let workspaces = Mux::get().iter_workspaces();
-                if workspaces.contains(&old_workspace) {
+                // wezzy: only a workspace with one of this server's windows
+                // (now under the new name); with several servers, renaming one
+                // host's "default" mustn't rename another's
+                let mux = Mux::get();
+                let ours = mux.iter_windows().into_iter().any(|w| {
+                    client_domain.local_to_remote_window_id(w).is_some()
+                        && mux.get_window(w).is_some_and(|w| w.get_workspace() == new_workspace)
+                });
+                if ours {
+                    let old_workspace = inner.remote_workspace(&old_workspace);
+                    let new_workspace = inner.remote_workspace(&new_workspace);
                     promise::spawn::spawn(async move {
                         inner
                             .client
@@ -320,6 +505,10 @@ fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -
                         .get_window(window_id)
                         .map(|w| w.get_workspace().to_string())
                     {
+                        let workspace = match domain.inner() {
+                            Some(inner) => inner.remote_workspace(&workspace),
+                            None => workspace,
+                        };
                         promise::spawn::spawn_into_main_thread(async move {
                             let request = codec::SetWindowWorkspace {
                                 window_id: remote_window_id,
@@ -405,7 +594,18 @@ impl ClientDomain {
             label,
             inner: Mutex::new(None),
             local_domain_id,
+            workspace_prefix: None,
         }
+    }
+
+    /// wezzy: show this server's workspaces as `<prefix><name>`.
+    pub fn with_workspace_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.workspace_prefix = Some(prefix.into());
+        self
+    }
+
+    pub fn workspace_prefix(&self) -> Option<&str> {
+        self.workspace_prefix.as_deref()
     }
 
     fn inner(&self) -> Option<Arc<ClientInner>> {
@@ -475,7 +675,18 @@ impl ClientDomain {
 
     pub async fn resync(&self) -> anyhow::Result<()> {
         if let Some(inner) = self.inner() {
+            // wezzy: our own resizes / kills haven't all landed, so the
+            // server's tree is older than the local one; applying it makes
+            // panes jump back and forth. Try again once they have. Checked
+            // before asking (no point fetching a tree we'd throw away) and
+            // again after, since ops can start while the request is out.
+            if inner.defer_resync() {
+                return Ok(());
+            }
             let panes = inner.client.list_panes().await?;
+            if inner.defer_resync() {
+                return Ok(());
+            }
             Self::process_pane_list(inner, panes, None)?;
         }
         Ok(())
@@ -545,7 +756,8 @@ impl ClientDomain {
             // wezzy: the server's split sizes can disagree with each other
             // (e.g. after panes were moved between tabs), leaving it unable
             // to split. Fit the tree to the tab and push the fixed sizes back.
-            let refit = fit_pane_tree(&mut tabroot, root_size);
+            let mut root_size = root_size;
+            let mut refit = fit_pane_tree(&mut tabroot, root_size);
 
             if let Some((remote_window_id, remote_tab_id)) = tabroot.window_and_tab_ids() {
                 let tab;
@@ -579,10 +791,27 @@ impl ClientDomain {
 
                 tab.set_title(tab_title);
 
+                // wezzy: same panes in the same arrangement as here: the sizes
+                // are ours to decide (we laid them out and sent them). The
+                // server's can be off, e.g. after a close, where the survivors'
+                // new sizes reach it while the closed pane is still in its
+                // tree. Keep ours and push them back if they differ.
+                let local = tab.codec_pane_tree();
+                if !has_zoom(&local)
+                    && !has_zoom(&tabroot)
+                    && same_shape(&inner, &tabroot, &local)
+                {
+                    root_size = tab.get_size();
+                    refit = copy_sizes(&mut tabroot, &local);
+                }
+                if !refit {
+                    inner.refit_resent.lock().unwrap().remove(&remote_tab_id);
+                }
+
                 log::debug!("domain: {} tree: {:#?}", inner.local_domain_id, tabroot);
                 let mut workspace = None;
                 tab.sync_with_pane_tree(root_size, tabroot, |entry| {
-                    workspace.replace(entry.workspace.clone());
+                    workspace.replace(inner.local_workspace(&entry.workspace));
                     remote_panes_to_forget.remove(&entry.pane_id);
                     if let Some(pane_id) = inner.remote_to_local_pane_id(entry.pane_id) {
                         match mux.get_pane(pane_id) {
@@ -629,47 +858,61 @@ impl ClientDomain {
                 });
 
                 if refit && tab.get_zoomed_pane().is_none() {
-                    log::warn!("tab {remote_tab_id}: server layout was inconsistent; resending pane sizes");
-                    for p in tab.iter_panes_ignoring_zoom() {
-                        if let Some(cp) = p.pane.downcast_ref::<ClientPane>() {
-                            cp.send_size(TerminalSize {
-                                rows: p.height,
-                                cols: p.width,
-                                pixel_width: p.pixel_width,
-                                pixel_height: p.pixel_height,
-                                dpi: root_size.dpi,
-                            });
+                    match inner.resend_sizes_wait(remote_tab_id) {
+                        None => {
+                            log::debug!("tab {remote_tab_id}: server layout differs from ours; resending pane sizes");
+                            for p in tab.iter_panes_ignoring_zoom() {
+                                if let Some(cp) = p.pane.downcast_ref::<ClientPane>() {
+                                    cp.send_size(TerminalSize {
+                                        rows: p.height,
+                                        cols: p.width,
+                                        pixel_width: p.pixel_width,
+                                        pixel_height: p.pixel_height,
+                                        dpi: root_size.dpi,
+                                    });
+                                }
+                            }
                         }
+                        Some(wait) => inner.schedule_refit_retry(remote_tab_id, wait),
                     }
                 }
 
                 if let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) {
-                    let mut window = mux
-                        .get_window_mut(local_window_id)
-                        .expect("no such window!?");
+                    if let Some(mut window) = mux.get_window_mut(local_window_id) {
+                        log::debug!(
+                            "domain: {} adding tab to existing local window {}",
+                            inner.local_domain_id,
+                            local_window_id
+                        );
+                        if window.get_tab_idx_for_id(tab.tab_id()).is_none() {
+                            window.push_tab(&tab);
+                        }
+                        // wezzy: the server's workspace wins
+                        if let Some(ws) = workspace.as_deref() {
+                            window.set_workspace(ws);
+                        }
+                        continue;
+                    }
+                    // wezzy: the local window went away (pruned here) while
+                    // the server still has it: forget it and find or make one
                     log::debug!(
-                        "domain: {} adding tab to existing local window {}",
+                        "domain: {} remote window {remote_window_id} mapped to \
+                         missing local window {local_window_id}; remapping",
                         inner.local_domain_id,
-                        local_window_id
                     );
-                    if window.get_tab_idx_for_id(tab.tab_id()).is_none() {
-                        window.push_tab(&tab);
-                    }
-                    // wezzy: the server's workspace wins
-                    if let Some(ws) = workspace.as_deref() {
-                        window.set_workspace(ws);
-                    }
-                    continue;
+                    inner
+                        .remote_to_local_window
+                        .lock()
+                        .unwrap()
+                        .remove(&remote_window_id);
                 }
 
                 if let Some(local_window_id) = primary_window_id {
                     // Verify that the workspace is consistent between the local and remote
-                    // windows
-                    if Some(
-                        mux.get_window(local_window_id)
-                            .expect("primary window to be valid")
-                            .get_workspace(),
-                    ) == workspace.as_deref()
+                    // windows (wezzy: a primary window that's gone isn't usable)
+                    if mux
+                        .get_window(local_window_id)
+                        .is_some_and(|w| Some(w.get_workspace()) == workspace.as_deref())
                     {
                         // Yes! We can use this window
                         log::debug!(
@@ -700,10 +943,9 @@ impl ClientDomain {
 
         for (remote_window_id, window_title) in panes.window_titles {
             if let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) {
-                let mut window = mux
-                    .get_window_mut(local_window_id)
-                    .expect("no such window!?");
-                window.set_title(&window_title);
+                if let Some(mut window) = mux.get_window_mut(local_window_id) {
+                    window.set_title(&window_title);
+                }
             }
         }
 
@@ -784,12 +1026,9 @@ impl ClientDomain {
         let threshold = domain.config.local_echo_threshold_ms();
         let overlay_lag_indicator = domain.config.overlay_lag_indicator();
 
-        let inner = Arc::new(ClientInner::new(
-            domain_id,
-            client,
-            threshold,
-            overlay_lag_indicator,
-        ));
+        let mut inner = ClientInner::new(domain_id, client, threshold, overlay_lag_indicator);
+        inner.workspace_prefix = domain.workspace_prefix.clone();
+        let inner = Arc::new(inner);
         *domain.inner.lock().unwrap() = Some(Arc::clone(&inner));
 
         Self::process_pane_list(inner, panes, primary_window_id)?;
@@ -849,7 +1088,8 @@ impl Domain for ClientDomain {
             .move_pane_to_new_tab(codec::MovePaneToNewTab {
                 pane_id: pane.remote_pane_id,
                 window_id: remote_window_id,
-                workspace_for_new_window,
+                workspace_for_new_window: workspace_for_new_window
+                    .map(|w| inner.remote_workspace(&w)),
             })
             .await?;
 
@@ -891,6 +1131,11 @@ impl Domain for ClientDomain {
             .get_window(window)
             .map(|w| w.get_workspace().to_string())
             .unwrap_or_else(|| Mux::get().active_workspace());
+        let workspace = inner.remote_workspace(&workspace);
+        let (command, command_dir) = match inner.workspace_prefix {
+            Some(_) => for_host(command, command_dir),
+            None => (command, command_dir),
+        };
 
         let result = inner
             .client
@@ -906,6 +1151,44 @@ impl Domain for ClientDomain {
 
         inner.record_remote_to_local_window_mapping(result.window_id, window);
 
+        let mux = Mux::get();
+
+        // wezzy: a resync (e.g. for the server's TabAddedToWindow) can land
+        // before this response and build the tab from ListPanes already;
+        // making another would show the pane twice.
+        let existing = inner
+            .remote_to_local_tab_id(result.tab_id)
+            .and_then(|id| mux.get_tab(id))
+            .filter(|_| {
+                inner
+                    .remote_to_local_pane_id(result.pane_id)
+                    .is_some_and(|id| mux.get_pane(id).is_some())
+            });
+        if let Some(tab) = existing {
+            let tab_id = tab.tab_id();
+            // that resync didn't know the new remote window was `window`,
+            // so it may have made a window of its own for the tab
+            if let Some(other) = mux.window_containing_tab(tab_id).filter(|w| *w != window) {
+                let now_empty = match mux.get_window_mut(other) {
+                    Some(mut w) => {
+                        w.remove_tab_id(tab_id);
+                        w.is_empty()
+                    }
+                    None => false,
+                };
+                if now_empty {
+                    mux.kill_window(other);
+                }
+            }
+            let in_window = mux
+                .get_window(window)
+                .is_some_and(|w| w.get_tab_idx_for_id(tab_id).is_some());
+            if !in_window {
+                mux.add_tab_to_window(&tab, window)?;
+            }
+            return Ok(tab);
+        }
+
         let pane: Arc<dyn Pane> = Arc::new(ClientPane::new(
             &inner,
             result.tab_id,
@@ -916,9 +1199,14 @@ impl Domain for ClientDomain {
         let tab = Arc::new(Tab::new(&size));
         tab.assign_pane(&pane);
         inner.remove_old_tab_mapping(result.tab_id);
+        if inner
+            .remote_to_local_pane_id(result.pane_id)
+            .is_some_and(|id| mux.get_pane(id).is_none())
+        {
+            inner.remove_old_pane_mapping(result.pane_id);
+        }
         inner.record_remote_to_local_tab_mapping(result.tab_id, tab.tab_id());
 
-        let mux = Mux::get();
         mux.add_tab_and_active_pane(&tab)?;
         mux.add_tab_to_window(&tab, window)?;
 
@@ -952,7 +1240,13 @@ impl Domain for ClientDomain {
             SplitSource::Spawn {
                 command,
                 command_dir,
-            } => (command, command_dir, None),
+            } => match inner.workspace_prefix {
+                Some(_) => {
+                    let (command, command_dir) = for_host(command, command_dir);
+                    (command, command_dir, None)
+                }
+                None => (command, command_dir, None),
+            },
             // wezzy: the server wants its own id for the pane being moved
             SplitSource::MovePane(move_pane_id) => {
                 let moving = mux
@@ -987,6 +1281,15 @@ impl Domain for ClientDomain {
             return mux
                 .get_pane(local)
                 .ok_or_else(|| anyhow!("local pane {local} is invalid"));
+        }
+
+        // wezzy: a resync that landed before this response may have built
+        // the new pane from ListPanes already; don't add a second one
+        if let Some(local) = inner.remote_to_local_pane_id(result.pane_id) {
+            match mux.get_pane(local) {
+                Some(existing) => return Ok(existing),
+                None => inner.remove_old_pane_mapping(result.pane_id),
+            }
         }
 
         let pane: Arc<dyn Pane> = Arc::new(ClientPane::new(
@@ -1093,6 +1396,68 @@ impl Domain for ClientDomain {
     }
 }
 
+/// wezzy: whether a tab tree has a zoomed pane.
+fn has_zoom(node: &PaneNode) -> bool {
+    match node {
+        PaneNode::Empty => false,
+        PaneNode::Leaf(e) => e.is_zoomed_pane,
+        PaneNode::Split { left, right, .. } => has_zoom(left) || has_zoom(right),
+    }
+}
+
+/// wezzy: whether the server's tree `remote` holds the same panes, split the
+/// same ways, as the local tab's tree `local`.
+fn same_shape(inner: &ClientInner, remote: &PaneNode, local: &PaneNode) -> bool {
+    let map = inner.remote_to_local_pane.lock().unwrap();
+    same_shape_by(remote, local, &|remote_id| map.get(&remote_id).copied())
+}
+
+/// wezzy: `same_shape` with the remote -> local pane id lookup passed in.
+fn same_shape_by(
+    remote: &PaneNode,
+    local: &PaneNode,
+    to_local: &dyn Fn(PaneId) -> Option<PaneId>,
+) -> bool {
+    match (remote, local) {
+        (PaneNode::Leaf(r), PaneNode::Leaf(l)) => to_local(r.pane_id) == Some(l.pane_id),
+        (
+            PaneNode::Split { left: rl, right: rr, node: rn },
+            PaneNode::Split { left: ll, right: lr, node: ln },
+        ) => {
+            rn.direction == ln.direction
+                && same_shape_by(rl, ll, to_local)
+                && same_shape_by(rr, lr, to_local)
+        }
+        _ => false,
+    }
+}
+
+/// wezzy: copies the sizes of `local` onto `remote` (the same shape); true if
+/// any differed.
+fn copy_sizes(remote: &mut PaneNode, local: &PaneNode) -> bool {
+    let dims = |s: &TerminalSize| (s.rows, s.cols);
+    match (remote, local) {
+        (PaneNode::Leaf(r), PaneNode::Leaf(l)) => {
+            let changed = dims(&r.size) != dims(&l.size);
+            r.size = l.size;
+            changed
+        }
+        (
+            PaneNode::Split { left: rl, right: rr, node: rn },
+            PaneNode::Split { left: ll, right: lr, node: ln },
+        ) => {
+            let mut changed =
+                dims(&rn.first) != dims(&ln.first) || dims(&rn.second) != dims(&ln.second);
+            rn.first = ln.first;
+            rn.second = ln.second;
+            changed |= copy_sizes(rl, ll);
+            changed |= copy_sizes(rr, lr);
+            changed
+        }
+        _ => false,
+    }
+}
+
 /// wezzy: make every split in `node` fit inside `size` (the first child keeps
 /// its extent where it can, the second takes the rest), and give each pane the
 /// size of its slot. Returns whether anything changed.
@@ -1141,5 +1506,319 @@ fn fit_pane_tree(node: &mut PaneNode, size: TerminalSize) -> bool {
             changed |= fit_pane_tree(right, second);
             changed
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mux::renderable::StableCursorPosition;
+    use mux::tab::{PaneEntry, SplitDirection, SplitDirectionAndSize};
+
+    fn sz(rows: usize, cols: usize) -> TerminalSize {
+        TerminalSize {
+            rows,
+            cols,
+            pixel_width: cols * 8,
+            pixel_height: rows * 16,
+            dpi: 72,
+        }
+    }
+
+    fn leaf(pane_id: PaneId, size: TerminalSize) -> PaneNode {
+        PaneNode::Leaf(PaneEntry {
+            window_id: 0,
+            tab_id: 0,
+            pane_id,
+            title: String::new(),
+            size,
+            working_dir: None,
+            is_active_pane: false,
+            is_zoomed_pane: false,
+            workspace: "default".into(),
+            cursor_pos: StableCursorPosition::default(),
+            physical_top: 0,
+            top_row: 0,
+            left_col: 0,
+            tty_name: None,
+        })
+    }
+
+    fn split(
+        direction: SplitDirection,
+        first: TerminalSize,
+        second: TerminalSize,
+        left: PaneNode,
+        right: PaneNode,
+    ) -> PaneNode {
+        PaneNode::Split {
+            left: Box::new(left),
+            right: Box::new(right),
+            node: SplitDirectionAndSize {
+                direction,
+                first,
+                second,
+            },
+        }
+    }
+
+    fn dims(s: &TerminalSize) -> (usize, usize) {
+        (s.rows, s.cols)
+    }
+
+    fn split_dims(node: &PaneNode) -> ((usize, usize), (usize, usize)) {
+        match node {
+            PaneNode::Split { node, .. } => (dims(&node.first), dims(&node.second)),
+            _ => panic!("not a split: {:?}", node),
+        }
+    }
+
+    fn leaf_dims(node: &PaneNode) -> (usize, usize) {
+        match node {
+            PaneNode::Leaf(e) => dims(&e.size),
+            _ => panic!("not a leaf: {:?}", node),
+        }
+    }
+
+    fn children(node: &PaneNode) -> (&PaneNode, &PaneNode) {
+        match node {
+            PaneNode::Split { left, right, .. } => (left, right),
+            _ => panic!("not a split: {:?}", node),
+        }
+    }
+
+    #[test]
+    fn fit_leaves_consistent_tree_alone() {
+        // 180 cols: 90 | divider | 89
+        let make = || {
+            split(
+                SplitDirection::Horizontal,
+                sz(50, 90),
+                sz(50, 89),
+                leaf(1, sz(50, 90)),
+                leaf(2, sz(50, 89)),
+            )
+        };
+        let mut tree = make();
+        assert!(!fit_pane_tree(&mut tree, sz(50, 180)));
+        assert_eq!(tree, make());
+    }
+
+    #[test]
+    fn fit_shrinks_children_wider_than_the_tab() {
+        // from the server log: a 180-col tab whose split claims 90 + 180
+        let mut tree = split(
+            SplitDirection::Horizontal,
+            sz(50, 90),
+            sz(50, 180),
+            leaf(1, sz(50, 90)),
+            leaf(2, sz(50, 180)),
+        );
+        assert!(fit_pane_tree(&mut tree, sz(50, 180)));
+        assert_eq!(split_dims(&tree), ((50, 90), (50, 89)));
+        let (l, r) = children(&tree);
+        assert_eq!(leaf_dims(l), (50, 90));
+        assert_eq!(leaf_dims(r), (50, 89));
+        // the pixel sizes follow the cells
+        match r {
+            PaneNode::Leaf(e) => assert_eq!((e.size.pixel_width, e.size.pixel_height), (89 * 8, 50 * 16)),
+            _ => unreachable!(),
+        }
+        // and a second pass finds nothing left to fix
+        assert!(!fit_pane_tree(&mut tree, sz(50, 180)));
+    }
+
+    #[test]
+    fn fit_clamps_a_first_child_wider_than_the_tab() {
+        let mut tree = split(
+            SplitDirection::Horizontal,
+            sz(50, 200),
+            sz(50, 10),
+            leaf(1, sz(50, 200)),
+            leaf(2, sz(50, 10)),
+        );
+        assert!(fit_pane_tree(&mut tree, sz(50, 180)));
+        // avail = 179; the first child is clamped so the second keeps a column
+        assert_eq!(split_dims(&tree), ((50, 178), (50, 1)));
+    }
+
+    #[test]
+    fn fit_nested_splits() {
+        // 180x50: left 90 | right 89, the right split top/bottom 25 + 24
+        // but the server thinks the right side is 180 wide
+        let mut tree = split(
+            SplitDirection::Horizontal,
+            sz(50, 90),
+            sz(50, 180),
+            leaf(1, sz(50, 90)),
+            split(
+                SplitDirection::Vertical,
+                sz(25, 180),
+                sz(24, 180),
+                leaf(2, sz(25, 180)),
+                leaf(3, sz(24, 180)),
+            ),
+        );
+        assert!(fit_pane_tree(&mut tree, sz(50, 180)));
+        let (_, right) = children(&tree);
+        assert_eq!(split_dims(right), ((25, 89), (24, 89)));
+        let (top, bottom) = children(right);
+        assert_eq!(leaf_dims(top), (25, 89));
+        assert_eq!(leaf_dims(bottom), (24, 89));
+
+        // once fitted, it's consistent and left alone
+        assert!(!fit_pane_tree(&mut tree, sz(50, 180)));
+        assert_eq!(split_dims(&tree), ((50, 90), (50, 89)));
+        assert_eq!(split_dims(children(&tree).1), ((25, 89), (24, 89)));
+    }
+
+    #[test]
+    fn fit_gives_up_without_room_to_split() {
+        // 2 cols: one for the divider leaves 1, under the 2 a split needs
+        for (dir, size) in [
+            (SplitDirection::Horizontal, sz(50, 2)),
+            (SplitDirection::Vertical, sz(2, 80)),
+        ] {
+            let make =
+                || split(dir, sz(50, 90), sz(50, 180), leaf(1, sz(1, 1)), leaf(2, sz(1, 1)));
+            let mut tree = make();
+            assert!(!fit_pane_tree(&mut tree, size));
+            assert_eq!(tree, make());
+        }
+    }
+
+    #[test]
+    fn fit_resizes_a_lone_leaf() {
+        let mut tree = leaf(1, sz(24, 80));
+        assert!(fit_pane_tree(&mut tree, sz(50, 180)));
+        assert_eq!(leaf_dims(&tree), (50, 180));
+        assert!(!fit_pane_tree(&mut tree, sz(50, 180)));
+        assert!(!fit_pane_tree(&mut PaneNode::Empty, sz(50, 180)));
+    }
+
+    #[test]
+    fn copy_sizes_unchanged_when_equal() {
+        let local = split(
+            SplitDirection::Horizontal,
+            sz(50, 90),
+            sz(50, 89),
+            leaf(10, sz(50, 90)),
+            leaf(11, sz(50, 89)),
+        );
+        let mut remote = split(
+            SplitDirection::Horizontal,
+            sz(50, 90),
+            sz(50, 89),
+            leaf(1, sz(50, 90)),
+            leaf(2, sz(50, 89)),
+        );
+        assert!(!copy_sizes(&mut remote, &local));
+    }
+
+    #[test]
+    fn copy_sizes_takes_local_sizes() {
+        let local = split(
+            SplitDirection::Horizontal,
+            sz(50, 90),
+            sz(50, 89),
+            leaf(10, sz(50, 90)),
+            split(
+                SplitDirection::Vertical,
+                sz(25, 89),
+                sz(24, 89),
+                leaf(11, sz(25, 89)),
+                leaf(12, sz(24, 89)),
+            ),
+        );
+        let mut remote = split(
+            SplitDirection::Horizontal,
+            sz(50, 90),
+            sz(50, 180),
+            leaf(1, sz(50, 90)),
+            split(
+                SplitDirection::Vertical,
+                sz(25, 180),
+                sz(24, 180),
+                leaf(2, sz(25, 180)),
+                leaf(3, sz(24, 180)),
+            ),
+        );
+        assert!(copy_sizes(&mut remote, &local));
+        assert_eq!(split_dims(&remote), ((50, 90), (50, 89)));
+        let (_, right) = children(&remote);
+        assert_eq!(split_dims(right), ((25, 89), (24, 89)));
+        let (top, bottom) = children(right);
+        assert_eq!(leaf_dims(top), (25, 89));
+        assert_eq!(leaf_dims(bottom), (24, 89));
+        // pane ids stay the server's
+        match top {
+            PaneNode::Leaf(e) => assert_eq!(e.pane_id, 2),
+            _ => unreachable!(),
+        }
+        assert!(!copy_sizes(&mut remote, &local));
+    }
+
+    #[test]
+    fn copy_sizes_detects_a_leaf_only_difference() {
+        let local = leaf(10, sz(50, 180));
+        let mut remote = leaf(1, sz(24, 80));
+        assert!(copy_sizes(&mut remote, &local));
+        assert_eq!(leaf_dims(&remote), (50, 180));
+    }
+
+    #[test]
+    fn has_zoom_finds_a_zoomed_leaf() {
+        let mut zoomed = leaf(2, sz(50, 89));
+        if let PaneNode::Leaf(e) = &mut zoomed {
+            e.is_zoomed_pane = true;
+        }
+        let plain = split(
+            SplitDirection::Horizontal,
+            sz(50, 90),
+            sz(50, 89),
+            leaf(1, sz(50, 90)),
+            leaf(2, sz(50, 89)),
+        );
+        assert!(!has_zoom(&plain));
+        assert!(!has_zoom(&PaneNode::Empty));
+        let nested = split(
+            SplitDirection::Horizontal,
+            sz(50, 90),
+            sz(50, 89),
+            leaf(1, sz(50, 90)),
+            split(
+                SplitDirection::Vertical,
+                sz(25, 89),
+                sz(24, 89),
+                leaf(3, sz(25, 89)),
+                zoomed,
+            ),
+        );
+        assert!(has_zoom(&nested));
+    }
+
+    #[test]
+    fn same_shape_compares_panes_and_directions() {
+        let map: HashMap<PaneId, PaneId> = HashMap::from([(1, 10), (2, 11)]);
+        let to_local = |id: PaneId| map.get(&id).copied();
+        let tree = |dir, a, b| {
+            split(dir, sz(50, 90), sz(50, 89), leaf(a, sz(50, 90)), leaf(b, sz(50, 89)))
+        };
+        let local = tree(SplitDirection::Horizontal, 10, 11);
+        assert!(same_shape_by(&tree(SplitDirection::Horizontal, 1, 2), &local, &to_local));
+        // sizes don't matter
+        let resized = split(
+            SplitDirection::Horizontal,
+            sz(50, 90),
+            sz(50, 180),
+            leaf(1, sz(50, 90)),
+            leaf(2, sz(50, 180)),
+        );
+        assert!(same_shape_by(&resized, &local, &to_local));
+        // swapped panes, other direction, unknown pane, different structure
+        assert!(!same_shape_by(&tree(SplitDirection::Horizontal, 2, 1), &local, &to_local));
+        assert!(!same_shape_by(&tree(SplitDirection::Vertical, 1, 2), &local, &to_local));
+        assert!(!same_shape_by(&tree(SplitDirection::Horizontal, 1, 3), &local, &to_local));
+        assert!(!same_shape_by(&leaf(1, sz(50, 180)), &local, &to_local));
     }
 }

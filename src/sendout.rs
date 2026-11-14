@@ -156,8 +156,8 @@ impl TermApp {
             cx.notify();
             return;
         }
-        let pane_ref = crate::session::remote_pane_id(from)
-            .map(|id| format!("pane {id}"))
+        let pane_ref = crate::session::server_pane(from)
+            .map(|p| format!("pane {p}"))
             .unwrap_or_else(|| "a pane".into());
         let cwd = src
             .get_current_working_dir(CachePolicy::AllowStale)

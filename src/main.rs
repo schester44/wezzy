@@ -56,12 +56,18 @@ use std::ffi::OsString;
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    if is_cli(&args) {
+        std::process::exit(wezzy_cli::main(args));
+    }
     paths::migrate_from_dekita();
     import_login_env();
+    install_cli();
     // Registers WezTerm's full Lua API (wezterm.mux, wezterm.plugin, wezterm.GLOBAL,
     // wezterm.time, wezterm.format, ...) so a real wezterm.lua can be evaluated.
     env_bootstrap::bootstrap();
     commands::register_lua(); // require("wezzy") in the config
+    commands::write_lua_types(); // completion for it in an editor
     config::designate_this_as_the_main_thread();
     install_schedulers();
 
@@ -135,6 +141,63 @@ fn import_login_env() {
     }
     if let Some(editor) = lines.next().filter(|e| !e.is_empty()) {
         std::env::set_var("EDITOR", editor);
+    }
+}
+
+/// `wezzy <command>`, or `wezzy` found on PATH (from a shell, with no
+/// subcommand: show the CLI's help rather than open a second app).
+fn is_cli(args: &[OsString]) -> bool {
+    if wezzy_cli::wants_cli(args) {
+        return true;
+    }
+    let argv0 = args.first().map(|a| std::path::Path::new(a)).unwrap_or(std::path::Path::new(""));
+    argv0.components().count() == 1 || argv0.starts_with(paths::data_dir().join("bin"))
+}
+
+/// Put the `wezzy` command on PATH: a link to this binary in
+/// ~/.local/share/wezzy/bin (beside the agent hook), first on PATH for the
+/// session server and everything it starts. A session server outlives app
+/// updates, so its panes keep the PATH it started with; for those (and other
+/// terminals) it's also linked into ~/.local/bin when that's on your PATH.
+fn install_cli() {
+    let bin = paths::data_dir().join("bin");
+    let link = bin.join("wezzy");
+    if let Ok(exe) = std::env::current_exe() {
+        relink(&link, &exe);
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    // the login shell's PATH (import_login_env), before ours goes in front
+    let user_bin = config::HOME_DIR.join(".local/bin");
+    if std::env::split_paths(&path).any(|p| p == user_bin) {
+        let user_link = user_bin.join("wezzy");
+        // only ours: never replace someone else's `wezzy`
+        let ours = match std::fs::symlink_metadata(&user_link) {
+            Err(_) => true,
+            Ok(m) => m.file_type().is_symlink() && std::fs::read_link(&user_link).is_ok_and(|t| t == link),
+        };
+        if ours {
+            relink(&user_link, &link);
+        }
+    }
+    if !std::env::split_paths(&path).any(|p| p == bin) {
+        let joined = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path)));
+        if let Ok(joined) = joined {
+            std::env::set_var("PATH", joined);
+        }
+    }
+}
+
+/// Point the symlink `link` at `target`, unless it already does.
+fn relink(link: &std::path::Path, target: &std::path::Path) {
+    if std::fs::read_link(link).ok().as_deref() == Some(target) {
+        return;
+    }
+    if let Some(dir) = link.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    std::fs::remove_file(link).ok();
+    if let Err(err) = std::os::unix::fs::symlink(target, link) {
+        log::warn!("linking {}: {err}", link.display());
     }
 }
 

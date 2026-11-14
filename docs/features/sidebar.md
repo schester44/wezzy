@@ -91,10 +91,7 @@ open) and hides it again when you're done. To give **Rename Agent** a key,
 bind `wezzy.action.RenameAgent`:
 
 ```lua
-local ok, wezzy = pcall(require, "wezzy")
-if ok then
-  table.insert(config.keys, { key = "r", mods = "CMD|ALT", action = wezzy.action.RenameAgent })
-end
+wezzy.bind("cmd+alt+r", wezzy.action.RenameAgent)
 ```
 
 To work through every agent that's waiting on you in one place, and see what
@@ -127,12 +124,9 @@ To choose every list and its order, name them top to bottom in
 `~/.config/wezzy/wezzy.lua`:
 
 ```lua
-local ok, wezzy = pcall(require, "wezzy")
-if ok then
-  wezzy.setup({
-    sidebar = { "agents", "actions", "servers" },
-  })
-end
+wezzy.setup({
+  sidebar = { "agents", "actions", "servers" },
+})
 ```
 
 or in `~/.config/wezzy/settings.json`:

@@ -4,7 +4,7 @@
 use crate::keys::{self, KeyState, Lookup};
 use crate::luawin;
 use config::keyassignment::{
-    KeyAssignment, PaneDirection, RotationDirection, SpawnCommand, SpawnTabDomain,
+    KeyAssignment, PaneDirection, SpawnCommand, SpawnTabDomain,
     SplitSize as CfgSplitSize,
 };
 use config::TermConfig;
@@ -33,7 +33,11 @@ use wezterm_term::{StableRowIndex, TerminalSize};
 // view drains it on the gpui foreground executor.
 
 pub enum AppEvent {
+    /// Something structural in the mux changed (panes, tabs, windows,
+    /// workspaces, titles...): prune, resync the badge and runs, repaint.
     MuxChanged,
+    /// A pane produced output: just repaint. Coalesced (`OUTPUT_DIRTY`).
+    PaneOutput,
     /// the active pane's view asked for its shortcut sheet
     ViewShortcuts,
     WindowReady(WindowId),
@@ -46,6 +50,8 @@ pub enum AppEvent {
     Flash(String),
     /// Something off the mux changed (git status, ...); just repaint.
     Redraw,
+    /// `SpawnCommandInNewPane` from the config: run it in a split.
+    SpawnInNewPane(SpawnCommand),
     RebuildFinished {
         ok: bool,
         dir: std::path::PathBuf,
@@ -88,14 +94,27 @@ pub enum AppEvent {
     NotificationClicked(PaneId),
     /// The git panel's pull request flow (`pr.rs`).
     PullRequest(crate::pr::PrEvent),
+    /// A host's server attached (`session::connect_host`): show one of its
+    /// windows, or open a shell there if it has none.
+    HostConnected {
+        name: String,
+        window: Option<WindowId>,
+    },
 }
 
 static EVENTS: OnceLock<smol::channel::Sender<AppEvent>> = OnceLock::new();
 static MUX_DIRTY: AtomicBool = AtomicBool::new(false);
+static OUTPUT_DIRTY: AtomicBool = AtomicBool::new(false);
 
 pub fn send_event(ev: AppEvent) {
-    // Pane output can arrive thousands of times a second; coalesce redraw requests.
-    if matches!(ev, AppEvent::MuxChanged) && MUX_DIRTY.swap(true, Ordering::AcqRel) {
+    // Pane output can arrive thousands of times a second, and mux changes come
+    // in bursts: one of each in the queue at a time.
+    let dirty = match ev {
+        AppEvent::MuxChanged => Some(&MUX_DIRTY),
+        AppEvent::PaneOutput => Some(&OUTPUT_DIRTY),
+        _ => None,
+    };
+    if dirty.is_some_and(|d| d.swap(true, Ordering::AcqRel)) {
         return;
     }
     if let Some(tx) = EVENTS.get() {
@@ -224,6 +243,9 @@ pub(crate) enum Overlay {
         detail: String,
         /// label of the confirming button
         verb: &'static str,
+        /// label of the declining button, when declining is a choice (it
+        /// runs `cancel`, on `n`; esc just closes). Default "Cancel".
+        cancel_verb: Option<&'static str>,
         action: KeyAssignment,
         cancel: Option<KeyAssignment>,
         pane_id: PaneId,
@@ -428,7 +450,7 @@ impl TermApp {
                     // many times a second; only the sidebar cares, and it can
                     // catch up on HIDDEN_OUTPUT_TICK.
                     if is_visible_pane(id) {
-                        send_event(AppEvent::MuxChanged);
+                        send_event(AppEvent::PaneOutput);
                     } else {
                         HIDDEN_OUTPUT.store(true, Ordering::Release);
                     }
@@ -485,7 +507,7 @@ impl TermApp {
                     loop {
                         executor.timer(HIDDEN_OUTPUT_TICK).await;
                         if HIDDEN_OUTPUT.swap(false, Ordering::AcqRel) {
-                            send_event(AppEvent::MuxChanged);
+                            send_event(AppEvent::PaneOutput);
                         }
                     }
                 }
@@ -661,6 +683,9 @@ impl TermApp {
                     }
                 }
             }
+            // repainted below; output never changes the mux's structure (a
+            // pane that exits arrives as PaneRemoved / TabResized / ...)
+            AppEvent::PaneOutput => OUTPUT_DIRTY.store(false, Ordering::Release),
             AppEvent::WindowReady(id) => {
                 let mux = Mux::get();
                 let in_active_ws = mux
@@ -669,6 +694,19 @@ impl TermApp {
                 if self.mux_window_id.is_none() || in_active_ws {
                     self.mux_window_id = Some(id);
                 }
+            }
+            AppEvent::HostConnected { name, window: host_window } => {
+                let mux = Mux::get();
+                match host_window.and_then(|w| mux.get_window(w).map(|w| w.get_workspace().to_string())) {
+                    Some(ws) => {
+                        mux.set_active_workspace(&ws);
+                        crate::session::remember_workspace(&ws);
+                        self.mux_window_id = host_window;
+                    }
+                    None => self.switch_workspace(Some(format!("{name}/default")), None),
+                }
+                self.region = crate::regions::Region::Terminal;
+                self.focus.focus(window);
             }
             AppEvent::ConfigReloaded => {
                 self.keys = KeyState::new(&config::configuration());
@@ -680,6 +718,7 @@ impl TermApp {
             AppEvent::Perform { pane_id, action } => self.perform(action, pane_id, window, cx),
             AppEvent::Clipboard(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
             AppEvent::Flash(msg) => self.flash(msg),
+            AppEvent::SpawnInNewPane(spawn) => self.spawn_in_new_pane(spawn, cx),
             // new agent touches or a new git snapshot
             AppEvent::Redraw => self.follow_step(),
             AppEvent::ViewShortcuts => {
@@ -810,13 +849,20 @@ impl TermApp {
         // the key that opens an overlay also closes it
         if let Some(c) = self.overlay_toggle_command(ev) {
             use crate::commands::AppCommand;
+            // a picker's key: closes it if it's showing, else switches to it
+            // (backspace on an empty query widens a picker to everything)
+            if let (Some(Overlay::Palette(state)), Some(scope)) = (&self.overlay, crate::palette::scope_for(c)) {
+                if state.scope == scope {
+                    self.overlay = None;
+                } else {
+                    self.open_palette(scope, cx);
+                }
+                cx.notify();
+                return;
+            }
             let closes = matches!(
                 (&self.overlay, c),
-                (Some(Overlay::Palette(_)), AppCommand::CommandPalette)
-                    | (Some(Overlay::Palette(_)), AppCommand::FindAgent)
-                    | (Some(Overlay::Palette(_)), AppCommand::FindTab)
-                    | (Some(Overlay::Palette(_)), AppCommand::SwitchWorkspace)
-                    | (Some(Overlay::Settings(_)), AppCommand::OpenSettings)
+                (Some(Overlay::Settings(_)), AppCommand::OpenSettings)
                     | (Some(Overlay::Queue(_)), AppCommand::AttentionQueue)
             );
             if closes {
@@ -994,6 +1040,11 @@ impl TermApp {
                     && matches!(action, KeyAssignment::QuitApplication);
                 match ks.key.as_str() {
                     "y" | "enter" => self.answer_confirm(true, window, cx),
+                    "escape" if matches!(self.overlay, Some(Overlay::Confirm { cancel_verb: Some(_), .. })) => {
+                        self.overlay = None;
+                        self.focus.focus(window);
+                        cx.notify();
+                    }
                     "n" | "escape" => self.answer_confirm(false, window, cx),
                     _ if quit_again => self.answer_confirm(true, window, cx),
                     _ => {}
@@ -1386,24 +1437,27 @@ impl TermApp {
             SetPaneZoomState(z) => tab.iter().for_each(|t| {
                 t.set_zoomed(z);
             }),
-            RotatePanes(dir) => tab.iter().for_each(|t| match dir {
-                RotationDirection::Clockwise => t.rotate_clockwise(),
-                RotationDirection::CounterClockwise => t.rotate_counter_clockwise(),
-            }),
+            // RotatePanes isn't handled: `Tab::rotate_*` only rotates the local
+            // tab, which the next resync undoes (architecture.md, "Layout
+            // changes must go through the server"). It flashes "not implemented".
             CloseCurrentPane { confirm } => {
                 if let (Some(tab), Some(pane)) = (tab, pane) {
-                    let ask = confirm && needs_confirmation(|| crate::procs::can_close_quietly(&pane));
-                    if ask {
+                    let now = confirm.then(|| crate::procs::now(&[pane.clone()]));
+                    let ask = now
+                        .as_ref()
+                        .is_some_and(|now| needs_confirmation(|| now.can_close_quietly(&pane)));
+                    if let (true, Some(now)) = (ask, &now) {
                         self.overlay = Some(Overlay::Confirm {
                             message: "Close this pane?".into(),
-                            detail: running_detail(&[pane.clone()]),
+                            detail: running_detail(now, &[pane.clone()]),
                             verb: "Close",
+                            cancel_verb: None,
                             action: CloseCurrentPane { confirm: false },
                             cancel: None,
                             pane_id: pane.pane_id(),
                         });
                     } else {
-                        tab.kill_pane(pane.pane_id());
+                        close_pane(&tab, &pane);
                         mux.prune_dead_windows();
                     }
                 }
@@ -1413,13 +1467,13 @@ impl TermApp {
                     let panes: Vec<_> =
                         tab.iter_panes_ignoring_zoom().into_iter().map(|p| p.pane).collect();
                     // a split tab always asks: closing it loses the layout too
-                    let ask = confirm
-                        && (panes.len() > 1
-                            || needs_confirmation(|| {
-                                panes.iter().all(crate::procs::can_close_quietly)
-                            }));
-                    if ask {
-                        let mut detail = running_detail(&panes);
+                    let now = confirm.then(|| crate::procs::now(&panes));
+                    let ask = now.as_ref().is_some_and(|now| {
+                        panes.len() > 1
+                            || needs_confirmation(|| panes.iter().all(|p| now.can_close_quietly(p)))
+                    });
+                    if let (true, Some(now)) = (ask, &now) {
+                        let mut detail = running_detail(now, &panes);
                         if detail.is_empty() && panes.len() > 1 {
                             detail = format!("{} panes", panes.len());
                         }
@@ -1427,6 +1481,7 @@ impl TermApp {
                             message: "Close this tab?".into(),
                             detail,
                             verb: "Close",
+                            cancel_verb: None,
                             action: CloseCurrentTab { confirm: false },
                             cancel: None,
                             pane_id: pane.pane_id(),
@@ -1589,6 +1644,10 @@ impl TermApp {
                 };
                 self.open_palette(scope, cx);
             }
+            // set up a host, or just ssh (hosts.rs)
+            EmitEvent(name) if crate::hosts::is_prompt_answer(&name) => {
+                self.answer_host_prompt(&name, window, cx)
+            }
             // a confirmed undo (runs.rs)
             EmitEvent(name) if crate::runs::confirmed_undo(&name).is_some() => {
                 if let Some(p) = &pane {
@@ -1617,6 +1676,7 @@ impl TermApp {
                         message: strip_escapes(&c.message),
                         detail: String::new(),
                         verb: "OK",
+                        cancel_verb: None,
                         action: *c.action,
                         cancel: c.cancel.map(|b| *b),
                         pane_id: pane.pane_id(),
@@ -1650,6 +1710,7 @@ impl TermApp {
                         message: "Quit Wezzy?".into(),
                         detail: String::new(),
                         verb: "Quit",
+                        cancel_verb: None,
                         action: QuitApplication,
                         cancel: None,
                         pane_id: pane.pane_id(),
@@ -1793,10 +1854,13 @@ impl TermApp {
         } else {
             // a saved workspace opens in its directory
             let spawn = spawn.or_else(|| crate::workspaces::saved(&name).map(|w| w.spawn()));
-            let domain = spawn
-                .as_ref()
-                .map(|s| s.domain.clone())
-                .unwrap_or(SpawnTabDomain::DefaultDomain);
+            // a host's workspace ("devbox/…") opens on that host
+            let domain = spawn.as_ref().map(|s| s.domain.clone()).unwrap_or_else(|| {
+                match crate::session::workspace_host(&name) {
+                    Some(host) => SpawnTabDomain::DomainName(crate::session::host_domain_name(&host)),
+                    None => SpawnTabDomain::DefaultDomain,
+                }
+            });
             self.spawn_tab(domain, spawn, Some(name.clone()));
             // WindowReady points us at the new window once its shell is up.
             self.mux_window_id = None;
@@ -2081,7 +2145,7 @@ async fn rebuild_tab(
     Ok((tab.tab_id(), window))
 }
 
-fn build_command(spawn: Option<&SpawnCommand>) -> (Option<CommandBuilder>, Option<String>) {
+pub(crate) fn build_command(spawn: Option<&SpawnCommand>) -> (Option<CommandBuilder>, Option<String>) {
     let Some(spawn) = spawn else {
         return (None, None);
     };
@@ -2129,12 +2193,22 @@ pub(crate) fn needs_confirmation(can_close_quietly: impl FnOnce() -> bool) -> bo
     }
 }
 
+/// Close one pane of `tab`. The server hears `KillPane` first: `kill_pane`
+/// resizes the survivors right away (a `Resize` each) and only removes the
+/// pane from the mux, which kills it, a tick later. Resizes applied while the
+/// dead pane is still in the server's tree leave it a pane wider than its
+/// tab. `ClientPane::kill` ignores the second call.
+pub(crate) fn close_pane(tab: &Tab, pane: &Arc<dyn Pane>) {
+    pane.kill();
+    tab.kill_pane(pane.pane_id());
+}
+
 /// "claude is still running" / "claude and node are still running"
-pub(crate) fn running_detail(panes: &[Arc<dyn Pane>]) -> String {
+pub(crate) fn running_detail(now: &crate::procs::Now, panes: &[Arc<dyn Pane>]) -> String {
     let mut names: Vec<String> = panes
         .iter()
         .filter(|p| !crate::views::is_view(p))
-        .filter_map(crate::procs::foreground_name)
+        .filter_map(|p| now.foreground_name(p))
         .map(|n| {
             std::path::Path::new(&n)
                 .file_name()

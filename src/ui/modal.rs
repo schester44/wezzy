@@ -66,6 +66,7 @@ impl TermApp {
                 message,
                 detail,
                 verb,
+                cancel_verb,
                 action,
                 ..
             } => {
@@ -109,7 +110,13 @@ impl TermApp {
                                 .border_t_1()
                                 .border_color(t.border)
                                 .bg(gpui::hsla(0., 0., 0., 0.14))
-                                .child(button("confirm-no", "Cancel", "esc", t, ButtonKind::Ghost).on_click(
+                                .child(button(
+                                    "confirm-no",
+                                    cancel_verb.unwrap_or("Cancel"),
+                                    if cancel_verb.is_some() { "n" } else { "esc" },
+                                    t,
+                                    ButtonKind::Ghost,
+                                ).on_click(
                                     cx.listener(|this, _: &ClickEvent, window, cx| {
                                         this.answer_confirm(false, window, cx)
                                     }),

@@ -49,11 +49,20 @@ impl UserData for GuiWin {
         methods.add_method("is_focused", |_, _, _: ()| Ok(true));
         methods.add_method(
             "perform_action",
-            |_, _, (action, pane): (KeyAssignment, UserDataRef<MuxPane>)| {
+            // pane is optional: without it, the active pane
+            |_, _, (action, pane): (KeyAssignment, Option<UserDataRef<MuxPane>>)| {
                 send_event(AppEvent::Perform {
-                    pane_id: Some(pane.0),
+                    pane_id: pane.map(|p| p.0),
                     action,
                 });
+                Ok(())
+            },
+        );
+        // wezzy.action.SpawnCommandInNewPane (src/lua/wezzy.lua)
+        methods.add_method(
+            "spawn_command_in_new_pane",
+            |_, _, spec: config::keyassignment::SpawnCommand| {
+                send_event(AppEvent::SpawnInNewPane(spec));
                 Ok(())
             },
         );

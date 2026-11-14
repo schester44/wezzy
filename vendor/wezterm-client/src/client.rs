@@ -48,7 +48,6 @@ enum ReaderMessage {
         pdu: Pdu,
         promise: Sender<anyhow::Result<Pdu>>,
     },
-    Readable,
 }
 
 #[derive(Clone)]
@@ -141,6 +140,22 @@ async fn process_unilateral_inner_async(
         .downcast_ref::<ClientDomain>()
         .ok_or_else(|| anyhow!("domain {} is not a ClientDomain instance", local_domain_id))?;
 
+    // wezzy: the server dropping a pane we don't have (we closed it, or
+    // never saw it) needs nothing: resyncing would only fail to find it. The
+    // stale mapping, if any, goes now rather than at the next resync's sweep.
+    if matches!(decoded.pdu, Pdu::PaneRemoved(_)) {
+        match client_domain.remote_to_local_pane_id(pane_id) {
+            None => return Ok(()),
+            Some(local) if mux.get_pane(local).is_none() => {
+                if let Ok(inner) = ClientDomain::get_client_inner_for_domain(local_domain_id) {
+                    inner.remove_old_pane_mapping(pane_id);
+                }
+                return Ok(());
+            }
+            Some(_) => {}
+        }
+    }
+
     // If we get a push for a pane that we don't yet know about,
     // it means that some other client has manipulated the mux
     // topology; we need to re-sync.
@@ -191,6 +206,10 @@ async fn process_unilateral_inner_async(
     client_pane.process_unilateral(decoded.pdu).await
 }
 
+/// wezzy: domains with a TabResized resync queued that hasn't started yet.
+static RESYNC_QUEUED: std::sync::Mutex<std::collections::BTreeSet<DomainId>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
 fn process_unilateral(
     local_domain_id: Option<DomainId>,
     decoded: DecodedPdu,
@@ -230,6 +249,10 @@ fn process_unilateral(
                 let local_window_id = client_domain
                     .remote_to_local_window_id(window_id)
                     .ok_or_else(|| anyhow!("no local window for remote window id {}", window_id))?;
+                let workspace = match client_domain.workspace_prefix() {
+                    Some(p) => format!("{p}{workspace}"),
+                    None => workspace,
+                };
                 if let Some(mut window) = mux.get_window_mut(local_window_id) {
                     window.set_workspace(&workspace);
                 }
@@ -270,7 +293,12 @@ fn process_unilateral(
             promise::spawn::spawn_into_main_thread(async move {
                 let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
                 log::debug!("got a rename {old_workspace} -> {new_workspace}");
-                mux.rename_workspace(&old_workspace, &new_workspace);
+                // wezzy: in this server's namespace
+                let prefix = mux
+                    .get_domain(local_domain_id)
+                    .and_then(|d| d.downcast_ref::<ClientDomain>().and_then(|c| c.workspace_prefix().map(String::from)))
+                    .unwrap_or_default();
+                mux.rename_workspace(&format!("{prefix}{old_workspace}"), &format!("{prefix}{new_workspace}"));
                 anyhow::Result::<()>::Ok(())
             })
             .detach();
@@ -299,7 +327,13 @@ fn process_unilateral(
         }
         Pdu::TabResized(_) | Pdu::TabAddedToWindow(_) => {
             log::trace!("resync due to {:?}", decoded.pdu);
+            // wezzy: one resync answers every one of these that arrives
+            // before it starts; a burst used to queue a ListPanes per PDU.
+            if !RESYNC_QUEUED.lock().unwrap().insert(local_domain_id) {
+                return Ok(());
+            }
             promise::spawn::spawn_into_main_thread(async move {
+                RESYNC_QUEUED.lock().unwrap().remove(&local_domain_id);
                 let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
                 let client_domain = mux
                     .get_domain(local_domain_id)
@@ -376,24 +410,69 @@ async fn client_thread_async(
 
     let mut stream = reconnectable.take_stream().unwrap();
 
-    loop {
-        let rx_msg = rx.recv();
-        let wait_for_read = stream
-            .wait_for_readable()
-            .map(|_| Ok(ReaderMessage::Readable));
+    // wezzy: encoded PDUs the socket hasn't taken yet. Writing never waits
+    // while there's something to read: the server's loop doesn't read while
+    // it writes either, so a burst in both directions used to fill both
+    // socket buffers and leave each side blocked writing to the other, for
+    // good (no more input, spawns or output).
+    // `sent` is how much of it the socket has taken: the buffer is cleared
+    // once all of it has gone, and only compacted when the sent prefix gets
+    // big, so a large paste through an 8 KB socket buffer isn't memmoved on
+    // every partial write.
+    let mut outbound: Vec<u8> = Vec::new();
+    let mut sent = 0usize;
+    const COMPACT_AT: usize = 1 << 20;
 
-        match smol::future::or(rx_msg, wait_for_read).await {
-            Ok(ReaderMessage::SendPdu { pdu, promise }) => {
+    enum Event {
+        Msg(Result<ReaderMessage, smol::channel::RecvError>),
+        Readable,
+        Writable,
+    }
+
+    loop {
+        while sent < outbound.len() {
+            match stream.write(&outbound[sent..]).now_or_never() {
+                Some(Ok(0)) => bail!("the server closed the connection"),
+                Some(Ok(n)) => sent += n,
+                Some(Err(err)) => return Err(err).context("writing a PDU to the server"),
+                None => break,
+            }
+        }
+        if sent == outbound.len() {
+            outbound.clear();
+            sent = 0;
+        } else if sent >= COMPACT_AT {
+            outbound.drain(..sent);
+            sent = 0;
+        }
+        if outbound.is_empty() {
+            if let Some(res) = stream.flush().now_or_never() {
+                res.context("flushing PDU to server")?;
+            }
+        }
+
+        let event = {
+            let rx_msg = rx.recv().map(Event::Msg);
+            let readable = stream.wait_for_readable().map(|_| Event::Readable);
+            if outbound.is_empty() {
+                smol::future::or(rx_msg, readable).await
+            } else {
+                let writable = stream.wait_for_writable().map(|_| Event::Writable);
+                smol::future::or(smol::future::or(rx_msg, readable), writable).await
+            }
+        };
+
+        match event {
+            Event::Writable => {}
+            Event::Msg(Ok(ReaderMessage::SendPdu { pdu, promise })) => {
                 let serial = next_serial;
                 next_serial += 1;
                 promises.map.insert(serial, promise);
 
-                pdu.encode_async(&mut stream, serial)
-                    .await
+                pdu.encode(&mut outbound, serial)
                     .context("encoding a PDU to send to the server")?;
-                stream.flush().await.context("flushing PDU to server")?;
             }
-            Ok(ReaderMessage::Readable) => {
+            Event::Readable => {
                 match Pdu::decode_async(&mut stream, Some(next_serial)).await {
                     Ok(decoded) => {
                         log::debug!(
@@ -427,7 +506,7 @@ async fn client_thread_async(
                     }
                 }
             }
-            Err(_) => {
+            Event::Msg(Err(_)) => {
                 return Err(NotReconnectableError::ClientWasDestroyed.into());
             }
         }
@@ -519,6 +598,7 @@ pub fn unix_connect_with_retry(
 #[async_trait(?Send)]
 pub trait AsyncReadAndWrite: Unpin + AsyncRead + AsyncWrite + std::fmt::Debug + Send {
     async fn wait_for_readable(&self) -> anyhow::Result<()>;
+    async fn wait_for_writable(&self) -> anyhow::Result<()>;
 }
 
 #[async_trait(?Send)]
@@ -532,6 +612,9 @@ where
 {
     async fn wait_for_readable(&self) -> anyhow::Result<()> {
         Ok(self.readable().await?)
+    }
+    async fn wait_for_writable(&self) -> anyhow::Result<()> {
+        Ok(self.writable().await?)
     }
 }
 

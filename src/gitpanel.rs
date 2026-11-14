@@ -40,6 +40,10 @@ use std::sync::Arc;
 /// hook record outlives a killed agent, so it only counts while something
 /// other than the shell is in the foreground.
 pub fn git_dir(pane: &Arc<dyn Pane>) -> Option<PathBuf> {
+    // a host's paths aren't on this disk (git over ssh: roadmap phase 2)
+    if crate::session::on_host(pane) {
+        return None;
+    }
     crate::hooks::state(pane.pane_id())
         .and_then(|h| h.cwd)
         .filter(|d| d.is_dir() && !crate::procs::can_close_quietly(pane))

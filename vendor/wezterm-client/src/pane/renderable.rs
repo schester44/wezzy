@@ -2,7 +2,7 @@ use crate::domain::ClientInner;
 use crate::pane::clientpane::ClientPane;
 use anyhow::anyhow;
 use codec::*;
-use config::{configuration, ConfigHandle};
+use config::configuration;
 use lru::LruCache;
 use mux::pane::PaneId;
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
@@ -360,10 +360,9 @@ impl RenderableInner {
         );
         self.seqno = delta.seqno;
 
-        let config = configuration();
         for (stable_row, line) in bonus_lines {
             log::trace!("bonus line {} seqno={}", stable_row, line.current_seqno());
-            self.put_line(stable_row, line, &config, None);
+            self.put_line(stable_row, line, None);
             dirty.remove(stable_row);
         }
 
@@ -423,15 +422,7 @@ impl RenderableInner {
     }
 
     pub fn make_all_stale(&mut self) {
-        let mut lines = LruCache::unbounded();
-        while let Some((stable_row, entry)) = self.lines.pop_lru() {
-            let entry = match entry {
-                LineEntry::Stale(old) | LineEntry::Line(old) => LineEntry::Stale(old),
-                entry => entry,
-            };
-            lines.put(stable_row, entry);
-        }
-        self.lines = lines;
+        mark_all_stale(&mut self.lines);
     }
 
     fn make_stale(&mut self, stable_row: StableRowIndex) {
@@ -445,15 +436,15 @@ impl RenderableInner {
         }
     }
 
+    // wezzy: no `scan_and_create_hyperlinks` here. The app doesn't read
+    // implicit hyperlinks (it finds links itself, src/quickselect.rs) and the
+    // scan ran the hyperlink regexes on the main thread for every line.
     fn put_line(
         &mut self,
         stable_row: StableRowIndex,
         mut line: Line,
-        config: &ConfigHandle,
         fetch_start: Option<Instant>,
     ) {
-        line.scan_and_create_hyperlinks(&config.hyperlink_rules);
-
         let entry = if let Some(fetch_start) = fetch_start {
             // If we're completing a fetch, only replace entries that were
             // set to fetching as part of our fetch.  If they are now longer
@@ -546,11 +537,9 @@ impl RenderableInner {
 
             match result {
                 Ok(lines) => {
-                    let config = configuration();
-
                     log::trace!("fetch complete for {:?} at {:?}", to_fetch, now);
                     for (stable_row, line) in lines.into_iter() {
-                        inner.put_line(stable_row, line, &config, Some(now));
+                        inner.put_line(stable_row, line, Some(now));
                     }
                 }
                 Err(err) => {
@@ -633,6 +622,23 @@ impl RenderableInner {
         })
         .detach();
         Ok(())
+    }
+}
+
+/// wezzy: mark every cached line stale, in place. Upstream rebuilt the cache
+/// as `LruCache::unbounded()`, so after the first resize / zoom / palette
+/// change it never evicted again and each later call walked every line the
+/// pane had ever shown. `iter_mut` keeps the capacity and the LRU order.
+fn mark_all_stale(lines: &mut LruCache<StableRowIndex, LineEntry>) {
+    let placeholder = Instant::now();
+    for (_, entry) in lines.iter_mut() {
+        if let LineEntry::Line(_) = entry {
+            if let LineEntry::Line(line) =
+                std::mem::replace(entry, LineEntry::Fetching(placeholder))
+            {
+                *entry = LineEntry::Stale(line);
+            }
+        }
     }
 }
 
@@ -856,5 +862,38 @@ impl RenderableState {
 
     pub fn get_dimensions(&self) -> RenderableDimensions {
         self.inner.borrow().dimensions
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_all_stale_keeps_capacity_and_order() {
+        let cap = NonZeroUsize::new(3).unwrap();
+        let mut lines = LruCache::new(cap);
+        let now = Instant::now();
+        lines.put(1, LineEntry::Line(Line::with_width(4, SEQ_ZERO)));
+        lines.put(2, LineEntry::Fetching(now));
+        lines.put(
+            3,
+            LineEntry::LineAndFetching(Line::with_width(4, SEQ_ZERO), now),
+        );
+        mark_all_stale(&mut lines);
+        assert_eq!(lines.cap(), cap);
+        let kinds: Vec<_> = lines.iter().map(|(k, e)| (*k, e.kind())).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (3, ("LineAndFetching", Some(now))),
+                (2, ("Fetching", Some(now))),
+                (1, ("Stale", None)),
+            ]
+        );
+        // still bounded: a fourth line evicts the least recently used
+        lines.put(4, LineEntry::Line(Line::with_width(4, SEQ_ZERO)));
+        assert_eq!(lines.len(), 3);
+        assert!(!lines.contains(&1));
     }
 }

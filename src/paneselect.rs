@@ -193,17 +193,19 @@ impl TermApp {
         if ps.was_zoomed && !closing_active {
             tab.set_zoomed(true);
         }
-        if crate::app::needs_confirmation(|| crate::procs::can_close_quietly(pane)) {
+        let now = crate::procs::now(std::slice::from_ref(pane));
+        if crate::app::needs_confirmation(|| now.can_close_quietly(pane)) {
             self.overlay = Some(Overlay::Confirm {
                 message: "Close this pane?".into(),
-                detail: crate::app::running_detail(&[pane.clone()]),
+                detail: crate::app::running_detail(&now, std::slice::from_ref(pane)),
                 verb: "Close",
+                cancel_verb: None,
                 action: KeyAssignment::CloseCurrentPane { confirm: false },
                 cancel: None,
                 pane_id: picked,
             });
         } else {
-            tab.kill_pane(picked);
+            crate::app::close_pane(tab, pane);
             Mux::get().prune_dead_windows();
         }
     }
@@ -282,7 +284,7 @@ async fn swap(tab_id: TabId, a: PaneId, b: PaneId) -> anyhow::Result<()> {
     .await;
     // the placeholder goes either way
     if let Some(tab) = mux.resolve_pane_id(t).and_then(|(_, _, tab)| mux.get_tab(tab)) {
-        tab.kill_pane(t);
+        crate::app::close_pane(&tab, &placeholder);
     }
     result
 }

@@ -19,9 +19,54 @@
 #    sizes disagreed (a pane wider than its tab), it resends every pane's size
 #    so the server rebuilds its splits and can split again.
 #    (src/domain.rs, ClientPane::send_size in src/pane/clientpane.rs)
+#    At most once per REFIT_RESEND_INTERVAL per tab: each resend brings back
+#    TabResized and another resync, which looped while the layout stayed off.
+#  - The local layout wins over a resync's while it's ours: a resync waits
+#    while our pane resizes / kills are unanswered (its tree predates them;
+#    applying it made dragged dividers jump), and when the server's tree has
+#    the same panes split the same ways, the local sizes are kept and resent
+#    if they differ (closing a pane left the server's sizes off). A refit that
+#    converges clears its resend rate limit. (src/domain.rs, layout_in_flight;
+#    ClientPane::send_size / kill)
+#  - One resync per burst of TabResized / TabAddedToWindow, not one each.
+#    (src/client.rs, RESYNC_QUEUED)
+#  - The client loop queues outgoing PDUs and keeps reading while the socket
+#    is full. Upstream awaits each write without reading; the server does the
+#    same, so a burst both ways could leave each blocked writing to the other
+#    for good. (src/client.rs, client_thread_async)
+#  - Commands spawned or split on a host's server (a domain with a workspace
+#    prefix) drop this process's environment, keeping only the variables the
+#    caller set, and run through /bin/sh to pick up the host's own HOME,
+#    SHELL, PATH, USER and LANG. (src/domain.rs, for_host)
+#  - A ClientDomain can carry a workspace prefix (with_workspace_prefix):
+#    a host's server's workspaces show up as "devbox/default" and lose the
+#    prefix on the way back (spawn, move, SetWindowWorkspace, renames). A
+#    local rename only goes to the server whose windows are in it.
+#    (src/domain.rs, src/client.rs)
 #  - Coalesced wheel events (WheelUp(n)) are sent as n single ticks: the
 #    terminal reports one wheel event regardless of n, so fast scrolling in
 #    mouse-reporting apps (nvim) dropped ticks and jumped. (src/pane/mousestate.rs)
+#  - ClientPane::kill sends KillPane at most once, and not at all for a pane the
+#    server already removed: the app kills a closing pane before resizing the
+#    survivors (so the server never sees their sizes with the dead pane still
+#    in its tree), and Mux::remove_pane kills it again. (src/pane/clientpane.rs)
+#  - A PaneFocused from the server is recorded as the focused pane before it's
+#    applied, so applying it doesn't send SetFocusedPane back; echoes of two
+#    quick focus changes re-sent each other forever. (src/pane/clientpane.rs)
+#  - make_all_stale marks lines stale in place; upstream rebuilt the line cache
+#    unbounded, so it never evicted again after the first resize / zoom /
+#    palette change. (src/pane/renderable.rs)
+#  - resize() compares against the size last asked of the server, not the
+#    pane's dimensions (which server deltas overwrite), and resizes are one in
+#    flight per pane, latest wins, under one layout op. send_size still always
+#    reaches the server. (src/pane/clientpane.rs, ResizeQueue)
+#  - No implicit hyperlink scan on received lines: the app finds links itself
+#    and the regexes ran on the main thread per line. (src/pane/renderable.rs)
+#  - A detached domain's panes don't send resizes: detaching removes them from
+#    their tabs one by one, growing the rest, and those sizes would overwrite
+#    the layout the server keeps for the next attach. (src/pane/clientpane.rs)
+#  - Pane writes are spawned like pastes instead of blocking the UI thread on
+#    the round trip. (src/pane/clientpane.rs, PaneWriter)
 [package]
 name = "wezterm-client"
 version = "0.1.0"

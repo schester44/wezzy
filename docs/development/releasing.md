@@ -156,3 +156,22 @@ The mux protocol must match the running session server. If the feed's
 it; it says so once per version. Releases that bump WezTerm need a note telling
 people to stop the server (`kill $(cat ~/.local/share/wezzy/pid)`) and install
 by hand.
+
+## Server binaries for remote hosts
+
+Setting a host up sends the host a Linux build of `wezzy` over ssh
+(`scripts/set-up-host.sh`), so the host needs no internet. The builds ship in
+the app, `Wezzy.app/Contents/Resources/server/wezzy-linux-{x86_64,aarch64}.tar.gz`:
+`bundle.sh` runs `scripts/build-server.sh` (Docker, `rust:1-bullseye`, glibc
+2.31, OpenSSL built in), which skips a build that's newer than everything in
+`cli/`. A release bundle (`--dist`) fails without Docker; a dev bundle uses
+whatever builds `target/server` has.
+
+A host with no matching build falls back to `install-server.sh`'s download from
+a release tagged `server-<pin>` (one per WezTerm pin), then to building from
+source. That release is optional; to publish it:
+
+```sh
+gh release create server-e68a8ec target/server/* -R schester44/wezzy \
+  --title "Wezzy server (wezterm e68a8ec)" --notes "Linux binaries for Set up"
+```

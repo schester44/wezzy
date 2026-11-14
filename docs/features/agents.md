@@ -84,10 +84,7 @@ To move it to another key, bind `wezzy.action.AttentionQueue` in
 `~/.config/wezzy/wezzy.lua`:
 
 ```lua
-local ok, wezzy = pcall(require, "wezzy")
-if ok then
-  table.insert(config.keys, { key = "a", mods = "LEADER", action = wezzy.action.AttentionQueue })
-end
+wezzy.bind("leader+a", wezzy.action.AttentionQueue)
 ```
 
 ## Details

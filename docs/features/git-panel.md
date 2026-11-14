@@ -194,12 +194,9 @@ Opening files uses your editor, `$EDITOR` by default. To pick another, set
 `editor` in `~/.config/wezzy/wezzy.lua`:
 
 ```lua
-local in_app, wezzy = pcall(require, "wezzy")
-if in_app then
-  wezzy.setup({
-    editor = { "nvim", "+{line}", "{file}" },
-  })
-end
+wezzy.setup({
+  editor = { "nvim", "+{line}", "{file}" },
+})
 ```
 
 ## Details

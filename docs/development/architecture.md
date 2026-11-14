@@ -39,13 +39,46 @@
   (`install_schedulers`), which that run loop drains.
 - **Mux → UI.** `Mux::subscribe` turns notifications into `AppEvent`s on a
   channel. `TermApp` drains it on the gpui foreground executor and calls
-  `cx.notify()`. Pane output is coalesced into one redraw; output from panes
-  not on screen (other tabs / workspaces) redraws at most every 500 ms.
+  `cx.notify()`. Pane output becomes `AppEvent::PaneOutput`, which only
+  repaints; at most one is queued at a time (`OUTPUT_DIRTY`), and output from
+  panes not on screen (other tabs / workspaces) sends one at most every 500 ms.
+  Every other notification (panes, tabs, windows, workspaces, titles) is
+  `AppEvent::MuxChanged`, also one queued at a time (`MUX_DIRTY`), which does
+  the structural upkeep: `prune_dead_windows`, the Dock badge,
+  `forget_closed_runs`, and falling back to another window when ours died.
+  A pane exiting arrives that way (`PaneRemoved`, `TabResized`, …), never as
+  output.
 - **No per-frame animations.** A gpui `Animation` repaints the whole window,
   every pane included, at display rate. `ui::spinner` steps on a 125 ms timer
   that only runs while a spinner was drawn.
-- **Background threads** (git polling, `lsof`, hook polling, builds) publish
-  through `send_event(AppEvent::…)` or shared snapshots under a mutex.
+- **Background threads** (git polling, `lsof`, hook polling, process lookups,
+  builds) publish through `send_event(AppEvent::…)` or shared snapshots under a
+  mutex.
+- **Nothing per pane per frame that scans or clones.** Render reads
+  snapshots. Process info comes from `procs.rs`'s snapshot (below); whether a
+  pane hosts a view comes from `Views::announced`, computed once per frame by
+  `Views::sync`, not from `views::is_view`, which copies the pane's user vars.
+
+## Process lookups (`procs.rs`)
+
+The mux protocol carries no process info, so the foreground process of a
+server pane is read from the macOS process table by its tty (`PANE_TTYS`,
+filled from `ListPanes` by `session::refresh_ttys`).
+
+- **One pass for all panes.** Reading the table is a `proc_pidinfo` call per
+  process on the machine. A `procs` thread does one pass per second over every
+  known tty and publishes a snapshot: per pane, its tty's foreground group
+  leader (pid, name, executable, argv) and every pid on the tty.
+  `foreground`, `is_vim`, `can_close_quietly` and `pane_pids` only read it.
+- **Idle:** the thread scans only while something read the snapshot in the
+  last 5s; a read after that wakes it.
+- **Fresh answers:** `procs::refresh` scans now on a blocking thread;
+  `refresh_ttys` awaits it whenever the tty map changed (attach, new panes), so
+  `views::recover_spec` sees reattached placeholders right away. Closing a
+  pane or tab asks `procs::now`, one synchronous pass for just those panes, so
+  the confirmation is decided on what's running at that moment.
+- **Local panes** (`WEZZY_LOCAL`) know their tty; asking about one adds it to
+  the scan for a while.
 
 ## Input
 
@@ -91,10 +124,43 @@ the whole UI follows the WezTerm color scheme.
 
 ## Sessions (`session.rs`)
 
+- **`cli/`** is the `wezzy` command, its own crate (and workspace) so it builds
+  on a Linux host with `cargo install --git … wezzy-cli`. Pane commands talk
+  the mux protocol through `wezterm_client::Client`; `server` (feature
+  `server`) wraps `wezterm-mux-server-impl` with a pid lock, a socket at
+  `~/.local/share/wezzy/server/<wezterm pin>/sock` and a systemd user unit;
+  `proxy` pipes stdio to that socket, starting the server first. The app links
+  it without `server` and hands it any subcommand in `main` (`is_cli`), and
+  links itself as `~/.local/share/wezzy/bin/wezzy`, first on the session
+  server's PATH (`install_cli`). The server outlives app updates and keeps the
+  PATH it started with, so the app also links `~/.local/bin/wezzy` to that
+  link when `~/.local/bin` is on the login PATH (never over a file that isn't
+  its own link).
+
 - The app is a client of `wezterm-mux-server`, using the bundled binary,
   `$WEZZY_MUX_SERVER`, or an installed WezTerm, in that order. The socket,
   pid and log are passed as `--config` overrides so the user's config stays
   free of plumbing.
+- **The config runs in both processes.** The `wezzy` Lua module is plain Lua
+  (`src/lua/wezzy.lua`): `setup` / `bind` build the WezTerm config builder
+  from one declarative table, and hand the app's options to
+  `settings::lua_setup` through a `settings` hook in its context table. The
+  app loads it with that hook (`commands::register_lua`). The server can't
+  run Rust from us, so its `--config-file` is `~/.local/share/wezzy/server.lua`
+  (`session::server_config`, rewritten on launch when it changes): it preloads
+  the same module source without the hook, with the app command names inlined,
+  then `dofile`s the user's config. Both end up with the same WezTerm config,
+  so `require("wezzy")` needs no `pcall`. A server started before this keeps
+  its old `--config-file` until it restarts.
+- **Actions with arguments** (`SpawnCommandInNewPane`) are functions in the
+  module that return an `action_callback`; the callback hands the arguments
+  to a method on the Lua `window` object (`luawin.rs`), which sends an
+  `AppEvent`. A plain app action is just `EmitEvent("wezzy.<id>")`.
+- **Editor types.** `src/lua/types.lua` is a LuaLS `---@meta` stub for the
+  module; `commands::write_lua_types` fills in a field per `AppCommand` and
+  writes it to `~/.local/share/wezzy/types/wezzy.lua` at startup. A test
+  checks it has a field for every option `setup` accepts, so a new option
+  needs one there too.
 - Every pane is a `ClientPane`. The protocol doesn't carry process info, so
   `session.rs` refreshes each pane's tty from `ListPanes` and `procs.rs` reads
   the foreground process for that tty from the macOS process table.
@@ -102,12 +168,38 @@ the whole UI follows the WezTerm color scheme.
   `ClientPane` didn't republish `SetUserVar`. `vendor/wezterm-client` fixes
   both, so `user-var-changed` handlers (smart-splits) work. It also fixes
   `split_pane` with `SplitSource::MovePane`, which sent the local pane id.
+- **Hosts.** A connected host is another `ClientDomain` named `host:<name>`:
+  a `UnixDomain` whose `proxy_command` is the system `ssh` running
+  `wezzy proxy` on the far side (`wezzy_cli::paths::ssh_proxy_argv`, wrapped
+  in `sh` so ssh's stderr lands in `~/.local/share/wezzy/hosts/<name>.log` for
+  the error toast). The vendored client gives it a workspace prefix
+  (`with_workspace_prefix("devbox/")`): workspaces come in as `devbox/default`
+  and lose the prefix on every request back. `connected-hosts` lists the ones
+  to reattach at launch.
+- **Pane ids belong to a server.** `$WEZTERM_PANE` and `ClientPane::remote_pane_id`
+  are the server's numbering, and two servers both have a pane 3.
+  `session::server_pane` returns `ServerPane { host, id }` (shown as
+  `devbox:3`); `local_pane_id` / `remote_pane_id` are only about this Mac's
+  server, which is the only one hook files, agent names and notifications come
+  from. `session::on_host(pane)` gates everything that reads the local disk at
+  a pane's cwd (git panel, Actions, ⌘-click paths, database discovery).
 - **Layout changes must go through the server.** The client rebuilds each
   tab's split tree from `ListPanes` on every resync (`TabResized`, which any
   pane resize can trigger), so a change made only to the local `Tab` (e.g.
   `Tab::swap_active_with_index`, `rotate_*`) is undone. The protocol can split,
   move a pane into a split (`MovePane`), and move a pane to a new tab or window;
   `paneselect.rs` builds swaps from those.
+- **Resync loops.** A resync that finds the server's split sizes inconsistent
+  resends every pane's size, and each resize brings back another `TabResized`.
+  The vendored client limits that resend to once every two seconds per tab
+  (a resend held back by the limit schedules one resync for when it ends) and
+  runs one resync per burst of `TabResized`. Anything else that answers a
+  resync by resizing needs the same kind of limit.
+- **The connection can't block on writes.** Upstream's client loop awaits each
+  write without reading, and the server's loop does the same. With 8 KB unix
+  socket buffers on macOS, a burst both ways left each side blocked writing to
+  the other, so input and spawns stopped while local keys still worked. The
+  vendored client queues outgoing PDUs and keeps reading (`client_thread_async`).
 - **Moving tabs:** no PDU moves a tab between windows. A tab that is its
   window's only tab moves with its window (`SetWindowWorkspace`, via
   `Window::set_workspace`). Any other tab is rebuilt in place: its first pane
@@ -130,12 +222,14 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
   that are set after the attach, so the placeholder never re-announces itself.
   To cover that, `cat` runs as a child rather than `exec`ed, which keeps the
   shell alive with the spec in its argv (`wezzy-view <title> <base64 spec>`).
-  `session::refresh_ttys` reads it back with `views::recover_spec` and seeds the
-  user var. Placeholders that `exec`ed `cat` are recovered from the title,
+  `session::refresh_ttys` reads it back with `views::recover_spec` (from a
+  fresh process snapshot, see "Process lookups") and seeds the user var. Placeholders that `exec`ed `cat` are recovered from the title,
   if it names a configured database.
-- **The app draws over it.** `Views::sync` (each frame) creates a `PaneView`
-  for every pane announcing one and drops those whose pane is gone. The canvas
-  skips painting their cells, and `pane_views` in `ui/terminal.rs` places each
+- **The app draws over it.** `Views::sync` (at the top of each render)
+  creates a `PaneView` for every pane announcing one, drops those whose pane
+  is gone, and records the announcing panes (`Views::announced`, which also
+  counts kinds this build can't draw). The canvas skips painting their cells
+  in the same frame, and `pane_views` in `ui/terminal.rs` places each
   view absolutely over its pane's rectangle, using the grid geometry from the
   previous paint.
 - **Keys:** the keymap still runs first (⌘ chords, leader, Ctrl+h/j/k/l);
@@ -144,8 +238,8 @@ Native gpui views (not terminals) that live in the normal tab/split layout.
 
 ## Agents
 
-- **Detection** (`agents.rs`): foreground process name/argv matches a known
-  harness, or a hook record exists.
+- **Detection** (`agents.rs`): foreground process name/argv (from the
+  `procs.rs` snapshot) matches a known harness, or a hook record exists.
 - **Status** (`hooks.rs`): each supported harness writes its latest
   lifecycle event to `~/.local/state/wezzy/agents/<WEZTERM_PANE>.json` as
   `{"harness", "pane", "ts", "payload"}`. Two wirings:
@@ -352,5 +446,6 @@ from render. Git work happens on short-lived threads.
 | Shells, agents, layout, scrollback | the session server (lives until killed) |
 | Active workspace | `~/.local/share/wezzy/last-workspace` |
 | App settings | `~/.config/wezzy/settings.json` |
+| Session server's config entry | `~/.local/share/wezzy/server.lua` (generated) |
 | Agent status | `~/.local/state/wezzy/agents/` |
 | Agent names | `~/.local/state/wezzy/agent-names.json` (keyed by server pane id + server pid) |

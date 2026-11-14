@@ -74,6 +74,13 @@ impl TermApp {
             .iter()
             .filter_map(|p| Some((p.pane.pane_id(), self.view_top(p.pane.pane_id())?)))
             .collect();
+        // view panes: their view is drawn over them (`pane_views`), so skip
+        // their cells. `Views::sync` ran at the top of this render.
+        let views: std::collections::HashSet<_> = panes
+            .iter()
+            .map(|p| p.pane.pane_id())
+            .filter(|id| self.views.announced(*id))
+            .collect();
         let grid = self.grid.clone();
         // dividers: a visible hairline at rest, accent while hovered / dragged
         let fg = render::color(palette.foreground);
@@ -123,7 +130,7 @@ impl TermApp {
                         l = format!("× {l}");
                     }
                     if ps.show_ids {
-                        if let Some(remote) = crate::session::remote_pane_id(*id) {
+                        if let Some(remote) = crate::session::server_pane(*id) {
                             l = format!("{l} {remote}");
                         }
                     }
@@ -217,7 +224,7 @@ impl TermApp {
                 let panes: Vec<_> = tab
                     .iter_panes()
                     .iter()
-                    .filter(|p| !crate::views::is_view(&p.pane))
+                    .filter(|p| !views.contains(&p.pane.pane_id()))
                     .map(|p| render::snapshot(p, tops.get(&p.pane.pane_id()).copied()))
                     .collect();
                 let painted: Vec<_> = splits

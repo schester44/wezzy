@@ -21,7 +21,10 @@ cargo test
   shell and agent, including the one you're running in.
 - WezTerm crates are git deps pinned to one commit (`e68a8ec`, matching the
   bundled `wezterm-mux-server`). Bump them all together or not at all; the mux
-  protocol must match the server.
+  protocol must match the server. That includes `cli/Cargo.toml`,
+  `cli/src/paths.rs` (`WEZTERM_REV`) and `scripts/install-server.sh` (`PIN`).
+- `cli/` builds on its own too: `cd cli && cargo build && cargo test`. Must stay
+  warning-free.
 
 ## Where things are
 
@@ -40,14 +43,15 @@ cargo test
 | `textfield.rs`, `ui/textfield.rs` | the git panel's text boxes (commit, comment, PR): cursor, selection, mouse, clipboard, undo |
 | `copymode.rs` | copy mode (Leader y): vim motions over scrollback, selection, search, copy |
 | `luawin.rs` | Lua `window` object for `action_callback` / `wezterm.on` handlers |
-| `commands.rs` | app commands (`AppCommand`), exposed to Lua as `require("wezzy").action.*` |
+| `commands.rs` | app commands (`AppCommand`), exposed to Lua as `require("wezzy").action.*`; loads the module |
+| `lua/wezzy.lua`, `lua/types.lua` | the `wezzy` Lua module: `setup{}` (declarative config → WezTerm config + app settings), `bind`, `action`; its LuaLS types, written to the data dir at startup |
 | `palette.rs`, `settings_ui.rs`, `regions.rs` | command palette, settings overlay, keyboard focus in side panels |
-| `session.rs` | attach to the session server (`wezterm-mux-server`), pane id mapping |
+| `session.rs` | attach to the session server (`wezterm-mux-server`) and to hosts' (`connect_host`), pane ids per server (`ServerPane`) |
 | `hooks.rs`, `agents.rs`, `procs.rs` | agent hook install/polling, agent detection + status, foreground process lookup |
 | `activity.rs`, `runs.rs`, `ui/run_card.rs` | agent runs: per-turn snapshots, stats and undo; the run card, the git panel's run filter, commit / review / undo actions |
 | `notify.rs` | macOS notifications and the Dock badge for agents waiting on you |
 | `launch.rs`, `recipes.rs` | harness launcher (⌘I), recipes |
-| `hosts.rs` | SSH hosts (⌘⇧S / "ssh …" in ⌘K): config + `~/.ssh/config` aliases |
+| `hosts.rs` | SSH hosts (⌘⇧S / "ssh …" in ⌘K): config + `~/.ssh/config` aliases; asking to set a host up when you pick it |
 | `workspaces.rs` | saved workspaces (name + cwd), the running + saved list behind the picker and sidebar menu |
 | `sidebar.rs`, `actions.rs` | sidebar sources (agents, servers, actions): which show, their items, ↵ / `o`; GitHub Actions runs via `gh` |
 | `servers.rs`, `sendout.rs`, `quickselect.rs`, `clipboard.rs` | dev servers, send output to agent, hints + ⌘-click, paste |
@@ -56,6 +60,9 @@ cargo test
 | `settings.rs`, `paths.rs`, `sound.rs`, `restart.rs` | settings.json + Lua `setup()`, file locations, chime, restart |
 | `update.rs` | automatic updates: polls the release feed, verifies and swaps in the new bundle |
 | `scripts/bundle.sh`, `scripts/rebuild.sh`, `scripts/release.sh` | build Wezzy.app; build + install in /Applications + restart the app; cut a signed, notarized draft release (`docs/development/releasing.md`) |
+| `cli/` | the `wezzy` command: pane commands, `-S <host>`, and on a Linux host the session server (`server`) and the ssh `proxy` the app connects through. Own crate; the app links it without `server` |
+| `scripts/set-up-host.sh`, `install-server.sh` | Setting a host up: send the host the app's Linux build of `wezzy` over ssh, then install it + its systemd service there (downloads or builds when there's no build for the host) |
+| `scripts/build-server.sh` | builds those Linux binaries (x86-64, ARM64) in Docker; `bundle.sh` puts them in the app. See `docs/development/releasing.md` |
 | `vendor/wezterm-client` | patched copy; see its `Cargo.toml` for the diff |
 | `config/wezzy.lua` | default config written on first run (embedded) |
 | `assets/` | icons (SVG, embedded), app icon, agent hook script |
@@ -67,15 +74,18 @@ cargo test
   (gpui owns the run loop). From background threads, talk to the UI with
   `app::send_event(AppEvent::…)`; never touch gpui state off the main thread.
 - **Mux notifications** (`Mux::subscribe` in `TermApp::new`) only enqueue
-  events. Pane output is coalesced (`MUX_DIRTY`) to avoid a redraw storm.
+  events. Pane output is its own event (`AppEvent::PaneOutput`, coalesced by
+  `OUTPUT_DIRTY`) and only repaints; structural changes are `MuxChanged`.
 - **Panes are usually remote.** In normal mode every pane is a `ClientPane`
   owned by the session server. Things that work on a `LocalPane` may not: no
   foreground process info (use `procs::foreground`), no semantic zones (read
   cell `semantic_type` instead), user vars only after attach (`seed_user_var`).
   `session::local_pane_id` / `remote_pane_id` convert between our ids and
   `$WEZTERM_PANE`.
-- **The config is evaluated twice:** by the app and by the session server. Only
-  the app has the `wezzy` Lua module, so config code must `pcall(require, "wezzy")`.
+- **The config is evaluated twice:** by the app and by the session server. Both
+  get the `wezzy` module (`src/lua/wezzy.lua`); the server through the
+  generated `server.lua` (`session::server_config`), without the app settings
+  hook. Keep the module plain Lua: nothing in it may need the app.
   Session-server settings (socket, pid, log) are passed on its command line in
   `session.rs`, not in the config.
 - **Keys:** user bindings win over `default_bindings()` (`or_insert`). App
@@ -106,7 +116,10 @@ cargo test
 - **An icon:** a 24×24 stroke SVG in `assets/icons/`, then add it to the
   `icons!` list and `Icon` enum in `ui/mod.rs`.
 - **A setting:** field + default in `Settings`, `Stored` + load/save in
-  `settings.rs`, a `Row` in `settings_ui.rs`.
+  `settings.rs`, a `Row` in `settings_ui.rs`. If Lua can set it, read it in
+  `lua_setup`, add its name to `APP` in `src/lua/wezzy.lua` (unknown
+  `setup` options are errors) and a field to `wezzy.Setup` in
+  `src/lua/types.lua` (a test checks).
 - **A sidebar source:** a `Source` + `Item` variant in `sidebar.rs`, its items
   and keys there, a row in `ui/sidebar.rs`; its poller idles unless
   `sidebar_enabled`.

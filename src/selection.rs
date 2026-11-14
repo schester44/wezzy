@@ -117,7 +117,7 @@ impl TermApp {
                     && (y as usize) < p.top + p.height
             }
         })?;
-        if crate::views::is_view(&p.pane) {
+        if self.views.announced(p.pane.pane_id()) {
             return None;
         }
         let col_f = (x - p.left as f32).clamp(0., p.width as f32);

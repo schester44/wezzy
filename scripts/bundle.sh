@@ -74,6 +74,24 @@ cp target/release/wezzy "$OUT/Contents/MacOS/wezzy"
 cp "$MUX_BIN" "$OUT/Contents/MacOS/wezterm-mux-server"
 cp assets/icon/wezzy.icns "$OUT/Contents/Resources/wezzy.icns"
 
+# Linux builds of `wezzy` that "Set up <host>" sends over ssh, so the host
+# needs no internet (scripts/build-server.sh, in Docker; a no-op when fresh).
+SERVER_BUILDS=(target/server/wezzy-linux-x86_64.tar.gz target/server/wezzy-linux-aarch64.tar.gz)
+if docker info >/dev/null 2>&1; then
+  scripts/build-server.sh
+elif [[ $DIST == 1 ]]; then
+  echo "error: a release needs the Linux server builds; start Docker" >&2
+  exit 1
+else
+  echo "==> no Docker: using existing Linux server builds, if any"
+fi
+if [[ -f ${SERVER_BUILDS[0]} && -f ${SERVER_BUILDS[1]} ]]; then
+  mkdir -p "$OUT/Contents/Resources/server"
+  cp "${SERVER_BUILDS[@]}" "$OUT/Contents/Resources/server/"
+else
+  echo "==> no Linux server builds: Set up will download them on the host"
+fi
+
 # Programs run in a terminal ask for permissions in the terminal's name; macOS
 # needs a reason string for each or it denies them without asking.
 usage() { echo "  <key>NS${1}UsageDescription</key><string>A program running in $APP_NAME wants to $2.</string>"; }

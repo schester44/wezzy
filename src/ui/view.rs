@@ -59,6 +59,7 @@ impl Render for TermApp {
                 && crate::settings::get().sidebar_enabled(crate::sidebar::Source::Actions))
             .then(|| {
                 pane.as_ref()
+                    .filter(|p| !crate::session::on_host(p))
                     .and_then(|p| p.get_current_working_dir(mux::pane::CachePolicy::AllowStale))
                     .map(|u| std::path::PathBuf::from(u.path()))
             })

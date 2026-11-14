@@ -31,7 +31,7 @@ impl TermApp {
     /// run card: the rows the card covers, less blank rows at the bottom
     /// (below the cursor), which can stay under it.
     pub(crate) fn card_lift(&self, tab: &Tab, p: &PositionedPane) -> usize {
-        if crate::views::is_view(&p.pane) {
+        if self.views.announced(p.pane.pane_id()) {
             return 0;
         }
         let Some(b) = self.shows_run_card(tab, p) else {

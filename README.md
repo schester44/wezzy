@@ -64,13 +64,18 @@ macOS only for now. Download `Wezzy.dmg` from the
 
 Exact agent status (Claude Code, Codex, pi, OpenCode) needs hooks: ⌘, → Agent hooks.
 
-Config lives in `~/.config/wezzy/` (`wezzy.lua` is WezTerm config, `settings.json` is the rest). Bind app actions like any WezTerm action:
+Config lives in `~/.config/wezzy/`: `wezzy.lua` for appearance, keys and the rest, `settings.json` for what ⌘, edits. See [Configuration](docs/features/config.md).
 
 ```lua
-local ok, wezzy = pcall(require, "wezzy")
-if ok then
-  table.insert(config.keys, { key = "b", mods = "CMD", action = wezzy.action.ToggleSidebar })
-end
+local wezzy = require("wezzy")
+
+local config = wezzy.setup({
+  window = { padding = 16, opacity = 0.9 },
+  keys = { { "cmd+b", wezzy.action.ToggleSidebar } },
+  workspaces = { { name = "wezzy", cwd = "~/work/wezzy" } },
+})
+
+return config
 ```
 
 ## Build

@@ -29,6 +29,19 @@ pub enum Scope {
     Hosts,
 }
 
+/// The picker an app command opens, if it opens one.
+pub fn scope_for(c: AppCommand) -> Option<Scope> {
+    Some(match c {
+        AppCommand::CommandPalette => Scope::All,
+        AppCommand::FindAgent => Scope::Agents,
+        AppCommand::FindTab => Scope::Tabs,
+        AppCommand::SwitchWorkspace => Scope::Workspaces,
+        AppCommand::RunRecipe => Scope::Recipes,
+        AppCommand::SshHost => Scope::Hosts,
+        _ => return None,
+    })
+}
+
 impl Scope {
     pub fn label(self) -> &'static str {
         match self {
@@ -50,7 +63,7 @@ impl Scope {
             Scope::Workspaces => kind == Kind::Workspace,
             Scope::Commands => matches!(kind, Kind::Command | Kind::Launch | Kind::Recipe),
             Scope::Recipes => kind == Kind::Recipe,
-            Scope::Hosts => kind == Kind::Host,
+            Scope::Hosts => matches!(kind, Kind::Remote | Kind::Host),
         }
     }
 }
@@ -61,6 +74,9 @@ pub enum Kind {
     Agent,
     Launch,
     Recipe,
+    /// Hosts running Wezzy's server (set up): their workspaces join yours.
+    Remote,
+    /// Plain ssh shortcuts.
     Host,
     Database,
     Tab,
@@ -75,6 +91,7 @@ impl Kind {
             Kind::Agent => "Agents",
             Kind::Launch => "New Agent",
             Kind::Recipe => "Recipes",
+            Kind::Remote => "Hosts",
             Kind::Host => "SSH",
             Kind::Database => "Databases",
             Kind::Tab => "Tabs",
@@ -99,6 +116,11 @@ pub enum PaletteAction {
     Recipe(String),
     /// Open an ssh session: ↵ splits, ⌘↵ opens a tab.
     Ssh(crate::hosts::Host),
+    /// Attach the host's session server: its workspaces join yours.
+    ConnectHost(crate::hosts::Host),
+    DisconnectHost(String),
+    /// Install `wezzy` on the host, in the background (also "Update").
+    SetUpHost(crate::hosts::Host),
     /// Open the SQL view on a database (and run `query`): ↵ opens a tab, ⌘↵ splits.
     Sql {
         conn: crate::views::sql::conn::Conn,
@@ -125,6 +147,8 @@ pub struct PaletteState {
     /// Picking a workspace to move this tab to (Move Tab to Workspace).
     pub move_tab: Option<TabId>,
     pub query: String,
+    /// ⌘A: the whole query is selected, so the next edit replaces it.
+    pub all_selected: bool,
     pub scope: Scope,
     pub selected: usize,
     pub scroll: ScrollHandle,
@@ -137,6 +161,7 @@ impl PaletteState {
             send_feedback: false,
             move_tab: None,
             query: String::new(),
+            all_selected: false,
             scope,
             selected: 0,
             scroll: ScrollHandle::new(),
@@ -231,8 +256,8 @@ impl TermApp {
                 kind: Kind::Agent,
                 title: format!("{} · {}", a.display_name(), a.project),
                 subtitle: {
-                    let pane = crate::session::remote_pane_id(a.pane_id)
-                        .map(|id| format!(" · pane {id}"))
+                    let pane = crate::session::server_pane(a.pane_id)
+                        .map(|p| format!(" · pane {p}"))
                         .unwrap_or_default();
                     // a named agent still says what it is
                     let kind = a.name.as_ref().map(|_| format!("{} · ", a.kind)).unwrap_or_default();
@@ -288,8 +313,30 @@ impl TermApp {
             });
         }
 
-        // ssh hosts
-        for (i, e) in crate::hosts::all().into_iter().enumerate() {
+        // Hosts with Wezzy's server: ↵ connects (or shows it). Update re-sends
+        // this app's build (a fix, or after an update).
+        let hosts = crate::hosts::all();
+        for e in hosts.iter().filter(|e| crate::hosts::is_set_up(&e.host.name)) {
+            let name = &e.host.name;
+            let mut rows = vec![(name.clone(), PaletteAction::ConnectHost(e.host.clone()))];
+            if crate::session::host_connected(name) {
+                rows.push((format!("Disconnect {name}"), PaletteAction::DisconnectHost(name.clone())));
+            }
+            rows.push((format!("Update {name}"), PaletteAction::SetUpHost(e.host.clone())));
+            for (title, action) in rows {
+                items.push(Item {
+                    kind: Kind::Remote,
+                    title,
+                    subtitle: e.target.clone(),
+                    shortcut: None,
+                    status: None,
+                    action,
+                });
+            }
+        }
+
+        // ssh shortcuts; ↵ on one without Wezzy's server asks to set it up
+        for (i, e) in hosts.iter().enumerate() {
             items.push(Item {
                 kind: Kind::Host,
                 title: e.host.name.clone(),
@@ -298,13 +345,16 @@ impl TermApp {
                     .then(|| self.keys.shortcut_for(&AppCommand::SshHost.action()))
                     .flatten(),
                 status: None,
-                action: PaletteAction::Ssh(e.host),
+                action: PaletteAction::Ssh(e.host.clone()),
             });
         }
 
         // databases: configured, then found in the projects you have open (the
         // active pane's first) and your saved workspaces
         let pane_cwd = |p: &std::sync::Arc<dyn mux::pane::Pane>| {
+            if crate::session::on_host(p) {
+                return None;
+            }
             p.get_current_working_dir(mux::pane::CachePolicy::AllowStale)
                 .map(|u| std::path::PathBuf::from(u.path()))
         };
@@ -465,17 +515,30 @@ impl TermApp {
             .into_iter()
             .filter_map(|item| {
                 let hay = format!("{} {}", item.title, item.subtitle);
-                let score = pattern.score(Utf32Str::new(&hay, &mut buf), &mut matcher)?;
+                // a section's name finds everything in it ("recipes", "tabs")
+                let section = section_matches(item.kind, query)
+                    .then(|| pattern.score(Utf32Str::new(item.kind.section(), &mut buf), &mut matcher))
+                    .flatten();
+                let own = pattern.score(Utf32Str::new(&hay, &mut buf), &mut matcher);
+                let score = own.or(section)?;
                 // a hit on the name outranks one on the subtitle (e.g. "default"
                 // finds the workspace before every pane that lives in it)
                 let title = pattern
                     .score(Utf32Str::new(&item.title, &mut buf), &mut matcher)
                     .map_or(0, |s| s * 2);
                 let bonus = if item.kind == Kind::Workspace { score / 2 } else { 0 };
-                Some((score.max(title) + bonus, item))
+                Some((score.max(title).max(section.unwrap_or(0)) + bonus, item))
             })
             .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.kind.cmp(&b.1.kind)));
+        if grouped(query) {
+            // a section's name: sections with their titles, that one first
+            scored.sort_by(|a, b| {
+                let key = |k: Kind| (!section_matches(k, query), k);
+                key(a.1.kind).cmp(&key(b.1.kind)).then(b.0.cmp(&a.0))
+            });
+        } else {
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.kind.cmp(&b.1.kind)));
+        }
         let mut out: Vec<Item> = scored.into_iter().map(|(_, i)| i).collect();
         if let Some(item) = adhoc_ssh(state.scope, query, &out) {
             out.push(item);
@@ -539,8 +602,10 @@ impl TermApp {
                         } else {
                             crate::launch::Placement::Split
                         };
-                        self.open_ssh(&host, placement, window, cx);
-                        self.focus.focus(window);
+                        self.pick_host(&host, placement, window, cx);
+                        if self.overlay.is_none() {
+                            self.focus.focus(window);
+                        }
                     }
                     Some(PaletteAction::Sql { conn, query }) => {
                         self.open_sql(&conn, query, m.platform, window, cx);
@@ -588,11 +653,23 @@ impl TermApp {
                 state.selected = (state.selected + 1).min(count.saturating_sub(1));
                 moved = true;
             }
-            "backspace" => {
-                if state.query.is_empty() {
-                    state.scope = Scope::All;
-                } else if m.alt || m.platform {
+            "a" if m.platform => state.all_selected = !state.query.is_empty(),
+            "c" | "x" if m.platform => {
+                if state.all_selected {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(state.query.clone()));
+                    if ks.key == "x" {
+                        state.query.clear();
+                        state.all_selected = false;
+                        state.selected = 0;
+                    }
+                }
+            }
+            "left" | "right" | "home" | "end" => state.all_selected = false,
+            "backspace" | "delete" => {
+                if std::mem::take(&mut state.all_selected) || m.alt || m.platform {
                     state.query.clear();
+                } else if state.query.is_empty() {
+                    state.scope = Scope::All;
                 } else {
                     state.query.pop();
                 }
@@ -600,12 +677,18 @@ impl TermApp {
             }
             "v" if m.platform => {
                 if let Some(t) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                    if std::mem::take(&mut state.all_selected) {
+                        state.query.clear();
+                    }
                     state.query.push_str(t.lines().next().unwrap_or(""));
                     state.selected = 0;
                 }
             }
             _ if !m.control && !m.platform => {
                 if let Some(c) = &ks.key_char {
+                    if std::mem::take(&mut state.all_selected) {
+                        state.query.clear();
+                    }
                     if c == ">" && state.query.is_empty() {
                         state.scope = Scope::Commands; // VS Code style
                     } else {
@@ -629,7 +712,7 @@ impl TermApp {
         let Some(Overlay::Palette(state)) = &self.overlay else {
             return selected;
         };
-        if !state.query.trim().is_empty() {
+        if !grouped(&state.query) {
             return selected;
         }
         let results = self.palette_results();
@@ -675,8 +758,16 @@ impl TermApp {
                 self.run_recipe(&name, crate::launch::Placement::Split, window, cx)
             }
             PaletteAction::Ssh(host) => {
-                self.open_ssh(&host, crate::launch::Placement::Split, window, cx)
+                self.pick_host(&host, crate::launch::Placement::Split, window, cx)
             }
+            PaletteAction::ConnectHost(host) => {
+                if !crate::session::host_connected(&host.name) {
+                    self.flash(format!("Connecting {}", host.name));
+                }
+                crate::session::connect_host(host);
+            }
+            PaletteAction::DisconnectHost(name) => crate::session::disconnect_host(&name),
+            PaletteAction::SetUpHost(host) => self.set_up_host(&host, false, window, cx),
             PaletteAction::Sql { conn, query } => self.open_sql(&conn, query, false, window, cx),
         }
         self.focus.focus(window);
@@ -864,6 +955,25 @@ fn adhoc_ssh(scope: Scope, query: &str, results: &[Item]) -> Option<Item> {
             ssh: target.to_string(),
         }),
     })
+}
+
+/// Whether results show under section titles: no query, or a section's name.
+pub(crate) fn grouped(query: &str) -> bool {
+    use Kind::*;
+    let query = query.trim();
+    query.is_empty()
+        || [Agent, Launch, Recipe, Remote, Host, Database, Tab, Window, Workspace, Command]
+            .into_iter()
+            .any(|k| section_matches(k, query))
+}
+
+/// The query is the start of the section's name: "rec" / "recipes" for Recipes.
+fn section_matches(kind: Kind, query: &str) -> bool {
+    let section = kind.section();
+    query.len() >= 3
+        && section.len() >= query.len()
+        && section.is_char_boundary(query.len())
+        && section[..query.len()].eq_ignore_ascii_case(query)
 }
 
 /// "sql neverwait select * from users": open that database and run the query.

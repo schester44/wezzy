@@ -45,15 +45,12 @@ Give a workspace a name and a folder, and it's always in the list, even when it
 isn't open:
 
 ```lua
-local in_app, wezzy = pcall(require, "wezzy")
-if in_app then
-  wezzy.setup({
-    workspaces = {
-      { name = "neverwait", cwd = "~/work/neverwait" },
-      { name = "wezzy", cwd = "~/work/wezzy" },
-    },
-  })
-end
+wezzy.setup({
+  workspaces = {
+    { name = "neverwait", cwd = "~/work/neverwait" },
+    { name = "wezzy", cwd = "~/work/wezzy" },
+  },
+})
 ```
 
 Put this in `~/.config/wezzy/wezzy.lua`. You can also list them in

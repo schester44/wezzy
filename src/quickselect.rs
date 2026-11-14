@@ -407,6 +407,10 @@ impl TermApp {
             cx.open_url(&m.text);
             return true;
         }
+        // a path on a host isn't a file here
+        if crate::session::on_host(pane) {
+            return false;
+        }
         let (path, line_no, col_no) = split_location(&m.text);
         let cwd = pane
             .get_current_working_dir(CachePolicy::AllowStale)

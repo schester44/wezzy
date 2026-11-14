@@ -93,7 +93,8 @@ fn create(spec: &str) -> Option<Box<dyn PaneView>> {
     }
 }
 
-/// The pane's view spec, if it hosts one.
+/// The pane's view spec, if it hosts one. Clones the pane's user vars: from
+/// render, ask `Views::announced` instead.
 pub fn spec(pane: &Arc<dyn Pane>) -> Option<String> {
     pane.copy_user_vars().get(USER_VAR).cloned()
 }
@@ -139,7 +140,8 @@ pub fn spawn_command(kind: &str, args: &str, title: &str) -> SpawnCommand {
 /// we reattached to, whose `WEZZY_VIEW` user var we never saw.
 pub fn recover_spec(pane: &Arc<dyn Pane>) -> Option<String> {
     use base64::Engine;
-    let info = crate::procs::foreground_now(pane)?;
+    // the process snapshot; `session::refresh_ttys` takes a fresh one first
+    let info = crate::procs::foreground(pane)?;
     if info.argv.get(3).map(String::as_str) == Some(ARGV0) {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(info.argv.get(5)?)
@@ -163,11 +165,15 @@ pub fn recover_spec(pane: &Arc<dyn Pane>) -> Option<String> {
 #[derive(Default)]
 pub struct Views {
     views: HashMap<PaneId, (String, Box<dyn PaneView>)>,
+    /// Every pane announcing a view as of the last `sync`, with its spec,
+    /// including kinds this build doesn't know.
+    announced: HashMap<PaneId, String>,
 }
 
 impl Views {
     /// Create views for panes that announced one; drop those whose pane closed
-    /// (or whose spec changed).
+    /// (or whose spec changed). Runs at the start of each render, so render
+    /// code asks `announced` / `has` rather than reading user vars.
     pub fn sync(&mut self) {
         let Some(mux) = Mux::try_get() else { return };
         let mut live = HashMap::new();
@@ -178,17 +184,28 @@ impl Views {
         }
         self.views
             .retain(|id, (s, _)| live.get(id).is_some_and(|l| l == s));
-        for (id, s) in live {
-            if self.views.contains_key(&id) {
+        for (id, s) in &live {
+            if self.views.contains_key(id) {
                 continue;
             }
-            match create(&s) {
+            match create(s) {
                 Some(v) => {
-                    self.views.insert(id, (s, v));
+                    self.views.insert(*id, (s.clone(), v));
                 }
-                None => log::warn!("pane {id}: unknown view {s:?}"),
+                None if self.announced.get(id) != Some(s) => {
+                    log::warn!("pane {id}: unknown view {s:?}")
+                }
+                None => {}
             }
         }
+        self.announced = live;
+    }
+
+    /// The pane announced a view (as of the last `sync`), even one of a kind
+    /// this build can't draw: its cells are the placeholder's, not worth
+    /// painting or selecting. `views::is_view` without the user-var copy.
+    pub fn announced(&self, pane_id: PaneId) -> bool {
+        self.announced.contains_key(&pane_id)
     }
 
     pub fn shortcuts(&self, pane_id: PaneId) -> Option<(&'static str, Vec<Vec<crate::shortcuts::Group>>)> {

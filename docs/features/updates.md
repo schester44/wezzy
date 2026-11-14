@@ -22,12 +22,9 @@ Updates are on unless you turn them off. To turn them off, set it in Settings
 (⌘,), or in `~/.config/wezzy/wezzy.lua`:
 
 ```lua
-local ok, wezzy = pcall(require, "wezzy")
-if ok then
-  wezzy.setup({
-    auto_update = false,
-  })
-end
+wezzy.setup({
+  auto_update = false,
+})
 ```
 
 or in `~/.config/wezzy/settings.json`:

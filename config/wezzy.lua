@@ -1,25 +1,22 @@
--- Wezzy config: full WezTerm config syntax (https://wezterm.org/config/files.html).
--- App settings live in ⌘, — this file is for appearance and keys.
+-- Wezzy config. App settings also live in ⌘, (settings.json); this file wins.
+-- Keys are built in: Leader (⌃A) ? lists them all. Keys here override them
+-- one at a time.
 
-local wezterm = require("wezterm")
-local config = wezterm.config_builder()
+local wezzy = require("wezzy")
 
-config.color_scheme = "Tokyo Night"
-config.font = wezterm.font_with_fallback({ "JetBrains Mono", "Menlo" })
-config.font_size = 14
-config.window_background_opacity = 0.94
-config.window_padding = { left = 16, right = 16, top = 12, bottom = 12 }
-config.default_cursor_style = "BlinkingBar"
-config.enable_kitty_keyboard = true
+local config = wezzy.setup({
+	color_scheme = "Tokyo Night",
+	font = { family = { "JetBrains Mono", "Menlo" }, size = 14 },
+	cursor = "BlinkingBar",
+	window = {
+		padding = { left = 16, right = 16, top = 12, bottom = 12 },
+		opacity = 0.94,
+	},
+	wezterm = { enable_kitty_keyboard = true },
 
--- Keys are built in: Leader (⌃A) ? lists them all. Bindings here override
--- them one key at a time. App actions bind like any WezTerm action (the
--- session server evaluates this file too, without the wezzy module, hence the
--- pcall):
---
--- local ok, wezzy = pcall(require, "wezzy")
--- if ok then
---   config.keys = { { key = "b", mods = "CMD", action = wezzy.action.ToggleSidebar } }
--- end
+	-- keys = {
+	--   { "cmd+b", wezzy.action.ToggleSidebar },
+	-- },
+})
 
 return config

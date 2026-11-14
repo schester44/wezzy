@@ -224,14 +224,11 @@ each one is named after its folder too (`neverwait-api`).
 To add databases by name, in `~/.config/wezzy/wezzy.lua`:
 
 ```lua
-local in_app, wezzy = pcall(require, "wezzy")
-if in_app then
-  wezzy.setup({
-    databases = {
-      { name = "prod", url = "postgresql://readonly@db.example.com/app?sslmode=require" },
-    },
-  })
-end
+wezzy.setup({
+  databases = {
+    { name = "prod", url = "postgresql://readonly@db.example.com/app?sslmode=require" },
+  },
+})
 ```
 
 or in `~/.config/wezzy/settings.json`:

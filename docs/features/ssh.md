@@ -34,15 +34,12 @@ pick by name.
 To add hosts of your own, or give a machine a friendlier name:
 
 ```lua
-local in_app, wezzy = pcall(require, "wezzy")
-if in_app then
-  wezzy.setup({
-    hosts = {
-      { name = "devbox", ssh = "dev@10.0.0.5" },
-      { name = "nas", ssh = "-p 2222 admin@nas.local" },
-    },
-  })
-end
+wezzy.setup({
+  hosts = {
+    { name = "devbox", ssh = "dev@10.0.0.5" },
+    { name = "nas", ssh = "-p 2222 admin@nas.local" },
+  },
+})
 ```
 
 Put this in `~/.config/wezzy/wezzy.lua`, or list them in
@@ -70,4 +67,9 @@ If `wezzy.lua` and `settings.json` both list a name, `wezzy.lua` wins.
   shell.
 - Wezzy sees the session as a local pane running `ssh`. Agent status, the git
   panel and dev servers don't reach into the remote machine.
+- To keep a machine's shells and agents running while you're away and have
+  its workspaces in Wezzy, connect it instead: see
+  [Remote hosts](remote-hosts.md). Choosing a host without Wezzy's server
+  asks whether to set it up; hosts with the server are listed above the ssh
+  rows, under **Hosts**.
 - Hosts aren't in Settings (⌘,); add them in your config.

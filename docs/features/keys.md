@@ -53,12 +53,9 @@ panes. The active pane's outline is brighter. For flat panes split by a thin
 line, turn **Pane cards** off in Settings (⌘,), or in `~/.config/wezzy/wezzy.lua`:
 
 ```lua
-local ok, wezzy = pcall(require, "wezzy")
-if ok then
-  wezzy.setup({
-    pane_cards = false,
-  })
-end
+wezzy.setup({
+  pane_cards = false,
+})
 ```
 
 or in `~/.config/wezzy/settings.json`:
@@ -175,25 +172,33 @@ Your bindings in `~/.config/wezzy/wezzy.lua` win over Wezzy's, one key at a
 time. Rebinding Leader s leaves every other key alone:
 
 ```lua
-config.keys = {
-  { key = "s", mods = "LEADER", action = wezterm.action.SplitPane({ direction = "Right" }) },
-}
+wezzy.setup({
+  keys = {
+    { "leader+s", wezzy.action.SplitPane({ direction = "Right" }) },
+    { "cmd+j", wezzy.action.FindAgent },
+  },
+})
 ```
 
-Set your own leader the WezTerm way:
+or one at a time, anywhere in the file:
 
 ```lua
-config.leader = { key = "b", mods = "CTRL", timeout_milliseconds = 2000 }
+wezzy.bind("cmd+j", wezzy.action.FindAgent)
 ```
 
-Wezzy's app actions bind the same way, through the `wezzy` module:
+A key is its modifiers and the key joined with `+`: `cmd`, `ctrl`, `alt` (or
+`opt`), `shift` and `leader`, then a letter, `enter`, `tab`, `space`, `esc`,
+`left`/`right`/`up`/`down`, `f1`–`f12` and so on. `wezzy.action` has Wezzy's
+app actions ([the list](config.md#actions)) and every WezTerm action. Give a function instead of an action to
+run your own Lua; see [Configuration](config.md#keys).
+
+Pick your own leader:
 
 ```lua
-local in_app, wezzy = pcall(require, "wezzy")
-if in_app then
-  table.insert(config.keys, { key = "j", mods = "CMD", action = wezzy.action.FindAgent })
-end
+wezzy.setup({
+  leader = { "ctrl+b", timeout = 2000 },
+})
 ```
 
-`config.disable_default_key_bindings = true` turns off every built-in key,
-leader included, so only your own bindings are left.
+`wezterm = { disable_default_key_bindings = true }` in `wezzy.setup` turns off
+every built-in key, leader included, so only your own bindings are left.
