@@ -11,9 +11,10 @@ needs you, puts what they wrote in front of you to review, keeps a list of
 everything they're waiting on you for, and keeps them all running when you
 close the lid. Everything has a key, so you rarely leave the keyboard.
 
-It's built on WezTerm's engine and reads your WezTerm config as is, so your
-keys, leader, plugins and smart-splits come along for the ride. It's named after
-WezTerm, out of love and a mild sense of debt.
+It's built on WezTerm's engine, and its config is a WezTerm config: every
+WezTerm option, action and plugin works, so your leader, keys and smart-splits
+come along for the ride. It's named after WezTerm, out of love and a mild sense
+of debt.
 
 macOS only for now. Download `Wezzy.dmg` from the
 [latest release](https://github.com/schester44/wezzy/releases/latest); it
@@ -52,7 +53,8 @@ workspaces are back beside your own, as if they were local.
 split, start the dev server beside itself, and read what it printed, instead
 of asking you to. [The wezzy command](docs/features/cli.md)
 
-**It's still your terminal.** Your WezTerm config works unchanged. ⌘K finds
+**It's still your terminal.** It comes with a full keymap, and anything you
+bind yourself wins over it, one key at a time. ⌘K finds
 anything: agents, tabs, workspaces, recipes, hosts, commands. Paste or drop a
 screenshot straight into an agent. The mouse works when you want it.
 
@@ -70,7 +72,7 @@ Enough to start. Everything else is one of these away.
 | ⌘⇧J | Board: what agents need from you, what you've queued for them |
 | ⌘G | Git panel: review what an agent changed |
 | ⌘⇧K | Switch workspace |
-| Leader ? | Every key (the leader is ⌃A); `?` inside a panel lists that panel's |
+| Leader ? | Every key, yours included; `?` inside a panel lists that panel's. The leader is ⌃A unless your config sets one |
 
 Each feature's keys are in its page under [docs/](docs/README.md), and the
 terminal's own (panes, tabs, copy mode, changing a key) are in
