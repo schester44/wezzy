@@ -14,6 +14,27 @@ search.
 The leader is **⌃A**. Press it, let go, then press the next key within three
 seconds.
 
+## Opening things
+
+| | |
+|---|---|
+| ⌘K | The palette: agents, tabs, workspaces, recipes, hosts and commands |
+| ⌘J | [Agents](agents.md): what's waiting on you, what each agent has done |
+| ⌘⇧J | The [board](board.md) |
+| ⌘G | The [git panel](git-panel.md) |
+| ⌘⇧S | [Hosts](remote-hosts.md) and [SSH](ssh.md) |
+| ⌘R | Recipes |
+| ⌘E | The editor, in the folder you're in |
+| ⌘⇧E | Select an error in the pane's output |
+| ⌘⇧↵ | Send the last command's output to an agent |
+| ⌘B | Show or hide the [sidebar](sidebar.md) |
+| ⌘, | Settings |
+| Leader l | Quick select |
+| Leader y | Copy mode |
+
+Each of those has its own keys once it's open; they're on its page, and `?`
+lists them in the git panel, Agents and the board.
+
 ## Panes and tabs
 
 | | |

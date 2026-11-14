@@ -1,69 +1,90 @@
 # Wezzy
 
-A keyboard-driven development environment built for working with coding agents.
+A terminal for people running more coding agents than they can keep track of.
 
 ![Wezzy](docs/assets/screenshot.png)
 
-Run a fleet of Claude Code / pi agents, see at a glance which one is working,
-which one needs you, and which one finished while you were getting coffee, then
-review, stage, and commit what they did. Everything has a key, so you rarely
-need to leave the keyboard.
+One agent is easy. Nine is a job: which one is still working, which one has
+been waiting on you for ten minutes, which one finished and what did it
+actually change? Wezzy is a terminal built around that job. It tells you who
+needs you, puts what they wrote in front of you to review, keeps a list of
+everything they're waiting on you for, and keeps them all running when you
+close the lid. Everything has a key, so you rarely leave the keyboard.
 
 It's built on WezTerm's engine and reads your WezTerm config as is, so your
 keys, leader, plugins and smart-splits come along for the ride. It's named after
 WezTerm, out of love and a mild sense of debt.
 
-The mouse works too: click around the sidebar and panels, drag split dividers,
-and drop files onto agents.
-
 macOS only for now. Download `Wezzy.dmg` from the
 [latest release](https://github.com/schester44/wezzy/releases/latest); it
 [updates itself](docs/features/updates.md).
 
-## What you get
+## What it's like
 
-- **Agents that report in.** A sidebar lists every agent across every workspace
-  with its status: working, needs input, done. A chime when one needs you.
-  `⌥⌘1–9` jumps straight to one.
-- **Sessions that survive.** Shells and agents live in a background session
-  server. Quit Wezzy, come back, everything's still running.
-- **A git panel for reviewing agent work.** Stage hunks, comment on lines, send
-  the comments back to the agent, commit, open the pull request. Vim keys, obviously.
-- **One palette for everything.** ⌘K finds agents, tabs, workspaces, recipes,
-  SSH hosts and commands.
-- **Paste and drop images into agents.** Screenshots go straight to Claude / pi.
-- **Your WezTerm config, unchanged.** Every WezTerm action works, and Wezzy's own
-  actions bind the same way.
+**You always know who needs you.** Every agent in every workspace is in the
+sidebar with what it's doing: working, waiting on you, done. A chime when one
+asks for you, `⌥⌘1–9` to jump to it, and ⌘J to answer a permission prompt
+without leaving what you were doing. No more cycling through tabs to find the
+one that stalled twenty minutes ago. [Agents](docs/features/agents.md)
 
-## Keys
+**Nothing an agent asks you gets lost.** "Done, but I have three questions"
+used to scroll away. Now agents put their questions, the things only you can
+do, and the follow-ups they noticed on a board you share with them, and carry
+on with the rest. You answer when you get to it, and your answer goes back to
+the agent that asked: typed into its session if it's idle, handed over when
+its turn ends if it's busy. Queue work for an agent the same way. Ten agents
+on one board, and each hears only about its own cards.
+[Board](docs/features/board.md)
+
+**You read the code before it lands.** Agents write more than you can skim in
+a terminal. The git panel shows what one changed while it's changing it: stage
+hunk by hunk, comment on a line, send the comments back as a review, commit,
+open the pull request. [Git panel](docs/features/git-panel.md)
+
+**The work doesn't stop when you do.** Shells and agents live in a background
+session, not in the window. Quit Wezzy, update it, come back tomorrow:
+everything is where you left it, still running. Put agents on another machine
+and they keep going with your laptop shut; connect again and that machine's
+workspaces are back beside your own, as if they were local.
+[Remote hosts](docs/features/remote-hosts.md)
+
+**Agents can use the terminal too.** The `wezzy` command lets an agent open a
+split, start the dev server beside itself, and read what it printed, instead
+of asking you to. [The wezzy command](docs/features/cli.md)
+
+**It's still your terminal.** Your WezTerm config works unchanged. ⌘K finds
+anything: agents, tabs, workspaces, recipes, hosts, commands. Paste or drop a
+screenshot straight into an agent. The mouse works when you want it.
+
+## Getting around
+
+Enough to start. Everything else is one of these away.
 
 | | |
 |---|---|
-| Leader ? | Every key (the leader is ⌃A) |
-| ⌘K | Palette (agents, tabs, workspaces, commands) |
+| ⌘K | Find anything: agents, tabs, workspaces, hosts, commands |
+| ⌘I | Start an agent |
+| ⌘J | Agents: what's waiting on you, what each one has done |
+| ⌘⇧J | Board: what agents need from you, what you've queued for them |
+| ⌘G | Git panel: review what an agent changed |
 | ⌘⇧K | Switch workspace |
-| ⌘N | New terminal in the current tab |
-| Leader w | New window |
-| ⌘I / ⌘⇧I | New agent in a split / tab |
-| ⌥⌘1–9 | Jump to agent 1–9 (numbers show in the sidebar while ⌥⌘ is held) |
-| ⌘G | Git panel |
-| ⌘⇧J | Board |
-| ⌘R | Recipes |
-| ⌘⇧S | SSH hosts |
-| ⌘E | Editor |
-| ⌘B | Sidebar |
-| ⌘, | Settings |
-| ⌘⇧↵ | Send last output to an agent |
-| Leader l | Quick select |
-| ⌃h/j/k/l | Move between panes and panels |
-| ⌘W / Leader q | Close pane / tab |
-| Leader s / v | Split down / right |
-| Leader y | Copy mode |
-| ? | Shortcut sheet in the git panel |
+| Leader ? | Every key (the leader is ⌃A); `?` inside a panel lists that panel's |
+
+Each feature's keys are in its page under [docs/](docs/README.md), and the
+terminal's own (panes, tabs, copy mode, changing a key) are in
+[Keys](docs/features/keys.md).
 
 ## Setup
 
 Exact agent status (Claude Code, Codex, pi, OpenCode) needs hooks: ⌘, → Agent hooks.
+
+To have agents use the board (Claude Code for now): ⌘K → Install Handoff. It
+gives them the tools to file and read cards and brings your answers back to
+them.
+
+To run agents on another machine: ⌘⇧S, pick the host, **Set up**. It needs
+key-based ssh and nothing else; see [Remote hosts](docs/features/remote-hosts.md).
+Agents on a host run and persist there, but aren't in the sidebar or ⌘J yet.
 
 Config lives in `~/.config/wezzy/`: `wezzy.lua` for appearance, keys and the rest, `settings.json` for what ⌘, edits. See [Configuration](docs/features/config.md).
 
